@@ -120,12 +120,52 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| BUILD-01 | Phase 1 | Pending |
+| BUILD-02 | Phase 1 | Pending |
+| BUILD-03 | Phase 1 | Pending |
+| BUILD-04 | Phase 1 | Pending |
+| BUILD-05 | Phase 1 | Pending |
+| BUILD-06 | Phase 1 | Pending |
+| BUILD-07 | Phase 1 | Pending |
+| BUS-01 | Phase 1 | Pending |
+| BUS-02 | Phase 1 | Pending |
+| BUS-03 | Phase 1 | Pending |
+| BUS-04 | Phase 1 | Pending |
+| IO-01 | Phase 1 | Pending |
+| IO-02 | Phase 1 | Pending |
+| IO-03 | Phase 2 | Pending |
+| IO-04 | Phase 2 | Pending |
+| IO-05 | Phase 2 | Pending |
+| IO-06 | Phase 1 | Pending |
+| MODEL-01 | Phase 1 | Pending |
+| MODEL-02 | Phase 1 | Pending |
+| MODEL-03 | Phase 2 | Pending |
+| MODEL-04 | Phase 1 | Pending |
+| FW-01 | Phase 2 | Pending |
+| FW-02 | Phase 2 | Pending |
+| FW-03 | Phase 2 | Pending |
+| CLI-01 | Phase 2 | Pending |
+| CLI-02 | Phase 2 | Pending |
+| CLI-03 | Phase 2 | Pending |
+| CLI-04 | Phase 2 | Pending |
+| CLI-05 | Phase 1 | Pending |
+| CLI-06 | Phase 1 | Pending |
+| UI-01 | Phase 3 | Pending |
+| UI-02 | Phase 3 | Pending |
+| UI-03 | Phase 3 | Pending |
+| UI-04 | Phase 3 | Pending |
+| UI-05 | Phase 3 | Pending |
+| UI-06 | Phase 3 | Pending |
+| HA-01 | Phase 2 | Pending |
+| HA-02 | Phase 2 | Pending |
+| TEST-01 | Phase 2 | Pending |
+| TEST-02 | Phase 2 | Pending |
 
 **Coverage:**
 - v1 requirements: 40 total
-- Mapped to phases: 0
-- Unmapped: 40 ⚠️
+- Mapped to phases: 40
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-11-08*
-*Last updated: 2026-11-08 after initial definition*
+*Last updated: 2026-11-08 after roadmap creation*

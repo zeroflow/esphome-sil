@@ -49,7 +49,7 @@ Milestone 1 — "the plumbing works end to end":
 - `ota`, `http_request` and `update` sit in the top-level firmware YAML, not the hardware package; the SiL build needs its own top-level host config, swapping only the hardware package will not compile.
 - ESPHome itself is Python; building the host firmware needs the ESPHome toolchain (contained in the pinned Docker image). A host binary built in the container may need matching glibc or must run in the container too — to be researched.
 - Product-repo modules for later: `rpm_pi_control`, `stall_guard`, `rpm_status_leds`, `usr_buttons(_mode)`, `fallback_mode`, `temperature_curve*`, `dual_curve`. Existing harness pattern: `fallback_mode_harness_dev.yaml`.
-- Time-factor design (later): small build-time patch on ESPHome 2026.10.1 `components/host/hal.cpp` (`millis`, `micros`, `millis_64`, `arch_get_cpu_cycle_count`, `delay`, `delayMicroseconds`) and the `select()` timeout in `core/application.cpp`.
+- Time-factor design (later): small build-time patch on ESPHome 2026.10.1 `components/host/hal.cpp` (`millis`, `micros`, `millis_64`, `arch_get_cpu_cycle_count`, `delay`, `delayMicroseconds`) and the `select()` timeout in `core/wake/wake_host.cpp::wakeable_delay` (2026.10.1).
 - Original design notes: `docs/initial-idea.md`.
 - Built with Claude Code (Opus 5.5) as primary implementer; fast compile/run loops matter.
 
