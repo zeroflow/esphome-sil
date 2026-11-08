@@ -1,0 +1,81 @@
+esphome:
+  name: sil-proto
+  build_flags:
+    - -static
+host:
+logger:
+  level: DEBUG
+api:
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [sim_bus]
+
+sim_bus:
+  id: bus
+  path: /tmp/sil-proto.sock
+
+output:
+  - platform: sim_bus
+    id: pwm_fan1
+    channel: fan1_pwm
+  - platform: sim_bus
+    id: pwm_fan2
+    channel: fan2_pwm
+fan:
+  - platform: speed
+    output: pwm_fan1
+    name: "Fan 1"
+    id: fan1
+    speed_count: 100
+    restore_mode: ALWAYS_OFF
+  - platform: speed
+    output: pwm_fan2
+    name: "Fan 2"
+    id: fan2
+    speed_count: 100
+    restore_mode: ALWAYS_OFF
+sensor:
+  - platform: sim_bus
+    channel: fan1_rpm
+    id: fan1_speed
+    name: Fan 1 Speed
+    unit_of_measurement: RPM
+    accuracy_decimals: 0
+  - platform: sim_bus
+    channel: temp
+    name: Temperature
+    id: fancontroller_temperature
+    unit_of_measurement: "°C"
+binary_sensor:
+  - platform: sim_bus
+    channel: usr1
+    name: "Button USR1"
+    id: btn_usr1
+light:
+  - platform: sim_bus
+    channel: status_leds
+    num_leds: 5
+    name: "Status LEDs"
+    id: status_leds
+    internal: true
+  - platform: partition
+    name: "Board Status"
+    id: status_led
+    internal: true
+    segments:
+      - id: status_leds
+        from: 0
+        to: 0
+    effects:
+      - pulse:
+      - addressable_rainbow:
+  - platform: partition
+    name: "Fan 1 Status"
+    id: fan1_led
+    internal: true
+    segments:
+      - id: status_leds
+        from: 1
+        to: 1
