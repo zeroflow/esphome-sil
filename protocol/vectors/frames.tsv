@@ -68,7 +68,7 @@ bad_value_false	invalid	{"k":"x","b":false}	bad_value
 bad_value_null	invalid	{"k":"x","b":null}	bad_value
 bad_value_nan	invalid	{"k":"x","v":NaN}	bad_value
 bad_value_single_quote	invalid	{"k":'x'}	bad_value
-bad_escape_unicode	invalid	{"k":"x","s":"é"}	bad_escape
+bad_escape_unicode	invalid	{"k":"x","s":"\u00e9"}	bad_escape
 bad_escape_newline	invalid	{"k":"x","s":"a\nb"}	bad_escape
 bad_escape_slash	invalid	{"k":"x","s":"a\/b"}	bad_escape
 bad_escape_at_end	invalid	{"k":"x","s":"a\	bad_escape

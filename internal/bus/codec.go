@@ -2,8 +2,8 @@
 package bus
 
 import (
-	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -49,10 +49,12 @@ func (f Frame) with(fd field) Frame {
 func (f Frame) Str(key, v string) Frame { return f.with(field{key, kindStr, v}) }
 
 // Num appends a float32 field written as its shortest decimal. NaN and the
-// infinities have no wire form, so the field is omitted for them.
+// infinities have no wire form, and neither has a float64 beyond the float32
+// range (it would become an infinity), so the field is left out for all of
+// them: a frame never carries NaN or Inf text. See protocol/PROTOCOL.md.
 func (f Frame) Num(key string, v float64) Frame {
 	f32 := float32(v)
-	if f32 != f32 || f32 > 3.4028235e38 || f32 < -3.4028235e38 {
+	if math.IsNaN(float64(f32)) || math.IsInf(float64(f32), 0) {
 		return f
 	}
 	return f.with(field{key, kindNum, strconv.FormatFloat(float64(f32), 'g', -1, 32)})
@@ -87,10 +89,11 @@ func (f Frame) GetStr(key string) (string, bool) {
 	return fd.raw, true
 }
 
-// GetInt returns an integer field (a number written without fraction or exponent).
+// GetInt returns an integer field: a number whose text is -?[0-9]+ and fits in
+// int64 (nothing with a fraction, an exponent or a plus sign).
 func (f Frame) GetInt(key string) (int64, bool) {
 	fd, ok := f.lookup(key)
-	if !ok || fd.kind == kindStr {
+	if !ok || fd.kind == kindStr || !isIntLiteral(fd.raw) {
 		return 0, false
 	}
 	n, err := strconv.ParseInt(fd.raw, 10, 64)
@@ -98,6 +101,21 @@ func (f Frame) GetInt(key string) (int64, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+func isIntLiteral(s string) bool {
+	if strings.HasPrefix(s, "-") {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // GetF32 returns a number field as the float32 that crossed the wire. Use it
@@ -148,18 +166,59 @@ func (f Frame) String() string {
 	return strings.Join(parts, ";")
 }
 
+// The error classes of a rejected line. They are the vocabulary shared with the
+// C++ codec and the "invalid" rows of protocol/vectors/frames.tsv.
+const (
+	ClassEmpty     = "empty"
+	ClassTooLong   = "too_long"
+	ClassNotObject = "not_object"
+	ClassNested    = "nested"
+	ClassBadKey    = "bad_key"
+	ClassBadValue  = "bad_value"
+	ClassBadEscape = "bad_escape"
+	ClassBadChar   = "bad_char"
+	ClassDupKey    = "dup_key"
+	ClassMissingK  = "missing_k"
+	ClassBadK      = "bad_k"
+	ClassBadNumber = "bad_number"
+	ClassTrailing  = "trailing"
+)
+
+// maxNumberLen is the longest number literal, in characters.
+const maxNumberLen = 32
+
+// DecodeError is returned by Decode for a line that breaks the grammar. Class is
+// one of the Class constants; Offset is the byte where the problem was found.
+type DecodeError struct {
+	Class  string
+	Offset int
+}
+
+func (e *DecodeError) Error() string {
+	return fmt.Sprintf("bus: bad frame (%s) at byte %d", e.Class, e.Offset)
+}
+
 func writeQuoted(sb *strings.Builder, s string) {
 	sb.WriteByte('"')
 	for i := 0; i < len(s); i++ {
-		if s[i] == '"' || s[i] == '\\' {
+		c := s[i]
+		switch {
+		case c == '"' || c == '\\':
 			sb.WriteByte('\\')
+			sb.WriteByte(c)
+		case c < 0x20 || c > 0x7e:
+			sb.WriteByte('?') // outside printable ASCII: never emit a line the peer would reject
+		default:
+			sb.WriteByte(c)
 		}
-		sb.WriteByte(s[i])
 	}
 	sb.WriteByte('"')
 }
 
-// Encode renders the frame as one line including the trailing newline.
+// Encode renders the frame as one line including the trailing newline. Bytes in
+// strings outside printable ASCII are written as '?' so the line always decodes.
+// Encode does not truncate: callers keep frames under MaxLine. A frame cannot
+// hold NaN or Inf (Num leaves such a field out), so Encode never emits them.
 func Encode(f Frame) []byte {
 	var sb strings.Builder
 	sb.WriteByte('{')
@@ -179,146 +238,239 @@ func Encode(f Frame) []byte {
 	return []byte(sb.String())
 }
 
-// Decode parses one line (without its newline). It is lenient: any flat
-// object of string and number values is accepted; nesting, arrays and
-// literals are errors. Plan 01-06 makes the grammar strict.
+// Decode parses one line (without its newline) under the strict grammar of
+// protocol/PROTOCOL.md: one flat object, unique keys, string and number values
+// only. It returns a *DecodeError whose Class names the first problem found.
+// The length cap is checked before anything else and the scan is a single pass
+// without recursion.
 func Decode(line []byte) (Frame, error) {
-	p := parser{s: string(line)}
-	return p.object()
+	if len(line) == 0 {
+		return Frame{}, &DecodeError{ClassEmpty, 0}
+	}
+	if len(line) > MaxLine-1 { // the newline counts toward MaxLine
+		return Frame{}, &DecodeError{ClassTooLong, MaxLine - 1}
+	}
+	d := decoder{s: line}
+	fields, err := d.object()
+	if err != nil {
+		return Frame{}, err
+	}
+	f := Frame{fields: fields}
+	k, ok := f.lookup("k")
+	switch {
+	case !ok:
+		return Frame{}, &DecodeError{ClassMissingK, 0}
+	case k.kind != kindStr || k.raw == "":
+		return Frame{}, &DecodeError{ClassBadK, 0}
+	}
+	return f, nil
 }
 
-type parser struct {
-	s string
+type decoder struct {
+	s []byte
 	i int
 }
 
-func (p *parser) skip() {
-	for p.i < len(p.s) && (p.s[p.i] == ' ' || p.s[p.i] == '\t' || p.s[p.i] == '\r') {
-		p.i++
+func (d *decoder) fail(class string) error { return &DecodeError{class, d.i} }
+
+func (d *decoder) skip() {
+	for d.i < len(d.s) && d.s[d.i] == ' ' {
+		d.i++
 	}
 }
 
-func (p *parser) fail(msg string) error {
-	return fmt.Errorf("bus: bad frame at byte %d: %s", p.i, msg)
-}
-
-func (p *parser) object() (Frame, error) {
-	var f Frame
-	p.skip()
-	if p.i >= len(p.s) || p.s[p.i] != '{' {
-		return f, p.fail("expected '{'")
+func (d *decoder) object() ([]field, error) {
+	var fields []field
+	d.skip()
+	if d.i >= len(d.s) || d.s[d.i] != '{' {
+		return nil, d.fail(ClassNotObject)
 	}
-	p.i++
-	p.skip()
-	if p.i < len(p.s) && p.s[p.i] == '}' {
-		p.i++
-		return f, p.end()
+	d.i++
+	d.skip()
+	if d.i < len(d.s) && d.s[d.i] == '}' {
+		d.i++
+		return fields, d.end()
 	}
 	for {
-		p.skip()
-		key, err := p.str()
+		d.skip()
+		key, err := d.key()
 		if err != nil {
-			return Frame{}, err
+			return nil, err
 		}
-		p.skip()
-		if p.i >= len(p.s) || p.s[p.i] != ':' {
-			return Frame{}, p.fail("expected ':'")
-		}
-		p.i++
-		p.skip()
-		if p.i >= len(p.s) {
-			return Frame{}, p.fail("missing value")
-		}
-		switch c := p.s[p.i]; {
-		case c == '"':
-			v, err := p.str()
-			if err != nil {
-				return Frame{}, err
+		for _, fd := range fields {
+			if fd.key == key {
+				return nil, d.fail(ClassDupKey)
 			}
-			f = f.with(field{key, kindStr, v})
-		case c == '-' || (c >= '0' && c <= '9'):
-			fd, err := p.num(key)
-			if err != nil {
-				return Frame{}, err
-			}
-			f = f.with(fd)
-		case c == '{' || c == '[':
-			return Frame{}, p.fail("nesting is not allowed")
-		default:
-			return Frame{}, p.fail("value must be a string or a number")
 		}
-		p.skip()
-		if p.i >= len(p.s) {
-			return Frame{}, p.fail("unterminated object")
+		d.skip()
+		if d.i >= len(d.s) || d.s[d.i] != ':' {
+			return nil, d.fail(ClassNotObject)
 		}
-		switch p.s[p.i] {
+		d.i++
+		d.skip()
+		fd, err := d.value(key)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, fd)
+		d.skip()
+		if d.i >= len(d.s) {
+			return nil, d.fail(ClassNotObject)
+		}
+		switch d.s[d.i] {
 		case ',':
-			p.i++
+			d.i++
 		case '}':
-			p.i++
-			return f, p.end()
+			d.i++
+			return fields, d.end()
 		default:
-			return Frame{}, p.fail("expected ',' or '}'")
+			return nil, d.fail(ClassNotObject)
 		}
 	}
 }
 
-func (p *parser) end() error {
-	p.skip()
-	if p.i != len(p.s) {
-		return p.fail("trailing characters")
+func (d *decoder) end() error {
+	d.skip()
+	if d.i != len(d.s) {
+		return d.fail(ClassTrailing)
 	}
 	return nil
 }
 
-func (p *parser) str() (string, error) {
-	if p.i >= len(p.s) || p.s[p.i] != '"' {
-		return "", p.fail("expected string")
+// key reads a quoted key: [a-z][a-z0-9_]*.
+func (d *decoder) key() (string, error) {
+	if d.i >= len(d.s) {
+		return "", d.fail(ClassNotObject)
 	}
-	p.i++
-	var sb strings.Builder
-	for p.i < len(p.s) {
-		c := p.s[p.i]
-		switch {
-		case c == '"':
-			p.i++
-			return sb.String(), nil
-		case c == '\\':
-			if p.i+1 >= len(p.s) || (p.s[p.i+1] != '"' && p.s[p.i+1] != '\\') {
-				return "", p.fail("unsupported escape")
-			}
-			sb.WriteByte(p.s[p.i+1])
-			p.i += 2
-		default:
-			sb.WriteByte(c)
-			p.i++
+	if d.s[d.i] != '"' {
+		return "", d.fail(ClassBadKey)
+	}
+	d.i++
+	start := d.i
+	for d.i < len(d.s) && d.s[d.i] != '"' {
+		c := d.s[d.i]
+		first := d.i == start
+		if !(c >= 'a' && c <= 'z') && (first || !((c >= '0' && c <= '9') || c == '_')) {
+			return "", d.fail(ClassBadKey)
 		}
+		d.i++
 	}
-	return "", p.fail("unterminated string")
+	if d.i >= len(d.s) {
+		return "", d.fail(ClassNotObject)
+	}
+	if d.i == start {
+		return "", d.fail(ClassBadKey)
+	}
+	key := string(d.s[start:d.i])
+	d.i++
+	return key, nil
 }
 
-func (p *parser) num(key string) (field, error) {
-	start := p.i
-	isInt := true
-	for p.i < len(p.s) {
-		c := p.s[p.i]
-		if c == '.' || c == 'e' || c == 'E' {
-			isInt = false
-		} else if !(c == '-' || c == '+' || (c >= '0' && c <= '9')) {
-			break
+func (d *decoder) value(key string) (field, error) {
+	if d.i >= len(d.s) {
+		return field{}, d.fail(ClassNotObject)
+	}
+	switch c := d.s[d.i]; {
+	case c == '"':
+		v, err := d.str()
+		if err != nil {
+			return field{}, err
 		}
-		p.i++
+		return field{key, kindStr, v}, nil
+	case c == '{' || c == '[':
+		return field{}, d.fail(ClassNested)
+	case c == '-' || c == '+' || c == '.' || (c >= '0' && c <= '9'):
+		return d.num(key)
+	default:
+		return field{}, d.fail(ClassBadValue)
 	}
-	raw := p.s[start:p.i]
-	if _, err := strconv.ParseFloat(raw, 64); err != nil {
-		var ne *strconv.NumError
-		if !errors.As(err, &ne) || ne.Err != strconv.ErrRange {
-			return field{}, p.fail("bad number " + strconv.Quote(raw))
+}
+
+// str reads a quoted string: printable ASCII with only \" and \\ as escapes.
+func (d *decoder) str() (string, error) {
+	d.i++ // opening quote
+	var sb strings.Builder
+	for d.i < len(d.s) {
+		c := d.s[d.i]
+		switch {
+		case c == '"':
+			d.i++
+			return sb.String(), nil
+		case c == '\\':
+			if d.i+1 >= len(d.s) || (d.s[d.i+1] != '"' && d.s[d.i+1] != '\\') {
+				return "", d.fail(ClassBadEscape)
+			}
+			sb.WriteByte(d.s[d.i+1])
+			d.i += 2
+		case c < 0x20 || c > 0x7e:
+			return "", d.fail(ClassBadChar)
+		default:
+			sb.WriteByte(c)
+			d.i++
 		}
 	}
-	kind := byte(kindNum)
-	if isInt {
-		kind = kindInt
+	return "", d.fail(ClassNotObject)
+}
+
+func isNumberByte(c byte) bool {
+	return (c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E'
+}
+
+// num reads a JSON number: -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?, at
+// most 32 characters, and within float32 range.
+func (d *decoder) num(key string) (field, error) {
+	start := d.i
+	for d.i < len(d.s) && isNumberByte(d.s[d.i]) {
+		d.i++
 	}
-	return field{key, kind, raw}, nil
+	tok := string(d.s[start:d.i])
+	if len(tok) > maxNumberLen || !validNumber(tok) {
+		return field{}, &DecodeError{ClassBadNumber, start}
+	}
+	if _, err := strconv.ParseFloat(tok, 32); err != nil {
+		return field{}, &DecodeError{ClassBadNumber, start} // out of float32 range
+	}
+	kind := byte(kindInt)
+	if strings.ContainsAny(tok, ".eE") {
+		kind = kindNum
+	}
+	return field{key, kind, tok}, nil
+}
+
+func validNumber(t string) bool {
+	i, n := 0, len(t)
+	digits := func() int {
+		start := i
+		for i < n && t[i] >= '0' && t[i] <= '9' {
+			i++
+		}
+		return i - start
+	}
+	if i < n && t[i] == '-' {
+		i++
+	}
+	switch {
+	case i < n && t[i] == '0':
+		i++
+	case i < n && t[i] >= '1' && t[i] <= '9':
+		digits()
+	default:
+		return false
+	}
+	if i < n && t[i] == '.' {
+		i++
+		if digits() == 0 {
+			return false
+		}
+	}
+	if i < n && (t[i] == 'e' || t[i] == 'E') {
+		i++
+		if i < n && (t[i] == '+' || t[i] == '-') {
+			i++
+		}
+		if digits() == 0 {
+			return false
+		}
+	}
+	return i == n
 }
