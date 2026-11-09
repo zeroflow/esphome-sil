@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Live Web UI
 status: executing
-stopped_at: Completed 03-05-PLAN.md
-last_updated: "2026-11-09T13:49:25.932Z"
+stopped_at: Completed 03-06-PLAN.md
+last_updated: "2026-11-09T13:59:05.640Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 3 execution started
-state_head: 818547412cb844b18fd913c91ba76a969f15ceba
+state_head: f424e0930f336ae893b8c6a85b6681ae5a35a923
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 33
-  completed_plans: 26
+  completed_plans: 27
   percent: 33
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 ## Current Position
 
 Phase: 3 (Live Web UI) — EXECUTING
-Plan: 6 of 12
+Plan: 7 of 12
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 3 execution started
 
@@ -82,6 +82,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 03 P03 | 40 min | 2 tasks | 6 files |
 | Phase 03 P04 | 35 min | 2 tasks | 9 files |
 | Phase 3 P05 | 17 min | 2 tasks | 15 files |
+| Phase 3 P06 | 8 min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -149,6 +150,9 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-04: logs (tail and follow) is socket-only on the web listener (D-20) and enforced by the table
 - [Phase 3]: 03-05: web.Guard sits inside LimitBody and outside NewHandler; Host allowlist, then security headers, then CrossOriginProtection; every non-GET row of control.Operations is covered by TestCSRFCoversEveryMutatingRoute and a GET row needs a reviewed read-only entry
 - [Phase 3]: 03-05: TestWSPingReaps flake was a test race (Manual clock jumped during an in-flight coder/websocket write, which closes the connection hard); fixed in the test, ws.go unchanged
+- [Phase 3]: 03-06: LED lens colours reach the page only as CSSOM custom properties (--lens, --glow) with the look in app.css, so the page runs under style-src 'self'
+- [Phase 3]: 03-06: the connecting LED placeholder lens carries no data-src/data-fmt; a placeholder for values is not a value
+- [Phase 3]: 03-06: header cells have fixed px widths (instance 168, SIM TIME 144, TIME FACTOR 112, FIRMWARE 152, LINK 240); new header cells must keep a fixed width
 
 ### Pending Todos
 
@@ -174,8 +178,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T13:49:25.868Z
-Stopped at: Completed 03-05-PLAN.md
+Last session: 2026-11-09T13:59:05.585Z
+Stopped at: Completed 03-06-PLAN.md
 Resume file: None
 
 ## Needs Human
