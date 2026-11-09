@@ -29,6 +29,9 @@ import (
 const (
 	tick         = 10 * time.Millisecond
 	rpmFrameStep = 50 * time.Millisecond
+	// sampleStep is the spacing of the plot samples (D-12): one sample event per 100 ms of sim
+	// time, stamped with the tick that produced it.
+	sampleStep = 100 * time.Millisecond
 )
 
 // RPMEventStep is how often a port's rpm is sampled for an rpm event, in sim time. The simulator
@@ -215,6 +218,10 @@ type Engine struct {
 	simNow    time.Duration
 	srv       *bus.Server
 	nextRPM   time.Duration
+	// nextSample is the sim time of the next sample event. sampled is false in a new engine and set
+	// by its first sample, which carries Gap.
+	nextSample time.Duration
+	sampled    bool
 	// env is the room; nextEnv[i] is when env value i (temperature, humidity) is sent next.
 	env     Env
 	nextEnv [2]time.Duration
@@ -362,6 +369,39 @@ func (e *Engine) emitRPM() {
 	}
 }
 
+// sampleDue reports whether a sample event is due at sim time now and, when it is, moves
+// nextSample to the first slot beyond now: a slot the engine missed (a late tick) is skipped, never
+// back-filled.
+func (e *Engine) sampleDue(now time.Duration) bool {
+	if now < e.nextSample {
+		return false
+	}
+	for e.nextSample <= now {
+		e.nextSample += sampleStep
+	}
+	return true
+}
+
+// emitSample emits the plot sample of this tick when one is due: every port's duty and rpm, or
+// null for both while the firmware is not on the bus. The first sample of an engine carries Gap,
+// so the stream itself marks the break a simulator restart leaves in sim time.
+func (e *Engine) emitSample() {
+	if !e.sampleDue(e.simNow) {
+		return
+	}
+	v := make([]events.Sample, len(e.ports))
+	for i := range e.ports {
+		p := &e.ports[i]
+		v[i].Port = p.cfg.Port
+		if e.connected {
+			duty, rpm := p.duty, p.state.RPM
+			v[i].Duty, v[i].RPM = &duty, &rpm
+		}
+	}
+	e.emit(events.Event{K: events.SampleKind, V: v, Gap: !e.sampled})
+	e.sampled = true
+}
+
 // handler forwards bus callbacks into the inbox; it never touches model state.
 type handler struct {
 	e   *Engine
@@ -415,6 +455,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	clk := e.cfg.Clock
 	e.simNow = clk.Now()
 	e.nextRPM = e.simNow
+	e.nextSample = e.simNow + sampleStep
 	e.nextEnv = [2]time.Duration{e.simNow + EnvResend, e.simNow + EnvResend}
 	last := e.simNow
 	// A new engine starts every port from rest; saying so lets a stream that outlives a simulator
@@ -453,6 +494,7 @@ func (e *Engine) Run(ctx context.Context) error {
 				e.emitState(p)
 			}
 			e.emitRPM()
+			e.emitSample()
 			e.inTick = false
 			if e.connected && e.simNow >= e.nextRPM {
 				e.nextRPM = e.simNow + rpmFrameStep

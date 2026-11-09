@@ -9,6 +9,7 @@ package events
 import (
 	"errors"
 	"sync"
+	"time"
 )
 
 const (
@@ -22,10 +23,28 @@ const (
 // snapshot, lagged and stopped lines, which are not kinds a watcher can select.
 var Kinds = []string{"duty", "rpm", "state", "fan", "button", "env", "leds", "firmware", "sim"}
 
+// SampleKind is the plot sample: every 100 ms of sim time one event carries the duty and rpm of
+// every port. It is not in Kinds because it is opt-in: a subscription without kinds never gets it
+// (10 events a second would drown every other line), one that names it does. Samples also fill the
+// history ring behind Broker.History.
+const SampleKind = "sample"
+
+// HistoryCap is how many sample events the broker keeps: 5 minutes at 10 Hz.
+const HistoryCap = 3000
+
+// Sample is one port's entry of a sample event. Duty and RPM are null (nil) while the firmware is
+// not on the sim-bus: a gap in the plot, never a made-up zero.
+type Sample struct {
+	Port int      `json:"port"`
+	Duty *float64 `json:"duty"`
+	RPM  *float64 `json:"rpm"`
+}
+
 // Event is one change. T is simulator time in microseconds, Seq a strictly increasing number per
 // broker. V holds the new value; its meaning depends on K (see the Kinds list in the SUMMARY of
 // plan 02-06): duty and rpm a number, state running|stopped, fan an id, button a bool, env a
-// number, firmware a bool, sim "restarted".
+// number, firmware a bool, sim "restarted", "behind" or "in_sync", sample a []Sample with one entry
+// per port.
 type Event struct {
 	T       int64    `json:"t"`
 	K       string   `json:"k"`
@@ -35,6 +54,12 @@ type Event struct {
 	V       any      `json:"v,omitempty"`
 	Strip   []string `json:"strip,omitempty"`
 	Dropped uint64   `json:"dropped,omitempty"`
+	// Reason says why a button event happened when it was not a client's request: "max_hold" for a
+	// release by the engine after the button's max hold (D-15).
+	Reason string `json:"reason,omitempty"`
+	// Gap marks the first sample of an engine: sim time ran on while the simulator was away, so a
+	// plot must break the line before it. Clients draw the marker, they never infer it from timing.
+	Gap bool `json:"gap,omitempty"`
 }
 
 // Errors of Subscribe.
@@ -43,10 +68,10 @@ var (
 	ErrClosed  = errors.New("the event broker is closed")
 )
 
-// UnknownKind returns the first of kinds that is not in Kinds, or "".
+// UnknownKind returns the first of kinds that is not in Kinds (or SampleKind), or "".
 func UnknownKind(kinds []string) string {
 	for _, k := range kinds {
-		known := false
+		known := k == SampleKind
 		for _, want := range Kinds {
 			if k == want {
 				known = true
@@ -68,6 +93,13 @@ type Broker struct {
 	seq    uint64
 	subs   map[*Sub]struct{}
 	closed bool
+
+	// ring holds the last HistoryCap sample events: ringN of them, the oldest at ringStart. It is
+	// filled in Publish under mu, in the same critical section that assigns seq, so a History call
+	// sees exactly the samples up to the seq it returns.
+	ring      [HistoryCap]Event
+	ringStart int
+	ringN     int
 }
 
 // NewBroker returns an empty broker whose subscribers buffer SubscriberBuffer events.
@@ -102,14 +134,55 @@ func (b *Broker) Publish(ev Event) uint64 {
 	}
 	b.seq++
 	ev.Seq = b.seq
+	if ev.K == SampleKind {
+		b.record(ev)
+	}
 	for s := range b.subs {
 		s.offer(ev)
 	}
 	return ev.Seq
 }
 
-// offer queues ev for s. The broker's lock is held.
+// record appends the sample ev to the ring, dropping the oldest one when it is full. The broker's
+// lock is held.
+func (b *Broker) record(ev Event) {
+	if b.ringN < HistoryCap {
+		b.ring[(b.ringStart+b.ringN)%HistoryCap] = ev
+		b.ringN++
+		return
+	}
+	b.ring[b.ringStart] = ev
+	b.ringStart = (b.ringStart + 1) % HistoryCap
+}
+
+// History returns the sample events of the ring whose t is within window of the newest one, oldest
+// first (seq order), together with the broker seq they are consistent with: every sample up to
+// that seq is in the result or older than the window. A window of 0 or less returns the whole
+// ring. The result is a copy and never nil.
+func (b *Broker) History(window time.Duration) (seq uint64, samples []Event) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	samples = []Event{}
+	if b.ringN == 0 {
+		return b.seq, samples
+	}
+	newest := b.ring[(b.ringStart+b.ringN-1)%HistoryCap].T
+	for i := 0; i < b.ringN; i++ {
+		ev := b.ring[(b.ringStart+i)%HistoryCap]
+		if window > 0 && ev.T < newest-window.Microseconds() {
+			continue
+		}
+		samples = append(samples, ev)
+	}
+	return b.seq, samples
+}
+
+// offer queues ev for s. The broker's lock is held. A subscription without kinds gets every kind
+// of Kinds but not the opt-in samples.
 func (s *Sub) offer(ev Event) {
+	if s.kinds == nil && ev.K == SampleKind {
+		return
+	}
 	if s.kinds != nil && !s.kinds[ev.K] {
 		return
 	}

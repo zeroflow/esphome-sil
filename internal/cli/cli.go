@@ -55,9 +55,11 @@ type CLI struct {
 	Press  PressCmd  `cmd:"" help:"Press a button (usr1..usr3): 200 ms by default, --long holds 1500 ms, --hold DUR sets the hold; --down/--up set the level and return."`
 	Set    SetCmd    `cmd:"" help:"Set inputs: key=value pairs (temperature in degrees Celsius, humidity in %RH, portN.fan=ID to plug a library fan into port N), validated first and applied together."`
 	Fans   FansCmd   `cmd:"" help:"List the fans of the instance's fan library."`
-	Watch  WatchCmd  `cmd:"" help:"Follow the instance live as NDJSON: one snapshot line, then one line per change, until it stops (Ctrl-C ends it too)."`
-	Logs   LogsCmd   `cmd:"" help:"Print the last lines of the firmware's and the simulator's logs (colour removed, the API key redacted); --follow keeps streaming."`
-	Serve  ServeCmd  `cmd:"" hidden:"" help:"Run the detached supervisor (internal)."`
+	// History is registered next to Fans: both are read-only JSON lookups.
+	History HistoryCmd `cmd:"" help:"Print the plot history: one duty and RPM sample per port every 100 ms of sim time, the last 5 minutes."`
+	Watch   WatchCmd   `cmd:"" help:"Follow the instance live as NDJSON: one snapshot line, then one line per change, until it stops (Ctrl-C ends it too)."`
+	Logs    LogsCmd    `cmd:"" help:"Print the last lines of the firmware's and the simulator's logs (colour removed, the API key redacted); --follow keeps streaming."`
+	Serve   ServeCmd   `cmd:"" hidden:"" help:"Run the detached supervisor (internal)."`
 }
 
 // UpCmd is `sil up`.
@@ -127,10 +129,16 @@ type FansCmd struct {
 	Instance string `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
 }
 
+// HistoryCmd is `sil history`. Like set, the instance is selected with --instance/-i.
+type HistoryCmd struct {
+	Window   time.Duration `help:"Only the last D of sim time, up to 5m, e.g. 60s; default the whole 5 minutes."`
+	Instance string        `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
+}
+
 // WatchCmd is `sil watch`. Like press, the instance is selected with --instance/-i. It is a
 // streaming command: it writes NDJSON lines to stdout as they arrive instead of one JSON value.
 type WatchCmd struct {
-	Kind     []string `sep:"," help:"Only these event kinds, comma separated (duty, rpm, state, fan, button, env, leds, firmware, sim); the snapshot, lagged and stopped lines always come."`
+	Kind     []string `sep:"," help:"Only these event kinds, comma separated (duty, rpm, state, fan, button, env, leds, firmware, sim; sample is opt-in: 10 events a second, only when named); the snapshot, lagged and stopped lines always come."`
 	Count    int      `help:"Exit 0 after this many event lines following the snapshot (0 = until the instance stops)."`
 	Instance string   `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
 }
@@ -434,6 +442,21 @@ func (c *FansCmd) Run(env *runEnv) error {
 		return err
 	}
 	res, err := client.Fans(env.context)
+	if err != nil {
+		return err
+	}
+	env.result = res
+	return nil
+}
+
+// Run implements `sil history`: the supervisor's sample ring as one JSON value. An out-of-range
+// window is rejected by the server (invalid_argument), like --gap and --hold.
+func (c *HistoryCmd) Run(env *runEnv) error {
+	_, client, err := connect(c.Instance)
+	if err != nil {
+		return err
+	}
+	res, err := client.History(env.context, control.HistoryRequest{WindowS: c.Window.Seconds()})
 	if err != nil {
 		return err
 	}

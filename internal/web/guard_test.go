@@ -56,6 +56,10 @@ func (c *recControl) Fans(context.Context) (control.FansResult, error) {
 	return control.FansResult{}, nil
 }
 
+func (c *recControl) History(context.Context, control.HistoryRequest) (control.HistoryResult, error) {
+	return control.HistoryResult{}, nil
+}
+
 // guarded is the production chain around a recording Control: the guard outside web.NewHandler.
 func guarded(c control.Control, o GuardOptions) http.Handler {
 	static := fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}, "js/app.js": {Data: []byte("1")}}
@@ -187,7 +191,7 @@ func TestCSRF(t *testing.T) {
 // web listener refuses alike; every GET row is a read (net/http lets safe methods through, so a
 // GET row that changed something would be open to CSRF).
 func TestCSRFCoversEveryMutatingRoute(t *testing.T) {
-	reads := map[string]bool{"status": true, "fans": true, "watch": true, "logs": true, "watch.ws": true}
+	reads := map[string]bool{"status": true, "fans": true, "history": true, "watch": true, "logs": true, "watch.ws": true}
 	c := &recControl{}
 	h := guarded(c, GuardOptions{Hostname: "testbox"})
 	mutating := 0

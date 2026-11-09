@@ -215,6 +215,54 @@ type FansResult struct {
 	Fans []FanInfo `json:"fans"`
 }
 
+// MaxHistoryWindow is the longest history window the API serves (the broker keeps 5 minutes).
+const MaxHistoryWindow = 300 * time.Second
+
+// HistoryRequest is the query of GET /api/v1/history.
+type HistoryRequest struct {
+	// WindowS is how many seconds of sim time before the newest sample to return. Zero means the
+	// whole 5 minutes: the client leaves window_s out and the handler passes 300 on. A request that
+	// reaches Control.History has a window in (0, 300].
+	WindowS float64
+}
+
+// Validate answers invalid_argument unless 0 < window_s <= 300.
+func (r HistoryRequest) Validate() error {
+	if math.IsNaN(r.WindowS) || r.WindowS <= 0 || r.WindowS > MaxHistoryWindow.Seconds() {
+		return apperr.Failed("invalid_argument", "window_s must be greater than 0 and at most 300 seconds",
+			map[string]any{"window_s": jsonSafe(r.WindowS)})
+	}
+	return nil
+}
+
+// jsonSafe maps the values encoding/json cannot encode (NaN, infinities) to strings, so an error
+// detail always marshals.
+func jsonSafe(f float64) any {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return strconv.FormatFloat(f, 'g', -1, 64)
+	}
+	return f
+}
+
+// HistoryPath is the request path of a history request; window_s is left out when 0.
+func (r HistoryRequest) HistoryPath() string {
+	if r.WindowS == 0 {
+		return "/api/v1/history"
+	}
+	return "/api/v1/history?window_s=" + strconv.FormatFloat(r.WindowS, 'g', -1, 64)
+}
+
+// HistoryResult is the body of GET /api/v1/history: the plot samples within the window of the
+// newest one, in seq order, with the broker seq they are consistent with (events with a higher seq
+// on a stream come after them) and the t of the newest sample (0 when there is none). Samples is
+// never null.
+type HistoryResult struct {
+	Seq     uint64         `json:"seq"`
+	T       int64          `json:"t"`
+	WindowS float64        `json:"window_s"`
+	Samples []events.Event `json:"samples"`
+}
+
 // SnapshotLine is the first line of a watch stream: the full state, with the stream's t (sim
 // microseconds) and the seq it is consistent with. The Status fields sit at its top level, exactly
 // as `sil status` prints them; every event line after it has a higher seq.
@@ -236,17 +284,18 @@ func NewStoppedLine(t time.Duration) StoppedLine {
 	return StoppedLine{T: t.Microseconds(), K: "stopped"}
 }
 
-// WatchRequest selects the event kinds of a watch stream; empty means all of events.Kinds. The
-// snapshot, lagged and stopped lines always come.
+// WatchRequest selects the event kinds of a watch stream; empty means all of events.Kinds, which
+// leaves out the opt-in events.SampleKind. The snapshot, lagged and stopped lines always come.
 type WatchRequest struct {
 	Kinds []string
 }
 
-// Validate answers invalid_argument for a kind that is not in events.Kinds.
+// Validate answers invalid_argument for a kind that is not in events.Kinds or events.SampleKind.
 func (r WatchRequest) Validate() error {
 	if k := events.UnknownKind(r.Kinds); k != "" {
-		return apperr.Failed("invalid_argument", fmt.Sprintf("unknown event kind %q; known: %s", k, strings.Join(events.Kinds, ", ")),
-			map[string]any{"kind": k, "known": events.Kinds})
+		known := append(append([]string{}, events.Kinds...), events.SampleKind)
+		return apperr.Failed("invalid_argument", fmt.Sprintf("unknown event kind %q; known: %s", k, strings.Join(known, ", ")),
+			map[string]any{"kind": k, "known": known})
 	}
 	return nil
 }
@@ -344,6 +393,8 @@ type Control interface {
 	Set(ctx context.Context, r SetRequest) (SetResult, error)
 	// Fans lists the fans of the instance's fan library, sorted by id.
 	Fans(ctx context.Context) (FansResult, error)
+	// History returns the last r.WindowS seconds of plot samples (D-12).
+	History(ctx context.Context, r HistoryRequest) (HistoryResult, error)
 	// Watch sends the snapshot line, then one value per change event, then the stopped line when
 	// the instance stops. It returns when the instance stops, ctx ends or send fails. An error
 	// before the first send becomes a normal error reply.
@@ -612,6 +663,15 @@ func (c *Client) Fans(ctx context.Context) (FansResult, error) {
 	var res FansResult
 	if err := c.do(ctx, http.MethodGet, "/api/v1/fans", nil, &res); err != nil {
 		return FansResult{}, err
+	}
+	return res, nil
+}
+
+// History implements Control.
+func (c *Client) History(ctx context.Context, r HistoryRequest) (HistoryResult, error) {
+	var res HistoryResult
+	if err := c.do(ctx, http.MethodGet, r.HistoryPath(), nil, &res); err != nil {
+		return HistoryResult{}, err
 	}
 	return res, nil
 }

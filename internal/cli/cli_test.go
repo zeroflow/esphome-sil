@@ -914,8 +914,9 @@ func TestHistoryCommand(t *testing.T) {
 	if len(fc.history) != 1 || fc.history[0].WindowS != 60 {
 		t.Fatalf("history requests %v, want one with window_s 60", fc.history)
 	}
-	if r := run(t, "history", "-i", "fan"); r.exit != 0 || len(fc.history) != 2 || fc.history[1].WindowS != 0 {
-		t.Fatalf("`sil history` without a window: exit %d, requests %v, want window_s left out (0)", r.exit, fc.history)
+	// Without --window the client leaves window_s out (HistoryPath) and the server answers its default.
+	if r := run(t, "history", "-i", "fan"); r.exit != 0 || len(fc.history) != 2 || fc.history[1].WindowS != 300 {
+		t.Fatalf("`sil history` without a window: exit %d, requests %v, want the default window 300", r.exit, fc.history)
 	}
 }
 

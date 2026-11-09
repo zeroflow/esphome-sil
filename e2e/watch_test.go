@@ -212,16 +212,23 @@ func TestWatchStream(t *testing.T) {
 			}
 		}
 		// The boot pulse is still running (it lasts until a real API client connects), so events
-		// keep coming and continue at snapshot seq + 1 without a gap.
-		base := snap["seq"].(float64)
+		// keep coming. Their seq is strictly increasing and starts above the snapshot's; it is not
+		// consecutive any more because the opt-in 10 Hz sample events (03-07) take broker seq
+		// numbers that a default stream never receives.
+		prev := snap["seq"].(float64)
 		for i := 1; i <= 10; i++ {
 			ev := w.next(t, 10*time.Second, fmt.Sprintf("event %d after the snapshot", i))
 			watchCheckLine(t, ev)
 			if ev["k"] == "lagged" {
 				t.Fatalf("lagged line during the first 10 events: %v", ev)
 			}
-			if ev["seq"] != base+float64(i) {
-				t.Fatalf("event %d is %v, want seq %v (snapshot seq %v + %d)", i, ev, base+float64(i), base, i)
+			if ev["k"] == "sample" {
+				t.Fatalf("a default stream carried a sample line: %v", ev)
+			}
+			if seq := ev["seq"].(float64); seq <= prev {
+				t.Fatalf("event %d is %v, want a seq above %v (snapshot seq %v)", i, ev, prev, snap["seq"])
+			} else {
+				prev = seq
 			}
 		}
 		w.interrupt(t)

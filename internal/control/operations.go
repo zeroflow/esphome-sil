@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/zeroflow/esphome-sil/internal/apperr"
+	"github.com/zeroflow/esphome-sil/internal/events"
 )
 
 // Operation is one row of the control API. The table Operations is the identity of the API: the
@@ -49,6 +50,7 @@ var Operations = []Operation{
 	{Name: "button.up", Method: "POST", Path: "/api/v1/buttons/{id}/up", Transport: "json", CLI: "press usr1 --up", LAN: true, handler: opButtonUp},
 	{Name: "set", Method: "POST", Path: "/api/v1/set", Transport: "json", CLI: "set temperature=22", LAN: true, handler: opSet},
 	{Name: "fans", Method: "GET", Path: "/api/v1/fans", Transport: "json", CLI: "fans", LAN: true, handler: opFans},
+	{Name: "history", Method: "GET", Path: "/api/v1/history", Transport: "json", CLI: "history", LAN: true, handler: opHistory},
 	{Name: "watch", Method: "GET", Path: "/api/v1/watch", Transport: "ndjson", CLI: "watch", LAN: true, handler: opWatch},
 	{Name: "logs", Method: "GET", Path: "/api/v1/logs", Transport: "json", CLI: "logs", LAN: false, handler: opLogs},
 	{Name: "watch.ws", Method: "GET", Path: "/ws", Transport: "ws", CLI: "watch", LAN: true},
@@ -247,6 +249,30 @@ func opSet(c Control) http.HandlerFunc {
 func opFans(c Control) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		res, err := c.Fans(r.Context())
+		reply(w, res, err)
+	}
+}
+
+func opHistory(c Control) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		req := HistoryRequest{WindowS: MaxHistoryWindow.Seconds()}
+		if q := r.URL.Query(); q.Has("window_s") {
+			v := q.Get("window_s")
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				reply(w, nil, apperr.Failed("invalid_argument", fmt.Sprintf("window_s needs a number of seconds, got %q", v), map[string]any{"window_s": v}))
+				return
+			}
+			req.WindowS = f
+		}
+		if err := req.Validate(); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		res, err := c.History(r.Context(), req)
+		if err == nil && res.Samples == nil {
+			res.Samples = []events.Event{}
+		}
 		reply(w, res, err)
 	}
 }
