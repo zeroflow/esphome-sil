@@ -704,9 +704,13 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 	sl, err := s.startEngine()
 	if err != nil {
 		// The slot still holds the engine that was just stopped; record the
-		// failure so Status reports it instead of "starting" forever.
+		// failure so Status reports it instead of "starting" forever. An
+		// existing failure (a firmware crash loop) is the root diagnosis and
+		// is kept: the single slot must not lose it to engine_failed.
 		s.mu.Lock()
-		s.failure = apperr.AsError(err)
+		if s.failure == nil {
+			s.failure = apperr.AsError(err)
+		}
 		s.mu.Unlock()
 		return control.Status{}, err
 	}

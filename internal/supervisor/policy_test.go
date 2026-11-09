@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/clock"
+	"github.com/zeroflow/esphome-sil/internal/control"
+	"github.com/zeroflow/esphome-sil/internal/engine"
 	"github.com/zeroflow/esphome-sil/internal/instance"
 )
 
@@ -480,5 +483,56 @@ func TestExecStarterGroupAndPrefs(t *testing.T) {
 	}
 	if _, err := (ExecStarter{}).Start(StartSpec{Program: dir + "/missing", LogPath: logPath, Dir: dir}); err == nil {
 		t.Fatal("starting a missing program succeeded")
+	}
+}
+
+// A failed SimRestart must not replace an existing failure: after a crash
+// loop, a restart whose engine does not start and a later successful one
+// leave the instance reporting firmware_crash_loop, not an empty error.
+func TestSimRestartKeepsAnExistingFailure(t *testing.T) {
+	st := &fakeStarter{behave: func(_ int, p *fakeProc) { p.finish(ExitInfo{Code: intp(1)}) }}
+	s, clk, _ := newFake(t, st)
+	eventually(t, "firmware_crash_loop", func() bool { _, _, code, _ := s.snapshotState(); return code == "firmware_crash_loop" })
+
+	good := filepath.Join(t.TempDir(), "bus.sock")
+	bad := filepath.Join(t.TempDir(), "missing", "bus.sock")
+	s.engCfg = engine.Config{Clock: clk, BusPath: good, Log: s.log}
+	sl, err := s.startEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.slot = sl
+	s.mu.Unlock()
+
+	failureCode := func() string {
+		t.Helper()
+		st, err := s.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Error == nil {
+			return ""
+		}
+		return st.Error.Code
+	}
+
+	// The engine cannot start: the original diagnosis stays.
+	s.engCfg.BusPath = bad
+	if _, err := s.SimRestart(context.Background(), control.SimRestartRequest{}); apperr.AsError(err).Code != "engine_failed" {
+		t.Fatalf("failing SimRestart = %v, want engine_failed", err)
+	}
+	if got := failureCode(); got != "firmware_crash_loop" {
+		t.Fatalf("after a failed SimRestart status error = %q, want firmware_crash_loop", got)
+	}
+
+	// The engine starts again (the firmware is gone, so the resync step
+	// reports firmware_not_running): the crash-loop diagnosis is still there.
+	s.engCfg.BusPath = good
+	if _, err := s.SimRestart(context.Background(), control.SimRestartRequest{}); apperr.AsError(err).Code != "firmware_not_running" {
+		t.Fatalf("recovering SimRestart = %v, want firmware_not_running", err)
+	}
+	if got := failureCode(); got != "firmware_crash_loop" {
+		t.Fatalf("after a successful SimRestart status error = %q, want firmware_crash_loop", got)
 	}
 }
