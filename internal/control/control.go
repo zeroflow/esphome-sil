@@ -182,12 +182,33 @@ func (r PressRequest) Validate() error {
 	return nil
 }
 
+// DownRequest is the optional body of POST /api/v1/buttons/{id}/down.
+type DownRequest struct {
+	// MaxHoldMS makes the engine release the button by itself after that many milliseconds of sim
+	// time, so a client that vanishes cannot leave it stuck (D-15). Nil means no limit.
+	MaxHoldMS *int64 `json:"max_hold_ms,omitempty"`
+}
+
+// Validate answers invalid_argument unless max_hold_ms is absent or between 1 and 60000.
+func (r DownRequest) Validate() error {
+	if r.MaxHoldMS == nil {
+		return nil
+	}
+	if ms := *r.MaxHoldMS; ms < 1 || ms > MaxHold.Milliseconds() {
+		return apperr.Failed("invalid_argument", fmt.Sprintf("max_hold_ms must be between 1 and %d", MaxHold.Milliseconds()),
+			map[string]any{"max_hold_ms": ms})
+	}
+	return nil
+}
+
 // PressResult is the outcome of a press, a down or an up.
 type PressResult struct {
 	Button string `json:"button"`
 	Action string `json:"action"` // press|down|up
 	HoldMS int64  `json:"hold_ms,omitempty"`
-	Level  bool   `json:"level"`
+	// MaxHoldMS is the max hold a down was given: the engine releases the button after it.
+	MaxHoldMS int64 `json:"max_hold_ms,omitempty"`
+	Level     bool  `json:"level"`
 	// TDownUS and TUpUS are the sim times (microseconds) of the edges.
 	TDownUS int64 `json:"t_down_us,omitempty"`
 	TUpUS   int64 `json:"t_up_us,omitempty"`
@@ -390,8 +411,9 @@ type Control interface {
 	// Press holds button id for r.HoldMS of sim time and returns once the
 	// release edge was handed to the bus.
 	Press(ctx context.Context, id string, r PressRequest) (PressResult, error)
-	// SetButton sets the level of button id (down = held) and returns at once.
-	SetButton(ctx context.Context, id string, down bool) (PressResult, error)
+	// SetButton sets the level of button id (down = held) and returns at once. r.MaxHoldMS, only
+	// valid with down, makes the engine release the button after that long.
+	SetButton(ctx context.Context, id string, down bool, r DownRequest) (PressResult, error)
 	// Set validates all pairs, then applies them together (all or nothing).
 	Set(ctx context.Context, r SetRequest) (SetResult, error)
 	// Fans lists the fans of the instance's fan library, sorted by id.
@@ -636,13 +658,20 @@ func (c *Client) Press(ctx context.Context, id string, r PressRequest) (PressRes
 }
 
 // SetButton implements Control.
-func (c *Client) SetButton(ctx context.Context, id string, down bool) (PressResult, error) {
+func (c *Client) SetButton(ctx context.Context, id string, down bool, r DownRequest) (PressResult, error) {
 	action := "up"
 	if down {
 		action = "down"
 	}
+	var body []byte
+	if r.MaxHoldMS != nil {
+		var err error
+		if body, err = json.Marshal(r); err != nil {
+			return PressResult{}, apperr.Infra("internal", err.Error(), nil)
+		}
+	}
 	var res PressResult
-	if err := c.do(ctx, http.MethodPost, "/api/v1/buttons/"+url.PathEscape(id)+"/"+action, nil, &res); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/api/v1/buttons/"+url.PathEscape(id)+"/"+action, body, &res); err != nil {
 		return PressResult{}, err
 	}
 	return res, nil

@@ -195,7 +195,10 @@ type event struct {
 type buttonOp struct {
 	id            string
 	level, strict bool
-	reply         chan buttonReply
+	// maxHold, when > 0 on a hold, makes the engine release the button by itself after that much
+	// sim time (D-15).
+	maxHold time.Duration
+	reply   chan buttonReply
 }
 
 type buttonReply struct {
@@ -240,6 +243,9 @@ type Engine struct {
 	done chan struct{}
 	// buttons is the held level per button id; an id is always present.
 	buttons map[string]bool
+	// holdUntil is the sim time at which the engine releases a held button by itself; a button
+	// without a max hold has no entry. A new engine (sim restart) starts with none.
+	holdUntil map[string]time.Duration
 	// btnAvail records the optional button channels of the current session's manifest.
 	btnAvail map[string]bool
 	// led* is the status LED strip. ledN is the manifest's LED count (0 until a valid manifest);
@@ -276,7 +282,7 @@ func New(cfg Config) *Engine {
 	}
 	e := &Engine{
 		cfg: cfg, ready: make(chan struct{}), inbox: make(chan event, 1024), done: make(chan struct{}),
-		buttons: map[string]bool{}, btnAvail: map[string]bool{}, env: cfg.Env,
+		buttons: map[string]bool{}, holdUntil: map[string]time.Duration{}, btnAvail: map[string]bool{}, env: cfg.Env,
 	}
 	for _, id := range ButtonIDs {
 		e.buttons[id] = false
@@ -398,6 +404,27 @@ func (e *Engine) noteTick(tickAt, handledAt, dt time.Duration) {
 	if e.behind && tickAt-e.lastLate >= behindClear {
 		e.behind = false
 		e.emit(events.Event{K: "sim", V: "in_sync"})
+	}
+}
+
+// releaseExpired releases every held button whose max hold has run out (D-15): the level goes
+// false, the button event says why and the release reaches the firmware like an up from a client.
+// It runs on ticks, so a release happens at most one tick after its deadline.
+func (e *Engine) releaseExpired() {
+	for _, id := range ButtonIDs {
+		until, ok := e.holdUntil[id]
+		if !ok || until > e.simNow {
+			continue
+		}
+		delete(e.holdUntil, id)
+		if !e.buttons[id] {
+			continue
+		}
+		e.buttons[id] = false
+		e.emit(events.Event{K: "button", ID: id, V: false, Reason: "max_hold"})
+		if e.connected {
+			e.send(e.buttonFrame(id))
+		}
 	}
 }
 
@@ -528,6 +555,7 @@ func (e *Engine) Run(ctx context.Context) error {
 			}
 			e.emitRPM()
 			e.emitSample()
+			e.releaseExpired()
 			e.inTick = false
 			if e.connected && e.simNow >= e.nextRPM {
 				e.nextRPM = e.simNow + rpmFrameStep
@@ -795,14 +823,16 @@ func (e *Engine) SnapshotSync(ctx context.Context) (Snapshot, error) {
 // be connected and the manifest received (ErrNotConnected), the manifest must
 // have the channel (ErrInputNotAvailable), a hold needs a released button
 // (ErrButtonBusy) and a release a held one (ErrButtonNotHeld). Non-strict only
-// sets the level. An engine whose Run has returned answers ErrStopped at once.
-func (e *Engine) SetButton(ctx context.Context, id string, level, strict bool) (time.Duration, error) {
+// sets the level. A hold with maxHold > 0 is released by the engine after maxHold of sim time
+// unless a client releases it first; any other edge cancels the deadline. An engine whose Run has
+// returned answers ErrStopped at once.
+func (e *Engine) SetButton(ctx context.Context, id string, level, strict bool, maxHold time.Duration) (time.Duration, error) {
 	select {
 	case <-e.done:
 		return 0, ErrStopped
 	default:
 	}
-	op := buttonOp{id: id, level: level, strict: strict, reply: make(chan buttonReply, 1)}
+	op := buttonOp{id: id, level: level, strict: strict, maxHold: maxHold, reply: make(chan buttonReply, 1)}
 	select {
 	case e.inbox <- event{kind: evButton, button: op}:
 	case <-e.done:
@@ -857,6 +887,11 @@ func (e *Engine) handleButton(op buttonOp) {
 		e.emit(events.Event{K: "button", ID: op.id, V: op.level})
 	}
 	e.buttons[op.id] = op.level
+	if op.level && op.maxHold > 0 {
+		e.holdUntil[op.id] = e.simNow + op.maxHold
+	} else {
+		delete(e.holdUntil, op.id)
+	}
 	if e.connected {
 		e.send(e.buttonFrame(op.id))
 	}

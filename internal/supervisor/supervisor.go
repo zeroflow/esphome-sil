@@ -947,7 +947,7 @@ func (s *supervisor) Press(ctx context.Context, id string, r control.PressReques
 		return control.PressResult{}, errStopping()
 	}
 	eng := s.currentEngine()
-	down, err := eng.SetButton(ctx, id, true, true)
+	down, err := eng.SetButton(ctx, id, true, true, 0)
 	if err != nil {
 		return control.PressResult{}, buttonErr(id, err)
 	}
@@ -957,7 +957,7 @@ func (s *supervisor) Press(ctx context.Context, id string, r control.PressReques
 	// The release goes to whichever engine is in the slot now. A replaced
 	// engine (sim restart) left a fresh World with the button released, and a
 	// stopped one answers ErrStopped at once: both count as released.
-	up, err := s.currentEngine().SetButton(context.Background(), id, false, false)
+	up, err := s.currentEngine().SetButton(context.Background(), id, false, false, 0)
 	if err != nil {
 		if !errors.Is(err, engine.ErrStopped) {
 			return control.PressResult{}, buttonErr(id, err)
@@ -979,14 +979,27 @@ func (s *supervisor) Press(ctx context.Context, id string, r control.PressReques
 // SetButton implements control.Control (D-03): one strict edge, no hold. A
 // hold on a held button is button_busy, a release of a released one
 // button_not_held; nothing is queued.
-func (s *supervisor) SetButton(ctx context.Context, id string, down bool) (control.PressResult, error) {
+//
+// A max hold (D-15) only applies to a down: the engine releases the button by itself after
+// r.MaxHoldMS of sim time, so a client that vanishes cannot leave it held.
+func (s *supervisor) SetButton(ctx context.Context, id string, down bool, r control.DownRequest) (control.PressResult, error) {
 	if err := checkButton(id); err != nil {
+		return control.PressResult{}, err
+	}
+	if r.MaxHoldMS != nil && !down {
+		return control.PressResult{}, apperr.Failed("invalid_argument", "max_hold_ms only applies to down", map[string]any{"max_hold_ms": *r.MaxHoldMS})
+	}
+	if err := r.Validate(); err != nil {
 		return control.PressResult{}, err
 	}
 	if s.isStopping() {
 		return control.PressResult{}, errStopping()
 	}
-	t, err := s.currentEngine().SetButton(ctx, id, down, true)
+	var maxHold time.Duration
+	if r.MaxHoldMS != nil {
+		maxHold = time.Duration(*r.MaxHoldMS) * time.Millisecond
+	}
+	t, err := s.currentEngine().SetButton(ctx, id, down, true, maxHold)
 	if err != nil {
 		return control.PressResult{}, buttonErr(id, err)
 	}
@@ -994,6 +1007,9 @@ func (s *supervisor) SetButton(ctx context.Context, id string, down bool) (contr
 	if down {
 		res.Action = "down"
 		res.TDownUS = t.Microseconds()
+		if r.MaxHoldMS != nil {
+			res.MaxHoldMS = *r.MaxHoldMS
+		}
 	} else {
 		res.TUpUS = t.Microseconds()
 	}

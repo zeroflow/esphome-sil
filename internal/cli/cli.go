@@ -115,6 +115,7 @@ type PressCmd struct {
 	Hold     *time.Duration `xor:"mode" help:"Hold for this long (1ms to 60s), e.g. 750ms."`
 	Down     bool           `xor:"mode" help:"Hold the button down and return at once."`
 	Up       bool           `xor:"mode" help:"Release the button and return at once."`
+	MaxHold  *time.Duration `name:"max-hold" help:"With --down: release by itself after this long of sim time (1ms to 60s), e.g. 10s. The web page always sets one."`
 	Instance string         `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
 }
 
@@ -376,6 +377,9 @@ func (c *FwRestartCmd) Run(env *runEnv) error {
 // Run implements `sil press`: the PressResult once the release edge was sent
 // (--down and --up answer at once).
 func (c *PressCmd) Run(env *runEnv) error {
+	if c.MaxHold != nil && !c.Down {
+		return apperr.Failed("invalid_argument", "--max-hold needs --down", nil)
+	}
 	_, client, err := connect(c.Instance)
 	if err != nil {
 		return err
@@ -383,7 +387,12 @@ func (c *PressCmd) Run(env *runEnv) error {
 	var res control.PressResult
 	switch {
 	case c.Down, c.Up:
-		res, err = client.SetButton(env.context, c.Button, c.Down)
+		var req control.DownRequest
+		if c.MaxHold != nil {
+			ms := c.MaxHold.Milliseconds() // an explicit 0s reaches the server as 0 and fails validation there
+			req.MaxHoldMS = &ms
+		}
+		res, err = client.SetButton(env.context, c.Button, c.Down, req)
 	default:
 		hold := control.ShortPress
 		if c.Long {

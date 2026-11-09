@@ -38,7 +38,9 @@ bin/sil up dev                     # builds examples/rev33.yaml (first build is 
 bin/sil status dev                 # JSON: phase, api, ports, env, buttons, leds, firmware, sim
 bin/sil set temperature=27 humidity=60 -i dev   # inputs; also port2.fan=noctua-nf-a12x25-pwm
 bin/sil press usr1 -i dev          # 200 ms press; --long holds 1500 ms, --down / --up set the level
+bin/sil press usr1 --down --max-hold 10s -i dev # held; the simulator releases it by itself after 10 s of sim time
 bin/sil watch --kind duty,rpm --count 5 -i dev  # NDJSON: one snapshot, then one line per change
+bin/sil history --window 60s -i dev # the last 60 s of duty and RPM per port, one sample every 100 ms
 bin/sil logs --source all --tail 50 -i dev      # firmware and simulator logs, colour removed, key redacted
 bin/sil fans -i dev                # the fan library and what is plugged into each port
 bin/sil sim restart dev            # fresh simulator, the firmware keeps running and resyncs
@@ -51,6 +53,23 @@ further arguments; with a single live instance it can be omitted. Instance names
 are `a-z`, `0-9` and `-`. Several instances run side by side, each with its own
 run directory, API port, MAC and key. Exit codes: 0 ok, 1 the thing under test
 failed or the request was refused, 2 the bench itself failed.
+
+Four additions exist for the web page and are available to every client:
+
+- `sil history [--window D] [-i NAME]` prints the plot history as one JSON value
+  (`GET /api/v1/history?window_s=W`, `0 < W <= 300`): the simulator keeps the
+  last 5 minutes of `sample` events, one per 100 ms of sim time with a duty and
+  an RPM per port (null while the firmware is not on the sim-bus). The first
+  sample after a simulator restart carries `"gap": true`.
+- `sample` is an opt-in `sil watch` kind (`sil watch --kind sample`): ten events
+  a second, so a default watch never carries it.
+- `sim.behind_real_time` in `sil status` is true while the simulator handles its
+  ticks 50 ms or more late; `sil watch` shows the changes as `sim` events with
+  the value `behind` or `in_sync` (back in sync after 2 s of sim time without a
+  late tick).
+- `sil press BUTTON --down --max-hold D` (`1ms` to `60s`) releases the button by
+  itself after D of sim time with a `button` event `{"v": false, "reason":
+  "max_hold"}`, so a client that goes away cannot leave a button held.
 
 ## The Rev 3.3 example
 

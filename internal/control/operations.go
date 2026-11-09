@@ -46,7 +46,7 @@ var Operations = []Operation{
 	{Name: "sim.restart", Method: "POST", Path: "/api/v1/sim/restart", Transport: "json", CLI: "sim restart", LAN: false, handler: opSimRestart},
 	{Name: "fw.restart", Method: "POST", Path: "/api/v1/fw/restart", Transport: "json", CLI: "fw restart", LAN: false, handler: opFwRestart},
 	{Name: "press", Method: "POST", Path: "/api/v1/buttons/{id}/press", Transport: "json", CLI: "press usr1", LAN: true, handler: opPress},
-	{Name: "button.down", Method: "POST", Path: "/api/v1/buttons/{id}/down", Transport: "json", CLI: "press usr1 --down", LAN: true, handler: opButtonDown},
+	{Name: "button.down", Method: "POST", Path: "/api/v1/buttons/{id}/down", Transport: "json", CLI: "press usr1 --down --max-hold 10s", LAN: true, handler: opButtonDown},
 	{Name: "button.up", Method: "POST", Path: "/api/v1/buttons/{id}/up", Transport: "json", CLI: "press usr1 --up", LAN: true, handler: opButtonUp},
 	{Name: "set", Method: "POST", Path: "/api/v1/set", Transport: "json", CLI: "set temperature=22", LAN: true, handler: opSet},
 	{Name: "fans", Method: "GET", Path: "/api/v1/fans", Transport: "json", CLI: "fans", LAN: true, handler: opFans},
@@ -209,16 +209,45 @@ func opPress(c Control) http.HandlerFunc {
 	}
 }
 
+// opButtonDown reads the optional {"max_hold_ms": N} body like opSimRestart reads its own: 64 KiB
+// at most, unknown fields refused, an empty body allowed (the Phase 2 behaviour).
 func opButtonDown(c Control) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		res, err := c.SetButton(r.Context(), r.PathValue("id"), true)
+		var req DownRequest
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		if err != nil {
+			reply(w, nil, apperr.Failed("invalid_argument", "cannot read the request body: "+err.Error(), nil))
+			return
+		}
+		if len(bytes.TrimSpace(body)) > 0 {
+			dec := json.NewDecoder(bytes.NewReader(body))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&req); err != nil {
+				reply(w, nil, apperr.Failed("invalid_argument", "bad request body, want {\"max_hold_ms\": N}: "+err.Error(), nil))
+				return
+			}
+		}
+		if err := req.Validate(); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		res, err := c.SetButton(r.Context(), r.PathValue("id"), true, req)
 		reply(w, res, err)
 	}
 }
 
 func opButtonUp(c Control) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		res, err := c.SetButton(r.Context(), r.PathValue("id"), false)
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		if err != nil {
+			reply(w, nil, apperr.Failed("invalid_argument", "cannot read the request body: "+err.Error(), nil))
+			return
+		}
+		if len(bytes.TrimSpace(body)) > 0 {
+			reply(w, nil, apperr.Failed("invalid_argument", "an up takes no request body", nil))
+			return
+		}
+		res, err := c.SetButton(r.Context(), r.PathValue("id"), false, DownRequest{})
 		reply(w, res, err)
 	}
 }
