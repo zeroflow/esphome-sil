@@ -279,7 +279,7 @@ func (s *supervisor) run(sigCtx context.Context) error {
 		// The LAN-facing listener is bounded (connection cap, header deadline, one request per
 		// connection); api.sock above is not.
 		webDone <- web.Serve(srvCtx, web.Limit(webLn, s.clk, web.ListenerOptions{}),
-			web.NewHandler(s, web.Options{Static: ui.FS(), Clock: s.clk, Log: s.log}))
+			web.LimitBody(web.NewHandler(s, web.Options{Static: ui.FS(), Clock: s.clk, Log: s.log}), s.clk, 0))
 	}()
 
 	s.log.Info("instance serving", "pid", os.Getpid(), "api_sock", s.paths.APISock(), "web_port", s.id.WebPort)

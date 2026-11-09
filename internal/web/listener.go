@@ -30,10 +30,23 @@ type ListenerOptions struct {
 // must deliver its request headers within o.HeaderBudget.
 //
 // The header budget is a read deadline set at Accept from the injected clock (no http.Server
-// timeout field: those are wall-clock timers and the repository forbids them). net/http, with no
-// ReadTimeout configured, replaces that deadline with none once it has read the headers, so a
-// /ws stream, a hijacked connection or a long NDJSON response outlives the budget; the listener
-// tests prove this behaviour of the standard library.
+// timeout field: those are wall-clock timers and the repository forbids them). It is an absolute
+// time, so a client that trickles its headers byte by byte is cut off like one that stalls.
+//
+// This relies on how net/http (Go 1.27.3, net/http/server.go) treats the connection's read
+// deadline, and holds only while keep-alives are off (Serve turns them off):
+//   - conn.serve sets a deadline only when ReadHeaderTimeout is configured (line 2058), so the
+//     Accept-time deadline is still armed when the first request is read;
+//   - readRequest replaces it with wholeReqDeadline, zero without a ReadTimeout, only after the
+//     headers are parsed (line 1103), so a /ws stream, a hijacked connection or a long NDJSON
+//     response outlives the budget;
+//   - the loop that clears the deadline before the next request (lines 2176 to 2200) is reached
+//     only on a kept-alive connection, so with keep-alives off no request can have its header
+//     read run under a cleared deadline.
+//
+// TestSlowHeader, TestTrickledHeaderIsClosed and TestStreamOutlivesHeaderBudget exercise this
+// through the production Serve and Limit, so a Go release that changes it fails the tests.
+// What the deadline does not bound is a request body trickled after the headers; LimitBody does.
 func Limit(ln net.Listener, clk clock.Clock, o ListenerOptions) net.Listener {
 	if o.MaxConns <= 0 {
 		o.MaxConns = defaultMaxConns
@@ -91,6 +104,8 @@ func (c *limitedConn) Close() error {
 // keep-alives off, so an idle connection never outlives its response.
 func Serve(ctx context.Context, ln net.Listener, h http.Handler) error {
 	srv := &http.Server{Handler: h}
+	// Keep-alives off is load-bearing: Limit's header deadline is only sound while every
+	// connection serves one request (see Limit).
 	srv.SetKeepAlivesEnabled(false)
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
@@ -109,4 +124,24 @@ func Serve(ctx context.Context, ln net.Listener, h http.Handler) error {
 	}
 	<-done
 	return nil
+}
+
+// LimitBody bounds how long a client may take to send a request body: for a request that has one,
+// the connection's read deadline is set to budget from now on the injected clock (10 s when
+// budget is not positive), because net/http clears the header deadline once the headers are in.
+// Requests without a body (GET, HEAD, the /ws upgrade) are left alone, so streams are unaffected.
+// The deadline is never cleared again: the listener serves one request per connection.
+func LimitBody(h http.Handler, clk clock.Clock, budget time.Duration) http.Handler {
+	if budget <= 0 {
+		budget = defaultHeaderBudget
+	}
+	if clk == nil {
+		clk = clock.NewReal()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.Body != http.NoBody {
+			_ = http.NewResponseController(w).SetReadDeadline(clk.Deadline(budget))
+		}
+		h.ServeHTTP(w, r)
+	})
 }

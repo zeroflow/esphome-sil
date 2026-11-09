@@ -88,6 +88,93 @@ func TestSlowHeader(t *testing.T) {
 	expectClosed(t, conn, 2*time.Second)
 }
 
+// A client that trickles its headers one byte at a time is closed when the absolute budget ends,
+// however steadily it sends.
+func TestTrickledHeaderIsClosed(t *testing.T) {
+	addr := serveLimited(t, testHandler(), ListenerOptions{HeaderBudget: 300 * time.Millisecond})
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ctx, cancel := within(5 * time.Second)
+	defer cancel()
+	go func() {
+		for _, b := range []byte("GET / HTTP/1.1\r\nHost: x\r\nX-Slow: " + strings.Repeat("a", 200)) {
+			if _, err := conn.Write([]byte{b}); err != nil {
+				return
+			}
+			if rt.Sleep(ctx, 40*time.Millisecond) != nil {
+				return
+			}
+		}
+	}()
+	start := rt.Now()
+	expectClosed(t, conn, 2*time.Second)
+	if took := rt.Now() - start; took > 1500*time.Millisecond {
+		t.Fatalf("closed after %v, want about the 300 ms budget", took)
+	}
+}
+
+// A body trickled after the headers cannot hold a slot: LimitBody re-arms a deadline from the
+// injected clock, because net/http clears the header deadline once the headers are read.
+func TestStalledBodyIsClosed(t *testing.T) {
+	read := make(chan error, 1)
+	h := LimitBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
+		read <- err
+	}), rt, 300*time.Millisecond)
+	addr := serveLimited(t, h, ListenerOptions{})
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "POST /api/v1/set HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\nabcde"); err != nil {
+		t.Fatal(err)
+	}
+	wait, cancel := within(3 * time.Second)
+	defer cancel()
+	select {
+	case err := <-read:
+		if err == nil {
+			t.Fatal("the stalled body was read to the end")
+		}
+	case <-wait.Done():
+		t.Fatal("the handler is still waiting for a stalled body after 3 s")
+	}
+}
+
+// Requests whose body arrives in time, and requests without one (GET, /ws), pass LimitBody.
+func TestLimitBodyLeavesGoodRequestsAlone(t *testing.T) {
+	addr := serveLimited(t, LimitBody(NewHandler(tickControl{}, Options{}), rt, 200*time.Millisecond), ListenerOptions{})
+	ctx, cancel := within(5 * time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/", strings.NewReader("{}"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST / = %d, want 404 (no page, but served)", resp.StatusCode)
+	}
+	c, _, err := websocket.Dial(ctx, "ws://"+addr+"/ws", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	for {
+		_, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("stream ended before tick 6 (600 ms, three body budgets): %v", err)
+		}
+		if strings.Contains(string(data), `"n":6`) {
+			return
+		}
+	}
+}
+
 func TestIdleConnectionIsClosed(t *testing.T) {
 	addr := serveLimited(t, testHandler(), ListenerOptions{HeaderBudget: 200 * time.Millisecond})
 	conn, err := net.Dial("tcp", addr)
