@@ -54,7 +54,8 @@ function release(cap) {
   cap.ownLoss.clear();
   cap.downDone.then((started) => {
     if (started) {
-      call("button.up", { params: { id: cap.id } }).catch(say);
+      // keepalive: the up is most often sent while the page is being closed (tab hidden, window blur).
+      call("button.up", { params: { id: cap.id }, keepalive: true }).catch(say);
     }
   });
 }

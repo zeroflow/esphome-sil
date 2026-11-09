@@ -411,3 +411,41 @@ func TestHeaderRealTime(t *testing.T) {
 		t.Errorf("after in_sync the cell = %+v, want the calm look %+v", back, calm)
 	}
 }
+
+// TestUSRUpSurvivesPageTeardown (WR-02): the up of a hold is sent with fetch keepalive, so the browser
+// does not cancel it when the page goes away (tab closed or hidden, window blurred), which is exactly
+// when the page-side release is sent. The down is an ordinary request.
+func TestUSRUpSurvivesPageTeardown(t *testing.T) {
+	b, p := liveWithCaps(t)
+	evalOn(t, p, `(() => { window.__fetches = []; const f = window.fetch.bind(window);
+	  window.fetch = (url, init) => { window.__fetches.push({url: String(url), keepalive: !!(init && init.keepalive)}); return f(url, init); };
+	  return true; })()`, nil)
+	holdFresh(t, b, p, "usr1", 1)
+	// The window loses focus while the cap is held: releaseAll sends the up.
+	evalOn(t, p, `(window.dispatchEvent(new Event('blur')), true)`, nil)
+	b.waitCalls(t, "button.up", 1, 5*time.Second)
+	waitPressed(t, p, "usr1", "false", 5*time.Second)
+
+	var got []struct {
+		URL       string `json:"url"`
+		Keepalive bool   `json:"keepalive"`
+	}
+	evalOn(t, p, `window.__fetches`, &got)
+	seenUp := false
+	for _, f := range got {
+		switch {
+		case strings.HasSuffix(f.URL, "/buttons/usr1/up"):
+			seenUp = true
+			if !f.Keepalive {
+				t.Errorf("the up request %s has no keepalive: the browser may cancel it while the page unloads", f.URL)
+			}
+		case strings.HasSuffix(f.URL, "/buttons/usr1/down"):
+			if f.Keepalive {
+				t.Errorf("the down request %s has keepalive, want an ordinary request", f.URL)
+			}
+		}
+	}
+	if !seenUp {
+		t.Errorf("no up request among %+v", got)
+	}
+}

@@ -23,10 +23,12 @@ export class ApiError extends Error {
 
 // call performs the operation `name` of OPS, with an optional JSON body, an optional query object
 // ({window_s: 62} becomes ?window_s=62) and the values of the path's {name} parameters ({id: "usr1"}
-// fills {id}, percent-encoded), and returns the parsed JSON answer. A response
+// fills {id}, percent-encoded), and returns the parsed JSON answer. `keepalive: true` lets the
+// request outlive the page (the browser does not cancel it when the tab closes or navigates away; only
+// for small bodies). A response
 // that is not ok throws ApiError; a request that got no response at all rejects with the browser's
 // own error, which callers do not show (LINK reports the connection).
-export async function call(name, { body, query, params } = {}) {
+export async function call(name, { body, query, params, keepalive } = {}) {
   const op = OPS[name];
   if (!op) {
     throw new TypeError("not an operation of the page: " + name);
@@ -39,7 +41,7 @@ export async function call(name, { body, query, params } = {}) {
     return encodeURIComponent(params[key]);
   });
   const path = query === undefined ? base : base + "?" + new URLSearchParams(query).toString();
-  const init = { method, headers: {} };
+  const init = { method, headers: {}, keepalive: keepalive === true };
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
