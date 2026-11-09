@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
 status: executing
-stopped_at: Completed 01-06-PLAN.md
-last_updated: "2026-11-09T01:29:02.178Z"
+stopped_at: Completed 01-07-PLAN.md
+last_updated: "2026-11-09T01:40:55.577Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: 4e15e38390acd83a7e1e9edc634453b75be2baeb
+state_head: 536f00e8a13a0cac2827d512fab976358382e590
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 6
+  completed_plans: 7
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
-Plan: 7 of 13
+Plan: 8 of 13
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 1 execution started
 
@@ -62,6 +62,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 1 P04 | 3 min | 2 tasks | 3 files |
 | Phase 01 P05 | 6 min | 2 tasks | 6 files |
 | Phase 01 P06 | 8min | 2 tasks | 7 files |
+| Phase 01 P07 | 15min | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -86,6 +87,10 @@ Recent decisions affecting current work:
 - [Phase 01]: 01-05: start_duty == min_duty accepted as a zero-width hysteresis band; only start_duty < min_duty rejected
 - [Phase 01]: 01-05: missing fan.toml key reports <file>: missing required key <key> (no line); unknown keys report file:line:col; non-finite numbers rejected; NaN duty treated as 0 in model.Step
 - [Phase 01]: 01-06: sim-bus line cap is 4096 bytes including the newline (4095 content); non-printable string bytes are encoded as '?' by both encoders; decode error closes the connection (enforced in 01-07/01-10)
+- [Phase 01]: RPM sensor is a PollingComponent (1s) by recorded exception; temperature/humidity/buttons stay push-only
+- [Phase 01]: sim_bus hub path keeps /tmp/sil.sock default; SIL_BUS always overrides at runtime
+- [Phase 01]: Hub drops the connection on any line over 4096 bytes, complete or unfinished
+- [Phase 01]: ESPHome republishes an unchanged sensor mean every update_interval, so no force_update is needed for IO-02
 
 ### Pending Todos
 
@@ -112,8 +117,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T01:29:02.150Z
-Stopped at: Completed 01-06-PLAN.md
+Last session: 2026-11-09T01:40:55.549Z
+Stopped at: Completed 01-07-PLAN.md
 Resume file: None
 
 ## Needs Human
