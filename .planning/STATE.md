@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Live Web UI
 status: executing
-stopped_at: Completed 03-06-PLAN.md
-last_updated: "2026-11-09T13:59:05.640Z"
+stopped_at: Completed 03-07-PLAN.md
+last_updated: "2026-11-09T14:16:39.963Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 3 execution started
-state_head: f424e0930f336ae893b8c6a85b6681ae5a35a923
+state_head: de7066739a9aba52b946f3d4e5eede8003bd4ee1
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 33
-  completed_plans: 27
+  completed_plans: 28
   percent: 33
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 ## Current Position
 
 Phase: 3 (Live Web UI) — EXECUTING
-Plan: 7 of 12
+Plan: 8 of 12
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 3 execution started
 
@@ -83,6 +83,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 03 P04 | 35 min | 2 tasks | 9 files |
 | Phase 3 P05 | 17 min | 2 tasks | 15 files |
 | Phase 3 P06 | 8 min | 2 tasks | 9 files |
+| Phase 3 P07 | 15 min | 3 tasks | 17 files |
 
 ## Accumulated Context
 
@@ -153,6 +154,9 @@ Recent decisions affecting current work:
 - [Phase 3]: 03-06: LED lens colours reach the page only as CSSOM custom properties (--lens, --glow) with the look in app.css, so the page runs under style-src 'self'
 - [Phase 3]: 03-06: the connecting LED placeholder lens carries no data-src/data-fmt; a placeholder for values is not a value
 - [Phase 3]: 03-06: header cells have fixed px widths (instance 168, SIM TIME 144, TIME FACTOR 112, FIRMWARE 152, LINK 240); new header cells must keep a fixed width
+- [Phase 3]: Samples share the broker seq: a default stream's seq is strictly increasing but not consecutive — Keeps history.seq consistent with every stream; e2e TestWatchStream relaxed accordingly
+- [Phase 3]: History window 0 on the Go side means the whole ring; the handler passes 300 on so Control.History sees 0 < W <= 300 — The client omits window_s when 0
+- [Phase 3]: Max-hold auto-release runs inside the tick's inTick region — Release is stamped with the tick time and happens at most one tick (10 ms) after the deadline
 
 ### Pending Todos
 
@@ -178,8 +182,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T13:59:05.585Z
-Stopped at: Completed 03-06-PLAN.md
+Last session: 2026-11-09T14:16:39.905Z
+Stopped at: Completed 03-07-PLAN.md
 Resume file: None
 
 ## Needs Human
