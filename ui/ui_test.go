@@ -11,7 +11,7 @@ import (
 
 // TestEmbedContents: the page files every test and the server rely on are in the embedded tree.
 func TestEmbedContents(t *testing.T) {
-	for _, name := range []string{"index.html", "js/app.js", "js/store.js", "js/view.js"} {
+	for _, name := range []string{"index.html", "app.css", "js/app.js", "js/store.js", "js/view.js"} {
 		b, err := fs.ReadFile(FS(), name)
 		if err != nil {
 			t.Errorf("%s is not embedded: %v", name, err)

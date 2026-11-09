@@ -1,0 +1,122 @@
+/* The instrument front panel: dark only, one stylesheet, no external reference. Colours computed
+   from the API (LED lenses) arrive as CSSOM custom properties set by view.js, never as style
+   attributes, so the page stays within style-src 'self'. */
+
+:root {
+  --bezel: #23262a;
+  --screen: #07080a;
+  --softkey: #3a3f45;
+  --text: #e6e8eb;
+  --text-dim: #9aa1a9;
+  --ch1: #ffd400;
+  --ch2: #2fd36b;
+  --ch3: #3d8bff;
+  --ch4: #ff5fd2;
+  --warn: #ff8a1f;
+  --error: #ff4d4d;
+  --edge: #33373c;
+  --led-off: #121416;
+  --led-rim: #2a2e33;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bezel);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+/* Bottom strip and the LEDS group. */
+#strip {
+  display: flex;
+  gap: 16px;
+  box-sizing: border-box;
+  height: 128px;
+  padding: 8px;
+  background: var(--bezel);
+  border: 1px solid var(--edge);
+  border-radius: 2px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+#leds-group {
+  flex: 1;
+}
+
+.label {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+#leds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  box-sizing: border-box;
+  padding: 8px;
+  background: var(--screen);
+  border: 1px solid #3a4047;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.led {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 56px;
+  max-width: 96px;
+}
+
+.lens {
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--led-rim);
+  background-color: var(--lens, var(--led-off));
+  box-shadow: var(--glow, none);
+}
+
+/* The only gradient on the page: a faint highlight in the upper left of a lit lens. */
+.lens.lit {
+  background-image: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0) 60%);
+}
+
+.led-caption,
+.led-hex {
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.led-caption {
+  color: var(--text);
+}
+
+.led-hex {
+  color: var(--text-dim);
+}
+
+.led-none {
+  font-size: 12px;
+  color: var(--text-dim);
+}
