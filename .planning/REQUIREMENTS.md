@@ -41,7 +41,7 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 
 - [x] **FW-01**: The repo ships an example top-level host config mirroring the Rev 3.3 IO surface (4 fans, LED strip with partitions, USR1-3, temp/humidity), without `wifi:` (uses `api`/`on_boot` hooks instead of `wifi.on_connect`)
 - [x] **FW-02**: Example entities use the HIL contract names (`Fan N`, `Fan N Speed`, `Temperature`, `Humidity`, `Button USRn`); status LEDs stay internal like the product
-- [ ] **FW-03**: The example consumes the components via `external_components:` the same way the product repo will (local path now, `github://zeroflow/esphome-sil@vX.Y` later)
+- [x] **FW-03**: The example consumes the components via `external_components:` the same way the product repo will (local path now, `github://zeroflow/esphome-sil@vX.Y` later)
 
 ### CLI / JSON API
 
@@ -143,7 +143,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | MODEL-04 | Phase 1 | Complete |
 | FW-01 | Phase 2 | Complete |
 | FW-02 | Phase 2 | Complete |
-| FW-03 | Phase 2 | Pending |
+| FW-03 | Phase 2 | Complete |
 | CLI-01 | Phase 2 | Complete |
 | CLI-02 | Phase 2 | Complete |
 | CLI-03 | Phase 2 | Complete |

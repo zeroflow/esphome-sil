@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Full Rev 3.3 Bench
 status: executing
-stopped_at: Completed 02-07-PLAN.md
-last_updated: "2026-11-09T08:22:38.897Z"
+stopped_at: Completed 02-08-PLAN.md
+last_updated: "2026-11-09T08:48:45.375Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 2 execution started
-state_head: 03d98ae9e4e6c85e8261b44f858053832317909d
+state_head: 11ecade31745cfc158dc6439e5a4d06c3e2ab35d
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 21
-  completed_plans: 20
+  completed_plans: 21
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 2 (Full Rev 3.3 Bench) — EXECUTING
-Plan: 2 of 8
+Plan: 3 of 8
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 2 execution started
 
@@ -76,6 +76,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 02 P05 | 21min | 2 tasks | 13 files |
 | Phase 02 P06 | 28 min | 2 tasks | 17 files |
 | Phase 02 P07 | 26 min | 2 tasks | 9 files |
+| Phase 02 P08 | 25 min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -131,6 +132,8 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-06: log lines are cleaned whole (ANSI strip, key redaction) before the 64 KiB cut; lines whose beginning was not read are never served
 - [Phase 02]: 02-07: test-contract depends on lock-check so dependencies are never installed without the hash diff against the product HIL lock
 - [Phase 02]: 02-07: contract state root persists in ~/.cache/sil-contract/state (0700); ct-main/ct-second reserved; warm contract session 22 s (budget 60 s)
+- [Phase 02]: 02-08: api.lan_host from a default-route UDP connect to 192.0.2.1 (nothing sent), null when unknown; sil up hint falls back to 127.0.0.1
+- [Phase 02]: 02-08: examples/rev33.yaml is the default sil up config; HA-01/HA-02 stay pending until the live Home Assistant UAT (only localhost and aioesphomeapi were exercised)
 
 ### Pending Todos
 
@@ -157,8 +160,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T08:22:38.851Z
-Stopped at: Completed 02-07-PLAN.md
+Last session: 2026-11-09T08:48:45.329Z
+Stopped at: Completed 02-08-PLAN.md
 Resume file: None
 
 ## Needs Human
