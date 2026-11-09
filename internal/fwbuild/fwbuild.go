@@ -132,7 +132,11 @@ func (b *builder) run(ctx context.Context) (Result, error) {
 	if err := b.preflight(ctx); err != nil {
 		return Result{}, err
 	}
-	b.mount = mountRoot(b.o)
+	mount, err := mountRoot(b.o)
+	if err != nil {
+		return Result{}, err
+	}
+	b.mount = mount
 
 	// Stage 1: esphome config, offline, then the lint over the resolved config.
 	b.progress("checking the firmware config")
@@ -334,20 +338,41 @@ func validate(o Options) error {
 
 // mountRoot is the tree mounted read-only at its own absolute path: RepoRoot
 // when it contains the config, else the YAML's git top-level, else the YAML's
-// directory. Never "/" and never the home directory.
-func mountRoot(o Options) string {
+// directory. Never "/" and never the home directory: whichever branch picks
+// one of those, the build is refused with config_invalid (T-01-14).
+func mountRoot(o Options) (string, error) {
 	dir := filepath.Dir(o.ConfigPath)
+	root := dir
 	if within(o.RepoRoot, o.ConfigPath) {
-		return o.RepoRoot
-	}
-	if out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output(); err == nil {
-		top := strings.TrimSpace(string(out))
+		root = o.RepoRoot
+	} else if out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output(); err == nil {
 		home, _ := os.UserHomeDir()
-		if filepath.IsAbs(top) && top != "/" && top != home && within(top, o.ConfigPath) {
-			return top
+		if top := strings.TrimSpace(string(out)); filepath.IsAbs(top) && !broadMount(top, home) && within(top, o.ConfigPath) {
+			root = top
 		}
 	}
-	return dir
+	if err := CheckMountRoot(root); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+// CheckMountRoot refuses a build mount that would expose "/" or the home
+// directory to the build container, with config_invalid.
+func CheckMountRoot(root string) error {
+	home, _ := os.UserHomeDir()
+	if !broadMount(root, home) {
+		return nil
+	}
+	return apperr.Failed("config_invalid",
+		"the firmware config would make the build mount "+root+" (the filesystem root or your home directory); put the YAML in its own directory",
+		map[string]any{"mount": root})
+}
+
+// broadMount reports whether dir is "/" or the home directory.
+func broadMount(dir, home string) bool {
+	dir = filepath.Clean(dir)
+	return dir == "/" || (home != "" && dir == filepath.Clean(home))
 }
 
 // within reports whether path is inside root (or equal to it).

@@ -182,8 +182,8 @@ func TestDockerArgsSeparateInstances(t *testing.T) {
 func TestMountRoot(t *testing.T) {
 	t.Parallel()
 	o := pipeOptions(t)
-	if got := mountRoot(o); got != o.RepoRoot {
-		t.Fatalf("config inside the repo: mount %q, want %q", got, o.RepoRoot)
+	if got, err := mountRoot(o); err != nil || got != o.RepoRoot {
+		t.Fatalf("config inside the repo: mount %q, %v; want %q", got, err, o.RepoRoot)
 	}
 	other := t.TempDir() // not a git checkout, not inside RepoRoot
 	cfg := filepath.Join(other, "y.yaml")
@@ -191,7 +191,34 @@ func TestMountRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.ConfigPath = cfg
-	if got := mountRoot(o); got != other {
-		t.Fatalf("config outside any checkout: mount %q, want its directory %q", got, other)
+	if got, err := mountRoot(o); err != nil || got != other {
+		t.Fatalf("config outside any checkout: mount %q, %v; want its directory %q", got, err, other)
+	}
+}
+
+// TestMountRootRefusesBroadTrees: a YAML directly in the home directory or in
+// "/" must not make the build mount the whole home directory or the root.
+func TestMountRootRefusesBroadTrees(t *testing.T) {
+	home := t.TempDir() // a non-git "home"
+	t.Setenv("HOME", home)
+	o := pipeOptions(t)
+	for name, cfg := range map[string]string{
+		"yaml in $HOME": filepath.Join(home, "y.yaml"),
+		"yaml in /":     "/y.yaml",
+	} {
+		o.ConfigPath = cfg
+		_, err := mountRoot(o)
+		var ae *apperr.Error
+		if !errors.As(err, &ae) || ae.Code != "config_invalid" {
+			t.Errorf("%s: err %v, want config_invalid", name, err)
+		}
+	}
+	sub := filepath.Join(home, "proj")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	o.ConfigPath = filepath.Join(sub, "y.yaml")
+	if got, err := mountRoot(o); err != nil || got != sub {
+		t.Errorf("yaml in a subdirectory of $HOME: mount %q, %v; want %q", got, err, sub)
 	}
 }

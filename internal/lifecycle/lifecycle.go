@@ -266,6 +266,9 @@ func resolveConfig(configPath string) (config, repo string, err error) {
 		// Outside any checkout: a self-contained config is mounted as its own directory.
 		root = filepath.Dir(config)
 	}
+	if err := fwbuild.CheckMountRoot(root); err != nil {
+		return "", "", err
+	}
 	return config, root, nil
 }
 
