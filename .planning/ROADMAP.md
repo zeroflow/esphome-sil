@@ -112,7 +112,7 @@ Plans:
   4. The page shows sim time, the time factor (fixed at 1), whether the firmware is connected, and a warning when the simulator falls behind real time.
   5. An automated parity check confirms that every value the page displays and every action it performs is available through the CLI/API with the same JSON.
 
-**Plans:** 8/12 plans executed
+**Plans:** 9/12 plans executed
 **UI hint**: yes
 
 Plans:
@@ -131,7 +131,7 @@ Plans:
 **Wave 4** *(blocked on Wave 3 completion)*
 - [x] 03-07-PLAN.md — Bench signals for every client: `sample` events + history ring + `sil history`, `sim.behind_real_time`, `max_hold_ms` on button down + `sil press --down --max-hold` (wave 4)
 - [x] 03-08-PLAN.md — Set inputs from the page: API wrapper, message line with server text only, per-port fan select, temperature/humidity fields (wave 4)
-- [ ] 03-09-PLAN.md — Vendor uPlot 1.6.32 with recorded and re-checked hashes, served from the binary; UI-SPEC wording aligned with the researched stack (wave 4)
+- [x] 03-09-PLAN.md — Vendor uPlot 1.6.32 with recorded and re-checked hashes, served from the binary; UI-SPEC wording aligned with the researched stack (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 03-10-PLAN.md — Scope screens: per-port duty/RPM plots from history + live samples, fixed axes, honest gaps, bounded rings, CSP check (wave 5)
@@ -151,4 +151,4 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Closed-Loop Fan Skeleton | 13/13 | In Progress|  |
 | 2. Full Rev 3.3 Bench | 8/8 | Complete    | 2026-11-09 |
-| 3. Live Web UI | 8/12 | In Progress|  |
+| 3. Live Web UI | 9/12 | In Progress|  |
