@@ -37,6 +37,8 @@ type CLI struct {
 	Up     UpCmd     `cmd:"" help:"Build the firmware, start the instance and wait until it is on the sim-bus."`
 	Status StatusCmd `cmd:"" help:"Print the instance status as JSON."`
 	Down   DownCmd   `cmd:"" help:"Stop the instance."`
+	Sim    SimCmd    `cmd:"" help:"Operate on the simulator of an instance."`
+	Fw     FwCmd     `cmd:"" help:"Operate on the firmware of an instance."`
 	Serve  ServeCmd  `cmd:"" hidden:"" help:"Run the detached supervisor (internal)."`
 }
 
@@ -56,6 +58,27 @@ type StatusCmd struct {
 
 // DownCmd is `sil down`.
 type DownCmd struct {
+	Name string `arg:"" optional:"" env:"SIL_INSTANCE" help:"Instance name."`
+}
+
+// SimCmd groups the simulator operations.
+type SimCmd struct {
+	Restart SimRestartCmd `cmd:"" help:"Replace the simulator with a fresh one; the firmware keeps running and resyncs."`
+}
+
+// SimRestartCmd is `sil sim restart`.
+type SimRestartCmd struct {
+	Name string        `arg:"" optional:"" env:"SIL_INSTANCE" help:"Instance name."`
+	Gap  time.Duration `help:"Keep the simulator away for this long before the new one starts (0 to 30s), e.g. 3s."`
+}
+
+// FwCmd groups the firmware operations.
+type FwCmd struct {
+	Restart FwRestartCmd `cmd:"" help:"Restart the firmware process (SIGTERM, then SIGKILL after 3s) with the same program and prefs."`
+}
+
+// FwRestartCmd is `sil fw restart`.
+type FwRestartCmd struct {
 	Name string `arg:"" optional:"" env:"SIL_INSTANCE" help:"Instance name."`
 }
 
@@ -201,6 +224,42 @@ func (c *DownCmd) Run(env *runEnv) error {
 		return err
 	}
 	env.result = res
+	return nil
+}
+
+// Run implements `sil sim restart`: the Status after the firmware resynced.
+func (c *SimRestartCmd) Run(env *runEnv) error {
+	p, err := resolve(c.Name)
+	if err != nil {
+		return err
+	}
+	rf, err := instance.ReadRunFile(p)
+	if err != nil {
+		return err
+	}
+	st, err := control.Dial(rf.APISock).SimRestart(env.context, control.SimRestartRequest{GapS: c.Gap.Seconds()})
+	if err != nil {
+		return err
+	}
+	env.result = st
+	return nil
+}
+
+// Run implements `sil fw restart`: the Status once the instance is ready again.
+func (c *FwRestartCmd) Run(env *runEnv) error {
+	p, err := resolve(c.Name)
+	if err != nil {
+		return err
+	}
+	rf, err := instance.ReadRunFile(p)
+	if err != nil {
+		return err
+	}
+	st, err := control.Dial(rf.APISock).FwRestart(env.context)
+	if err != nil {
+		return err
+	}
+	env.result = st
 	return nil
 }
 

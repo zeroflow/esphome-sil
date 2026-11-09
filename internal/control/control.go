@@ -8,11 +8,13 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -98,17 +100,46 @@ type DownResult struct {
 	Stopped  bool   `json:"stopped"`
 }
 
+// MaxRestartGap is the longest `sil sim restart --gap` the control API accepts.
+const MaxRestartGap = 30 * time.Second
+
+// SimRestartRequest is the body of POST /api/v1/sim/restart.
+type SimRestartRequest struct {
+	// GapS is how long the simulator stays away before the new engine starts.
+	GapS float64 `json:"gap_s"`
+}
+
+// Validate answers invalid_argument unless 0 <= gap_s <= 30.
+func (r SimRestartRequest) Validate() error {
+	if math.IsNaN(r.GapS) || r.GapS < 0 || r.GapS > MaxRestartGap.Seconds() {
+		return apperr.Failed("invalid_argument", fmt.Sprintf("gap_s must be between 0 and %g seconds", MaxRestartGap.Seconds()),
+			map[string]any{"gap_s": r.GapS})
+	}
+	return nil
+}
+
+// Restart budgets of the client: the longest a restart request may take
+// (30 s gap plus resync, or stop grace plus readiness) is well inside it.
+const restartBudget = 60 * time.Second
+
 // Control is what the supervisor offers and the client consumes.
 type Control interface {
 	Status(ctx context.Context) (Status, error)
 	Down(ctx context.Context) (DownResult, error)
+	// SimRestart replaces the simulator engine and returns the Status once the
+	// firmware has resynced with the new one.
+	SimRestart(ctx context.Context, r SimRestartRequest) (Status, error)
+	// FwRestart restarts the firmware process and returns the Status once the
+	// instance is ready again.
+	FwRestart(ctx context.Context) (Status, error)
 }
 
 type errorBody struct {
 	Error *apperr.Error `json:"error"`
 }
 
-// NewHandler exposes c as GET /api/v1/status and POST /api/v1/down. An
+// NewHandler exposes c as GET /api/v1/status, POST /api/v1/down,
+// POST /api/v1/sim/restart and POST /api/v1/fw/restart. An
 // *apperr.Error becomes {"error":{...}} with HTTP 4xx (exit class 1) or 5xx
 // (exit class 2).
 func NewHandler(c Control) http.Handler {
@@ -120,6 +151,32 @@ func NewHandler(c Control) http.Handler {
 	mux.HandleFunc("POST /api/v1/down", func(w http.ResponseWriter, r *http.Request) {
 		res, err := c.Down(r.Context())
 		reply(w, res, err)
+	})
+	mux.HandleFunc("POST /api/v1/sim/restart", func(w http.ResponseWriter, r *http.Request) {
+		var req SimRestartRequest
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		if err != nil {
+			reply(w, nil, apperr.Failed("invalid_argument", "cannot read the request body: "+err.Error(), nil))
+			return
+		}
+		if len(bytes.TrimSpace(body)) > 0 {
+			dec := json.NewDecoder(bytes.NewReader(body))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&req); err != nil {
+				reply(w, nil, apperr.Failed("invalid_argument", "bad request body: "+err.Error(), nil))
+				return
+			}
+		}
+		if err := req.Validate(); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		st, err := c.SimRestart(r.Context(), req)
+		reply(w, st, err)
+	})
+	mux.HandleFunc("POST /api/v1/fw/restart", func(w http.ResponseWriter, r *http.Request) {
+		st, err := c.FwRestart(r.Context())
+		reply(w, st, err)
 	})
 	return mux
 }
@@ -213,7 +270,7 @@ func Dial(sockPath string) *Client {
 // Status implements Control.
 func (c *Client) Status(ctx context.Context) (Status, error) {
 	var st Status
-	if err := c.do(ctx, http.MethodGet, "/api/v1/status", &st); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v1/status", nil, &st); err != nil {
 		return Status{}, err
 	}
 	if st.Error != nil && st.Error.Exit == 0 {
@@ -225,14 +282,55 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 // Down implements Control.
 func (c *Client) Down(ctx context.Context) (DownResult, error) {
 	var res DownResult
-	if err := c.do(ctx, http.MethodPost, "/api/v1/down", &res); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/api/v1/down", nil, &res); err != nil {
 		return DownResult{}, err
 	}
 	return res, nil
 }
 
-func (c *Client) do(ctx context.Context, method, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, "http://sil"+path, nil)
+// SimRestart implements Control. The request is bounded by a clock timeout,
+// which answers resync_timeout.
+func (c *Client) SimRestart(ctx context.Context, r SimRestartRequest) (Status, error) {
+	rctx, cancel := clock.WithTimeout(ctx, clock.NewReal(), restartBudget)
+	defer cancel()
+	body, err := json.Marshal(r)
+	if err != nil {
+		return Status{}, apperr.Infra("internal", err.Error(), nil)
+	}
+	var st Status
+	if err := c.do(rctx, http.MethodPost, "/api/v1/sim/restart", body, &st); err != nil {
+		if clock.TimedOut(rctx) {
+			return Status{}, apperr.Infra("resync_timeout", fmt.Sprintf("no answer to the simulator restart within %s", restartBudget), nil)
+		}
+		return Status{}, err
+	}
+	return st, nil
+}
+
+// FwRestart implements Control. The request is bounded by a clock timeout,
+// which answers ready_timeout.
+func (c *Client) FwRestart(ctx context.Context) (Status, error) {
+	rctx, cancel := clock.WithTimeout(ctx, clock.NewReal(), restartBudget)
+	defer cancel()
+	var st Status
+	if err := c.do(rctx, http.MethodPost, "/api/v1/fw/restart", nil, &st); err != nil {
+		if clock.TimedOut(rctx) {
+			return Status{}, apperr.Infra("ready_timeout", fmt.Sprintf("no answer to the firmware restart within %s", restartBudget), nil)
+		}
+		return Status{}, err
+	}
+	return st, nil
+}
+
+func (c *Client) do(ctx context.Context, method, path string, in []byte, out any) error {
+	var body io.Reader
+	if in != nil {
+		body = bytes.NewReader(in)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://sil"+path, body)
+	if in != nil && err == nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if err != nil {
 		return apperr.Infra("control_unreachable", "cannot build the control request", map[string]any{"error": err.Error()})
 	}
@@ -244,7 +342,7 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 		return apperr.Infra("control_unreachable", "cannot reach the instance control socket", map[string]any{"socket": c.sock, "error": err.Error()})
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -253,7 +351,7 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 	}
 	if resp.StatusCode >= 400 {
 		var eb errorBody
-		if json.Unmarshal(body, &eb) != nil || eb.Error == nil {
+		if json.Unmarshal(raw, &eb) != nil || eb.Error == nil {
 			return apperr.Infra("control_error", fmt.Sprintf("unexpected control response %s", resp.Status), nil)
 		}
 		eb.Error.Exit = apperr.ExitInfra
@@ -262,7 +360,7 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 		}
 		return eb.Error
 	}
-	if err := json.Unmarshal(body, out); err != nil {
+	if err := json.Unmarshal(raw, out); err != nil {
 		return apperr.Infra("control_error", "control response is not valid JSON", map[string]any{"error": err.Error()})
 	}
 	return nil

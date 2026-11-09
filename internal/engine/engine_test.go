@@ -90,6 +90,7 @@ type harness struct {
 	clk     *clock.Manual
 	fw      *firmware
 	busPath string
+	cancel  context.CancelFunc // stops the engine's Run
 }
 
 // waitUntil polls cond on the real clock; it never touches the engine clock.
@@ -164,7 +165,7 @@ func startEngine(t *testing.T) *harness {
 	}
 	tm.Stop()
 	clk.BlockUntil(1) // the engine's tick ticker
-	return &harness{t: t, eng: eng, clk: clk, busPath: busPath}
+	return &harness{t: t, eng: eng, clk: clk, busPath: busPath, cancel: cancel}
 }
 
 // dial connects a fake firmware without saying anything yet.
@@ -565,5 +566,18 @@ func TestEngineDisconnectClearsSession(t *testing.T) {
 	waitUntil(t, "bus_connected to drop", func() bool { return !h.eng.Snapshot().BusConnected })
 	if s := h.eng.Snapshot(); s.Synced || s.BusProto != 0 || len(s.Warnings) != 0 {
 		t.Fatalf("after a plain close: synced %v proto %d warnings %q, want false 0 none", s.Synced, s.BusProto, s.Warnings)
+	}
+}
+
+// A stopped engine (a simulator restart in progress) must not claim a bus connection.
+func TestEngineStoppedSnapshotIsDisconnected(t *testing.T) {
+	h := newHarness(t)
+	if s := h.eng.Snapshot(); !s.BusConnected || !s.Synced {
+		t.Fatalf("before the stop: bus_connected %v synced %v", s.BusConnected, s.Synced)
+	}
+	h.cancel()
+	waitUntil(t, "the final snapshot", func() bool { return !h.eng.Snapshot().BusConnected })
+	if s := h.eng.Snapshot(); s.Synced || s.BusProto != 0 {
+		t.Fatalf("after the stop: synced %v proto %d, want false and 0", s.Synced, s.BusProto)
 	}
 }

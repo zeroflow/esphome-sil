@@ -215,10 +215,12 @@ func (e *Engine) Run(ctx context.Context) error {
 			cancel()
 			_ = srv.Close()
 			<-served
+			e.stopped()
 			return nil
 		case err := <-served:
 			_ = srv.Close()
 			cancel()
+			e.stopped()
 			return err
 		case now := <-ticker.C():
 			dt := now - last
