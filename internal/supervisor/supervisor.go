@@ -14,15 +14,20 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"os"
 	"os/signal"
+	"regexp"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,6 +114,11 @@ type supervisor struct {
 	downReq  chan struct{}
 	downOnce sync.Once
 
+	// inMu guards inputs: the values the user set (Set), which seed every engine. Inputs and the
+	// engine they were applied to change together under it (T-02-09). Lock order: opMu, inMu, mu.
+	inMu   sync.Mutex
+	inputs engine.Env
+
 	mu          sync.Mutex
 	slot        *engineSlot
 	engRestarts int
@@ -160,6 +170,7 @@ func Serve(ctx context.Context, name string) error {
 	s := &supervisor{
 		paths: p, id: id, spec: spec, clk: clk, log: log,
 		engCfg: engine.Config{Clock: clk, BusPath: p.BusSock(), Ports: ports, Log: log},
+		inputs: engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity},
 
 		starter:  ExecStarter{},
 		guard:    NewCrashGuard(clk),
@@ -197,13 +208,16 @@ func (s *supervisor) run(sigCtx context.Context) error {
 
 	// Engine slot. The engine runs on its own context: shutdown stops the
 	// firmware first and cancels the engine afterwards.
+	s.inMu.Lock()
 	sl, err := s.startEngine()
 	if err != nil {
+		s.inMu.Unlock()
 		return err
 	}
 	s.mu.Lock()
 	s.slot = sl
 	s.mu.Unlock()
+	s.inMu.Unlock()
 
 	if err := s.startFirmware(); err != nil {
 		return err
@@ -261,10 +275,13 @@ func (s *supervisor) mainLoop(sigCtx context.Context) (err error) {
 	}
 }
 
-// startEngine builds a fresh engine (a new World, D-02), runs it and waits
-// until it listens on the bus socket.
+// startEngine builds a fresh engine (a new World, D-02) seeded with the held inputs, runs it and
+// waits until it listens on the bus socket. The caller holds inMu from before this call until the
+// engine is in the slot, so a concurrent Set cannot fall between the two.
 func (s *supervisor) startEngine() (*engineSlot, error) {
-	eng := engine.New(s.engCfg)
+	cfg := s.engCfg
+	cfg.Env = s.inputs
+	eng := engine.New(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	sl := &engineSlot{eng: eng, cancel: cancel, done: make(chan struct{})}
 	var up atomic.Bool // set once the engine listens
@@ -614,6 +631,7 @@ func (s *supervisor) Status(_ context.Context) (control.Status, error) {
 		Firmware: control.FirmwareStatus{PID: pid, Running: running, BusConnected: snap.BusConnected, Restarts: restarts, LastExit: lastExit},
 		Sim:      control.SimStatus{TimeS: snap.SimTime.Seconds(), TimeFactor: 1, EngineRestarts: engRestarts, BusProto: snap.BusProto},
 		Ports:    make([]control.PortStatus, 0, len(snap.Ports)),
+		Env:      control.EnvStatus{Temperature: snap.Env.Temperature, Humidity: snap.Env.Humidity},
 		Buttons:  make(map[string]bool, len(engine.ButtonIDs)),
 		LEDs:     control.LEDStatus{Strip: append([]string{}, snap.LEDs.Strip...), Segments: make(map[string][]int, len(snap.LEDs.Segments))},
 		Warnings: append([]string{}, snap.Warnings...),
@@ -710,8 +728,10 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 			return control.Status{}, errStopping()
 		}
 	}
+	s.inMu.Lock()
 	sl, err := s.startEngine()
 	if err != nil {
+		s.inMu.Unlock()
 		// The slot still holds the engine that was just stopped; record the
 		// failure so Status reports it instead of "starting" forever. An
 		// existing failure (a firmware crash loop) is the root diagnosis and
@@ -726,6 +746,7 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 	s.mu.Lock()
 	if s.stopping {
 		s.mu.Unlock()
+		s.inMu.Unlock()
 		s.stopEngine(sl)
 		return control.Status{}, errStopping()
 	}
@@ -734,6 +755,7 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 		s.failure = nil
 	}
 	s.mu.Unlock()
+	s.inMu.Unlock()
 
 	err = s.waitUntil(rctx, resyncBudget, func() (bool, error) {
 		snap := sl.eng.Snapshot()
@@ -865,6 +887,116 @@ func (s *supervisor) SetButton(ctx context.Context, id string, down bool) (contr
 		res.TUpUS = t.Microseconds()
 	}
 	return res, nil
+}
+
+// Defaults and ranges of the environment inputs (D-11; the ranges are the HDC1080's operating range).
+const (
+	DefaultTemperature = 22.0
+	DefaultHumidity    = 45.0
+	minTemperature     = -40.0
+	maxTemperature     = 125.0
+	minHumidity        = 0.0
+	maxHumidity        = 100.0
+)
+
+// envKeys are the keys `set` knows, sorted.
+var envKeys = []string{"humidity", "temperature"}
+
+// decimalRE is a plain decimal number: no hex floats, no digit separators, no NaN or Inf words.
+var decimalRE = regexp.MustCompile(`^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$`)
+
+// parseNumber reads a JSON number or a JSON string holding a number; NaN and infinities are not
+// numbers here.
+func parseNumber(raw json.RawMessage) (float64, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return 0, false
+	}
+	text := string(raw)
+	if raw[0] == '"' {
+		var str string
+		if err := json.Unmarshal(raw, &str); err != nil {
+			return 0, false
+		}
+		text = strings.TrimSpace(str)
+	}
+	if !decimalRE.MatchString(text) {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	return v, true
+}
+
+// parseSet validates every pair of a set request and builds the engine Change and the echo, or
+// returns the first error (keys are checked in sorted order). It has no side effects.
+func parseSet(values map[string]json.RawMessage) (engine.Change, map[string]any, error) {
+	if len(values) == 0 {
+		return engine.Change{}, nil, apperr.Failed("invalid_argument", "set needs at least one key=value pair", map[string]any{"known": envKeys})
+	}
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var c engine.Change
+	applied := make(map[string]any, len(keys))
+	for _, k := range keys {
+		var lo, hi float64
+		switch k {
+		case "temperature":
+			lo, hi = minTemperature, maxTemperature
+		case "humidity":
+			lo, hi = minHumidity, maxHumidity
+		default:
+			return engine.Change{}, nil, apperr.Failed("unknown_key", fmt.Sprintf("unknown key %q; known: %s", k, strings.Join(envKeys, ", ")),
+				map[string]any{"key": k, "known": envKeys})
+		}
+		v, ok := parseNumber(values[k])
+		if !ok {
+			return engine.Change{}, nil, apperr.Failed("invalid_argument", fmt.Sprintf("%s needs a finite number, got %s", k, string(values[k])),
+				map[string]any{"key": k, "value": string(values[k])})
+		}
+		if v < lo || v > hi {
+			return engine.Change{}, nil, apperr.Failed("value_out_of_range", fmt.Sprintf("%s=%g is outside %g..%g", k, v, lo, hi),
+				map[string]any{"key": k, "value": v, "min": lo, "max": hi})
+		}
+		if k == "temperature" {
+			c.Temperature = &v
+		} else {
+			c.Humidity = &v
+		}
+		applied[k] = v
+	}
+	return c, applied, nil
+}
+
+// Set implements control.Control (D-09): every pair is validated before anything is applied, then
+// the held inputs are recorded and one engine operation applies them together. It does not take
+// opMu, so it never waits for a restart; a value set while the bus is down reaches the firmware
+// with the next snapshot, and a replaced engine is seeded from the recorded inputs.
+func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.SetResult, error) {
+	change, applied, err := parseSet(r.Values)
+	if err != nil {
+		return control.SetResult{}, err
+	}
+	if s.isStopping() {
+		return control.SetResult{}, errStopping()
+	}
+	s.inMu.Lock()
+	defer s.inMu.Unlock()
+	if change.Temperature != nil {
+		s.inputs.Temperature = *change.Temperature
+	}
+	if change.Humidity != nil {
+		s.inputs.Humidity = *change.Humidity
+	}
+	if err := s.currentEngine().Apply(ctx, change); err != nil && !errors.Is(err, engine.ErrStopped) {
+		return control.SetResult{}, err
+	}
+	return control.SetResult{Applied: applied}, nil
 }
 
 func isDown(ch <-chan struct{}) bool {

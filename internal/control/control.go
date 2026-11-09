@@ -47,6 +47,8 @@ type Status struct {
 	Firmware FirmwareStatus `json:"firmware"`
 	Sim      SimStatus      `json:"sim"`
 	Ports    []PortStatus   `json:"ports"`
+	// Env is the temperature (degrees Celsius) and humidity (%RH) the firmware is fed.
+	Env EnvStatus `json:"env"`
 	// Buttons is the current level of every button (true = held): usr1, usr2, usr3.
 	Buttons map[string]bool `json:"buttons"`
 	// LEDs is the status LED strip the firmware wrote, with the firmware's own segment names.
@@ -61,6 +63,12 @@ type Status struct {
 type LEDStatus struct {
 	Strip    []string         `json:"strip"`
 	Segments map[string][]int `json:"segments"`
+}
+
+// EnvStatus is the room the firmware measures.
+type EnvStatus struct {
+	Temperature float64 `json:"temperature"`
+	Humidity    float64 `json:"humidity"`
 }
 
 // APIStatus describes the firmware's native API endpoint.
@@ -165,6 +173,17 @@ type PressResult struct {
 	TUpUS   int64 `json:"t_up_us,omitempty"`
 }
 
+// SetRequest is the body of POST /api/v1/set: input keys and their values, each a JSON number or a
+// string holding a number. All of them are validated before any is applied.
+type SetRequest struct {
+	Values map[string]json.RawMessage `json:"values"`
+}
+
+// SetResult echoes what was applied, with the parsed numbers.
+type SetResult struct {
+	Applied map[string]any `json:"applied"`
+}
+
 // Restart budgets of the client: the longest a restart request may take
 // (30 s gap plus resync, or stop grace plus readiness) is well inside it.
 const restartBudget = 60 * time.Second
@@ -184,6 +203,8 @@ type Control interface {
 	Press(ctx context.Context, id string, r PressRequest) (PressResult, error)
 	// SetButton sets the level of button id (down = held) and returns at once.
 	SetButton(ctx context.Context, id string, down bool) (PressResult, error)
+	// Set validates all pairs, then applies them together (all or nothing).
+	Set(ctx context.Context, r SetRequest) (SetResult, error)
 }
 
 type errorBody struct {
@@ -192,7 +213,7 @@ type errorBody struct {
 
 // NewHandler exposes c as GET /api/v1/status, POST /api/v1/down,
 // POST /api/v1/sim/restart, POST /api/v1/fw/restart and
-// POST /api/v1/buttons/{id}/press|down|up. An
+// POST /api/v1/buttons/{id}/press|down|up and POST /api/v1/set. An
 // *apperr.Error becomes {"error":{...}} with HTTP 4xx (exit class 1) or 5xx
 // (exit class 2).
 func NewHandler(c Control) http.Handler {
@@ -257,6 +278,26 @@ func NewHandler(c Control) http.Handler {
 	})
 	mux.HandleFunc("POST /api/v1/buttons/{id}/up", func(w http.ResponseWriter, r *http.Request) {
 		res, err := c.SetButton(r.Context(), r.PathValue("id"), false)
+		reply(w, res, err)
+	})
+	mux.HandleFunc("POST /api/v1/set", func(w http.ResponseWriter, r *http.Request) {
+		var req SetRequest
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		if err != nil {
+			reply(w, nil, apperr.Failed("invalid_argument", "cannot read the request body: "+err.Error(), nil))
+			return
+		}
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			reply(w, nil, apperr.Failed("invalid_argument", "bad request body, want {\"values\": {\"key\": value}}: "+err.Error(), nil))
+			return
+		}
+		if req.Values == nil {
+			reply(w, nil, apperr.Failed("invalid_argument", "bad request body: values is missing or null", nil))
+			return
+		}
+		res, err := c.Set(r.Context(), req)
 		reply(w, res, err)
 	})
 	return mux
@@ -431,6 +472,19 @@ func (c *Client) SetButton(ctx context.Context, id string, down bool) (PressResu
 	var res PressResult
 	if err := c.do(ctx, http.MethodPost, "/api/v1/buttons/"+url.PathEscape(id)+"/"+action, nil, &res); err != nil {
 		return PressResult{}, err
+	}
+	return res, nil
+}
+
+// Set implements Control.
+func (c *Client) Set(ctx context.Context, r SetRequest) (SetResult, error) {
+	body, err := json.Marshal(r)
+	if err != nil {
+		return SetResult{}, apperr.Infra("internal", err.Error(), nil)
+	}
+	var res SetResult
+	if err := c.do(ctx, http.MethodPost, "/api/v1/set", body, &res); err != nil {
+		return SetResult{}, err
 	}
 	return res, nil
 }

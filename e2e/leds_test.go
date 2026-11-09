@@ -147,13 +147,21 @@ func TestLEDStatus(t *testing.T) {
 		strip := ledsStrip(in.env.Status(t, in.name))
 		return len(strip) == 5 && ledsDominant(t, strip[0], 'g')
 	})
-	a := ledsStrip(in.env.Status(t, in.name))
-	if err := sysClock.Sleep(t.Context(), 500*time.Millisecond); err != nil {
-		t.Fatalf("sleep: %v", err)
+	// The colour is "dominant green" while the default 1 s fade-in is still running (gamma makes its
+	// start slow), so give the fade time to finish; then the LED must stand still.
+	var a, b []string
+	for try := 0; try < 6; try++ {
+		a = ledsStrip(in.env.Status(t, in.name))
+		if err := sysClock.Sleep(t.Context(), 500*time.Millisecond); err != nil {
+			t.Fatalf("sleep: %v", err)
+		}
+		b = ledsStrip(in.env.Status(t, in.name))
+		if reflect.DeepEqual(a[:1], b[:1]) {
+			break
+		}
 	}
-	b := ledsStrip(in.env.Status(t, in.name))
 	if !reflect.DeepEqual(a[:1], b[:1]) {
-		t.Errorf("board LED changed between two reads 500 ms apart: %v then %v (want static green)", a[0], b[0])
+		t.Errorf("board LED still changing 3 s after it turned green: %v then %v (want static green)", a[0], b[0])
 	}
 
 	// Fan 1 spins up: only its LED turns green.

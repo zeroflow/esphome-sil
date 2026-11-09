@@ -1,5 +1,6 @@
-# Rev 3.3 bench firmware: four fan ports, RPM sensors and the three user buttons on the sim-bus.
-# 02-03 adds temperature and humidity.
+# Rev 3.3 bench firmware: four fan ports, RPM sensors, temperature and humidity, the three user
+# buttons and the status LED strip on the sim-bus. Home Assistant sees exactly the 13 entities of
+# the product: Fan 1..4, Fan 1..4 Speed, Temperature, Humidity, Button USR1..USR3.
 #
 # Identity is never hand-written here. `sil` (and the e2e harness) inject
 # sil_name / sil_mac / sil_port with `-s` and the API key via env SIL_API_KEY;
@@ -210,6 +211,25 @@ sensor:
           else:
             - light.turn_off:
                 id: fan4_led
+
+  # Temperature and humidity are constants set with `sil set`; mode latest publishes every received
+  # value unaveraged (the simulator re-sends them every 10 s, like the HDC1080's update_interval).
+  - platform: sim_bus
+    mode: latest
+    channel: temperature
+    name: "Temperature"
+    id: fancontroller_temperature
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 1
+  - platform: sim_bus
+    mode: latest
+    channel: humidity
+    name: "Humidity"
+    id: fancontroller_humidity
+    unit_of_measurement: "%"
+    device_class: humidity
+    accuracy_decimals: 1
 
 # Buttons are levels; the click windows below are what makes a press short or long.
 binary_sensor:

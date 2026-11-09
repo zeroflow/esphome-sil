@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -51,6 +52,7 @@ type CLI struct {
 	Sim    SimCmd    `cmd:"" help:"Operate on the simulator of an instance."`
 	Fw     FwCmd     `cmd:"" help:"Operate on the firmware of an instance."`
 	Press  PressCmd  `cmd:"" help:"Press a button (usr1..usr3): 200 ms by default, --long holds 1500 ms, --hold DUR sets the hold; --down/--up set the level and return."`
+	Set    SetCmd    `cmd:"" help:"Set inputs: key=value pairs (temperature in degrees Celsius, humidity in %RH), validated first and applied together."`
 	Serve  ServeCmd  `cmd:"" hidden:"" help:"Run the detached supervisor (internal)."`
 }
 
@@ -102,6 +104,12 @@ type PressCmd struct {
 	Down     bool           `xor:"mode" help:"Hold the button down and return at once."`
 	Up       bool           `xor:"mode" help:"Release the button and return at once."`
 	Instance string         `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
+}
+
+// SetCmd is `sil set`. Like press, the instance is selected with --instance/-i.
+type SetCmd struct {
+	Pairs    []string `arg:"" name:"key=value" help:"Input to set, e.g. temperature=24.5 humidity=40."`
+	Instance string   `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
 }
 
 // ServeCmd is the hidden `sil serve`.
@@ -337,6 +345,39 @@ func (c *PressCmd) Run(env *runEnv) error {
 		}
 		res, err = client.Press(env.context, c.Button, control.PressRequest{HoldMS: hold.Milliseconds()})
 	}
+	if err != nil {
+		return err
+	}
+	env.result = res
+	return nil
+}
+
+// Run implements `sil set`: the pairs are split at the first '=' and sent as JSON strings exactly
+// as typed; the server validates all of them and applies them together.
+func (c *SetCmd) Run(env *runEnv) error {
+	if len(c.Pairs) == 0 {
+		return apperr.Failed("invalid_argument", "set needs at least one key=value pair, e.g. temperature=24.5", nil)
+	}
+	values := make(map[string]json.RawMessage, len(c.Pairs))
+	for _, pair := range c.Pairs {
+		key, val, ok := strings.Cut(pair, "=")
+		if !ok || key == "" || val == "" {
+			return apperr.Failed("invalid_argument", fmt.Sprintf("%q is not a key=value pair with a key and a value", pair), map[string]any{"pair": pair})
+		}
+		if _, dup := values[key]; dup {
+			return apperr.Failed("invalid_argument", fmt.Sprintf("key %q is given twice", key), map[string]any{"key": key})
+		}
+		raw, err := json.Marshal(val)
+		if err != nil {
+			return apperr.Failed("invalid_argument", fmt.Sprintf("%q cannot be sent: %v", pair, err), map[string]any{"pair": pair})
+		}
+		values[key] = raw
+	}
+	_, client, err := connect(c.Instance)
+	if err != nil {
+		return err
+	}
+	res, err := client.Set(env.context, control.SetRequest{Values: values})
 	if err != nil {
 		return err
 	}

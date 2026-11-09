@@ -12,6 +12,11 @@ void SimSensor::dump_config() {
   LOG_UPDATE_INTERVAL(this);
 }
 
+void SimValueSensor::dump_config() {
+  LOG_SENSOR("", "Sim bus value sensor", this);
+  ESP_LOGCONFIG(TAG, "  Channel: %s", this->channel_.c_str());
+}
+
 void SimSensor::on_value(float v) {
   const uint32_t now = millis();
   if (this->have_) {

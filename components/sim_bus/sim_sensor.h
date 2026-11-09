@@ -29,5 +29,16 @@ class SimSensor : public sensor::Sensor, public PollingComponent, public SimChil
   double area_{0};         // value * ms accumulated in the window up to last_t_
 };
 
+/// Temperature or humidity (`mode: latest`). Push-only: every value the simulator sends is published
+/// as it is (never averaged), so a value the user sets reaches Home Assistant exactly. The simulator
+/// re-sends unchanged values every 10 s, like an HDC1080 polled at that interval. The last state
+/// stays when the simulator goes away.
+class SimValueSensor : public sensor::Sensor, public Component, public SimChild {
+ public:
+  const char *direction() const override { return "in"; }
+  void dump_config() override;
+  void on_value(float v) override { this->publish_state(v); }
+};
+
 }  // namespace esphome::sim_bus
 #endif  // USE_SENSOR

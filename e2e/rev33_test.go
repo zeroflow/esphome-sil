@@ -383,3 +383,138 @@ func TestPressVocabulary(t *testing.T) {
 		r33ExpectErr(t, "press on firmware without buttons", out, code, "input_not_available")
 	})
 }
+
+// r33Env is env.<key> of a status object.
+func r33Env(st map[string]any, key string) (float64, bool) {
+	v, ok := jget(st, "env", key).(float64)
+	return v, ok
+}
+
+// r33EnvIs reports whether the status env equals temperature and humidity (within 1e-3).
+func r33EnvIs(st map[string]any, temperature, humidity float64) bool {
+	tv, ok1 := r33Env(st, "temperature")
+	hv, ok2 := r33Env(st, "humidity")
+	return ok1 && ok2 && math.Abs(tv-temperature) < 1e-3 && math.Abs(hv-humidity) < 1e-3
+}
+
+// fwState is the state of one entity as the firmware's native API reports it right now.
+func (in *r33Inst) fwState(t *testing.T, name string) (float64, bool) {
+	t.Helper()
+	info, code := in.env.APIClient(t, in.port, in.key, "info")
+	if code != 0 {
+		t.Fatalf("api info: exit %d: %v", code, info)
+	}
+	v, ok := jget(info, "states", name).(float64)
+	return v, ok
+}
+
+// waitFwEnv waits until the firmware's Temperature and Humidity entities report the wanted values
+// (within 0.05), asking through the native API like Home Assistant would.
+func (in *r33Inst) waitFwEnv(t *testing.T, within time.Duration, temperature, humidity float64) {
+	t.Helper()
+	deadline := sysClock.Now() + within
+	var gt, gh float64
+	var okT, okH bool
+	for {
+		gt, okT = in.fwState(t, "Temperature")
+		gh, okH = in.fwState(t, "Humidity")
+		if okT && okH && math.Abs(gt-temperature) <= 0.05 && math.Abs(gh-humidity) <= 0.05 {
+			return
+		}
+		if sysClock.Now() > deadline {
+			t.Fatalf("firmware entities: Temperature %v (present %v), Humidity %v (present %v), want %v and %v",
+				gt, okT, gh, okH, temperature, humidity)
+		}
+		r33Sleep(300 * time.Millisecond)
+	}
+}
+
+// set runs `sil set pairs... -i name`.
+func (in *r33Inst) set(t *testing.T, pairs ...string) (map[string]any, int) {
+	t.Helper()
+	out, code, _ := in.env.Sil(t, append(append([]string{"set"}, pairs...), "-i", in.name)...)
+	return out, code
+}
+
+// seriesOnly reports whether every value of a watch series is one of want (within 0.05) and the
+// last one is want[len-1]; the series must contain every wanted value.
+func seriesOnly(series []any, want ...float64) (bool, string) {
+	seen := make([]bool, len(want))
+	var last float64
+	for _, p := range series {
+		v, ok := jget(p, 1).(float64)
+		if !ok {
+			return false, fmt.Sprintf("non-numeric point %v", p)
+		}
+		match := false
+		for i, w := range want {
+			if math.Abs(v-w) <= 0.05 {
+				match, seen[i] = true, true
+			}
+		}
+		if !match {
+			return false, fmt.Sprintf("value %v is none of %v", v, want)
+		}
+		last = v
+	}
+	for i, ok := range seen {
+		if !ok {
+			return false, fmt.Sprintf("value %v never appeared", want[i])
+		}
+	}
+	if math.Abs(last-want[len(want)-1]) > 0.05 {
+		return false, fmt.Sprintf("series ends at %v, want %v", last, want[len(want)-1])
+	}
+	return true, ""
+}
+
+// TestEnvSet is the environment slice end to end: `sil set` reaches the firmware's Temperature and
+// Humidity entities exactly (never a mean of old and new) and `sil status` shows it.
+func TestEnvSet(t *testing.T) {
+	in := r33Up(t, "e2e-env")
+
+	st := in.env.Status(t, in.name)
+	if !r33EnvIs(st, 22, 45) {
+		t.Fatalf("fresh status env = %v, want temperature 22 and humidity 45", st["env"])
+	}
+	in.waitFwEnv(t, 5*time.Second, 22, 45)
+
+	type watchRes struct {
+		out  map[string]any
+		code int
+	}
+	watch := make(chan watchRes, 1)
+	go func() {
+		out, code := runAPIClient(t, in.port, in.key, "watch", "--seconds", "14")
+		watch <- watchRes{out, code}
+	}()
+	r33Sleep(6 * time.Second) // the client container is up and subscribed
+
+	out, code := in.set(t, "temperature=24.5", "humidity=40")
+	if code != 0 {
+		t.Fatalf("sil set: exit %d: %v", code, out)
+	}
+	applied, _ := out["applied"].(map[string]any)
+	if len(out) != 1 || len(applied) != 2 || applied["temperature"] != 24.5 || applied["humidity"] != float64(40) {
+		t.Fatalf("sil set result %v, want exactly {applied: {humidity: 40, temperature: 24.5}}", out)
+	}
+	in.env.WaitStatus(t, in.name, 2*time.Second, func(st map[string]any) bool { return r33EnvIs(st, 24.5, 40) })
+	in.waitFwEnv(t, 2*time.Second, 24.5, 40)
+
+	w := <-watch
+	if w.code != 0 {
+		t.Fatalf("watch: exit %d: %v", w.code, w.out)
+	}
+	if ok, why := seriesOnly(jgetSlice(w.out, "series", "Temperature"), 22, 24.5); !ok {
+		t.Errorf("Temperature series %v: %s", jget(w.out, "series", "Temperature"), why)
+	}
+	if ok, why := seriesOnly(jgetSlice(w.out, "series", "Humidity"), 45, 40); !ok {
+		t.Errorf("Humidity series %v: %s", jget(w.out, "series", "Humidity"), why)
+	}
+}
+
+// jgetSlice is jget as a slice.
+func jgetSlice(v any, path ...any) []any {
+	s, _ := jget(v, path...).([]any)
+	return s
+}

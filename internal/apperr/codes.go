@@ -28,6 +28,8 @@ var Registry = map[string]int{
 	"not_running":            ExitFailed,
 	"port_claimed":           ExitFailed,
 	"stopping":               ExitFailed,
+	"unknown_key":            ExitFailed,
+	"value_out_of_range":     ExitFailed,
 
 	// Exit 2: infrastructure (docker, ports, sockets, files, internal failures).
 	"api_identity_mismatch":  ExitInfra,

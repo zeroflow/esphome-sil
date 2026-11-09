@@ -36,6 +36,27 @@ var ButtonIDs = []string{"usr1", "usr2", "usr3"}
 // LEDChannel is the sim-bus channel of the status LED strip (direction out, type rgb).
 const LEDChannel = "leds"
 
+// The environment channels (direction in, type f32): constant values set by the user.
+const (
+	ChanTemperature = "temperature"
+	ChanHumidity    = "humidity"
+)
+
+// EnvResend is how often an unchanged environment value is sent again, mirroring the HDC1080's
+// 10 s update_interval (D-11). It is measured in sim time.
+const EnvResend = 10 * time.Second
+
+// Env is the room the firmware measures: temperature in degrees Celsius, humidity in %RH.
+type Env struct {
+	Temperature float64
+	Humidity    float64
+}
+
+// Change is a set of input changes applied together by Apply; a nil field is left alone.
+type Change struct {
+	Temperature, Humidity *float64
+}
+
 const (
 	ledMaxN     = 255         // a 4096-byte bus line holds at most 6 x 255 hex characters of pixels
 	ledMaxPxLen = 6 * ledMaxN // 1530
@@ -79,7 +100,9 @@ type Config struct {
 	Clock   clock.Clock
 	BusPath string
 	Ports   []PortConfig
-	Log     *slog.Logger
+	// Env is the initial temperature and humidity of the room.
+	Env Env
+	Log *slog.Logger
 }
 
 // PortState is the observable state of one port.
@@ -99,6 +122,8 @@ type Snapshot struct {
 	// Synced is true once the firmware's manifest of the current session has been checked.
 	Synced bool
 	Ports  []PortState
+	// Env is the current temperature and humidity.
+	Env Env
 	// Buttons is the level of every button in ButtonIDs (true = held); always all of them.
 	Buttons map[string]bool
 	// LEDs is the status LED strip; it keeps the last frame while the bus is down.
@@ -114,6 +139,7 @@ const (
 	evFrame
 	evDisconnected
 	evButton
+	evApply
 )
 
 type event struct {
@@ -126,6 +152,8 @@ type event struct {
 
 	// evButton
 	button buttonOp
+	// evApply
+	apply applyOp
 }
 
 // buttonOp is one SetButton request; the reply channel has capacity 1.
@@ -138,6 +166,12 @@ type buttonOp struct {
 type buttonReply struct {
 	t   time.Duration
 	err error
+}
+
+// applyOp is one Apply request; the reply channel has capacity 1.
+type applyOp struct {
+	change Change
+	reply  chan struct{}
 }
 
 // Engine is the simulator core.
@@ -156,6 +190,9 @@ type Engine struct {
 	simNow    time.Duration
 	srv       *bus.Server
 	nextRPM   time.Duration
+	// env is the room; nextEnv[i] is when env value i (temperature, humidity) is sent next.
+	env     Env
+	nextEnv [2]time.Duration
 
 	// done is closed when Run has returned, so operations never block on a dead engine.
 	done chan struct{}
@@ -188,7 +225,7 @@ func New(cfg Config) *Engine {
 	}
 	e := &Engine{
 		cfg: cfg, ready: make(chan struct{}), inbox: make(chan event, 1024), done: make(chan struct{}),
-		buttons: map[string]bool{}, btnAvail: map[string]bool{},
+		buttons: map[string]bool{}, btnAvail: map[string]bool{}, env: cfg.Env,
 	}
 	for _, id := range ButtonIDs {
 		e.buttons[id] = false
@@ -218,6 +255,7 @@ func (e *Engine) publish() {
 		BusProto:     e.proto,
 		Synced:       e.synced,
 		Ports:        make([]PortState, len(e.ports)),
+		Env:          e.env,
 		Buttons:      make(map[string]bool, len(e.buttons)),
 		LEDs:         LEDState{Strip: append([]string{}, e.ledStrip...), Segments: make(map[string][]int, len(e.ledSegs))},
 		Warnings:     append([]string{}, e.warnings...),
@@ -292,6 +330,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	clk := e.cfg.Clock
 	e.simNow = clk.Now()
 	e.nextRPM = e.simNow
+	e.nextEnv = [2]time.Duration{e.simNow + EnvResend, e.simNow + EnvResend}
 	last := e.simNow
 	e.publish()
 	ticker := clk.NewTicker(tick)
@@ -322,6 +361,9 @@ func (e *Engine) Run(ctx context.Context) error {
 			if e.connected && e.simNow >= e.nextRPM {
 				e.nextRPM = e.simNow + rpmFrameStep
 				e.sendRPM(false)
+			}
+			if e.connected {
+				e.resendEnv()
 			}
 			e.publish()
 		case ev := <-e.inbox:
@@ -368,6 +410,8 @@ func (e *Engine) handle(ev event) {
 		e.handleFrame(ev.frame)
 	case evButton:
 		e.handleButton(ev.button)
+	case evApply:
+		e.handleApply(ev.apply)
 	}
 }
 
@@ -382,18 +426,20 @@ func (e *Engine) warn(w string) {
 }
 
 // inSnapshot is the in frame of every port with its current rpm, in port
-// order, then the level of every button in ButtonIDs order. The released
+// order, then temperature and humidity, then the level of every button in ButtonIDs order. The released
 // levels matter: ESPHome runs no state callbacks for an entity's first state,
 // so a button whose first level were 1 would lose its first press. It also
 // marks the rpm values as sent, so the steady-state rate rule only sends
 // changes from here on.
 func (e *Engine) inSnapshot() []bus.Frame {
-	frames := make([]bus.Frame, 0, len(e.ports)+len(ButtonIDs))
+	frames := make([]bus.Frame, 0, len(e.ports)+2+len(ButtonIDs))
 	for i := range e.ports {
 		p := &e.ports[i]
 		p.sent, p.sentOnce = float32(p.state.RPM), true
 		frames = append(frames, bus.NewFrame("in").Str("ch", p.rpmCh).Num("v", float64(p.sent)).Int("t", e.micros()))
 	}
+	frames = append(frames, e.envFrame(0), e.envFrame(1))
+	e.nextEnv = [2]time.Duration{e.simNow + EnvResend, e.simNow + EnvResend}
 	for _, id := range ButtonIDs {
 		frames = append(frames, e.buttonFrame(id))
 	}
@@ -407,6 +453,83 @@ func (e *Engine) buttonFrame(id string) bus.Frame {
 		v = 1
 	}
 	return bus.NewFrame("in").Str("ch", id).Num("v", v).Int("t", e.micros())
+}
+
+// envChannels names the environment channels in snapshot order.
+var envChannels = [2]string{ChanTemperature, ChanHumidity}
+
+// envFrame is the in frame carrying environment value i (0 temperature, 1 humidity).
+func (e *Engine) envFrame(i int) bus.Frame {
+	v := e.env.Temperature
+	if i == 1 {
+		v = e.env.Humidity
+	}
+	return bus.NewFrame("in").Str("ch", envChannels[i]).Num("v", v).Int("t", e.micros())
+}
+
+// resendEnv sends every environment value whose deadline has passed and schedules the next one.
+func (e *Engine) resendEnv() {
+	for i := range e.nextEnv {
+		if e.simNow >= e.nextEnv[i] {
+			e.nextEnv[i] = e.simNow + EnvResend
+			e.send(e.envFrame(i))
+		}
+	}
+}
+
+// Apply changes the inputs in c together: one inbox event, so no frame or status ever shows half
+// of a change. Changed values reach the bus at once when it is connected. An engine whose Run has
+// returned answers ErrStopped at once.
+func (e *Engine) Apply(ctx context.Context, c Change) error {
+	select {
+	case <-e.done:
+		return ErrStopped
+	default:
+	}
+	op := applyOp{change: c, reply: make(chan struct{}, 1)}
+	select {
+	case e.inbox <- event{kind: evApply, apply: op}:
+	case <-e.done:
+		return ErrStopped
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-op.reply:
+		return nil
+	case <-e.done:
+		// A reply that was sent before the engine stopped still counts.
+		select {
+		case <-op.reply:
+			return nil
+		default:
+			return ErrStopped
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// handleApply applies one Change on the engine goroutine.
+func (e *Engine) handleApply(op applyOp) {
+	if now := e.cfg.Clock.Now(); now > e.simNow {
+		e.simNow = now
+	}
+	if v := op.change.Temperature; v != nil {
+		e.env.Temperature = *v
+		e.nextEnv[0] = e.simNow + EnvResend
+		if e.connected {
+			e.send(e.envFrame(0))
+		}
+	}
+	if v := op.change.Humidity; v != nil {
+		e.env.Humidity = *v
+		e.nextEnv[1] = e.simNow + EnvResend
+		if e.connected {
+			e.send(e.envFrame(1))
+		}
+	}
+	op.reply <- struct{}{}
 }
 
 // SetButton sets the level of button id (true = held) and returns the sim
@@ -500,6 +623,17 @@ func (e *Engine) checkManifest(chs []bus.Channel) {
 	// Optional channels: their presence enables the matching operation; a missing one never warns.
 	known[LEDChannel] = true
 	e.checkLEDs(have[LEDChannel], have)
+	for _, id := range envChannels {
+		known[id] = true
+		c, ok := have[id]
+		switch {
+		case !ok:
+		case c.Dir != "in":
+			e.warn(fmt.Sprintf("channel %s has direction %q, expected \"in\"", id, c.Dir))
+		case c.Type != "f32":
+			e.warn(fmt.Sprintf("channel %s has type %q, expected \"f32\"", id, c.Type))
+		}
+	}
 	for _, id := range ButtonIDs {
 		known[id] = true
 		c, ok := have[id]
