@@ -396,6 +396,9 @@ func TestSetFanSeedsTheNextEngine(t *testing.T) {
 	}
 
 	// A new engine (sim restart) is built with the chosen fans, also when the Set came while no engine ran.
+	s.mu.Lock()
+	s.engGap = true // what SimRestart holds between the old engine's stop and the new one's start
+	s.mu.Unlock()
 	s.stopEngine(s.slot)
 	if _, err := s.Set(ctx, control.SetRequest{Values: rawVals(map[string]string{"port4.fan": `"beta-fan"`})}); err != nil {
 		t.Fatalf("Set with the engine stopped: %v, want accepted", err)
@@ -444,6 +447,9 @@ func TestSetSeedsTheNextEngine(t *testing.T) {
 
 	// A replaced engine starts from the recorded inputs; a Set while no engine runs is accepted.
 	old := s.currentEngine()
+	s.mu.Lock()
+	s.engGap = true // what SimRestart holds between the old engine's stop and the new one's start
+	s.mu.Unlock()
 	s.stopEngine(s.slot)
 	if _, err := s.Set(ctx, control.SetRequest{Values: rawVals(map[string]string{"humidity": "55"})}); err != nil {
 		t.Fatalf("Set with the engine stopped: %v, want accepted", err)
@@ -534,5 +540,55 @@ func TestSetOnAFailedEngineFailsAndRollsBack(t *testing.T) {
 	}
 	if s.inputs.Temperature != DefaultTemperature || s.fans[0].FanID != "alpha-fan" {
 		t.Fatalf("record kept a value the engine never took: inputs %+v, port1 fan %q", s.inputs, s.fans[0].FanID)
+	}
+}
+
+// WR-02 (second review): a SimRestart that cannot start the new engine while another failure is held
+// records no engine_failed (the held diagnosis wins), yet the slot keeps a stopped engine. Set must
+// decide on the real state, not on the failure code: it reports engine_failed and keeps the record
+// equal to what is running.
+func TestSetAfterAFailedRestartWithAHeldFailureFails(t *testing.T) {
+	s := fanSupervisor(t)
+	s.inputs = engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity}
+	s.mu.Lock()
+	s.failure = apperr.Failed("firmware_crash_loop", "the firmware keeps crashing", nil)
+	s.mu.Unlock()
+
+	s.engCfg.BusPath = filepath.Join(t.TempDir(), "missing", "bus.sock")
+	if _, err := s.SimRestart(context.Background(), control.SimRestartRequest{}); errCode(err) != "engine_failed" {
+		t.Fatalf("failing SimRestart = %v, want engine_failed", err)
+	}
+	s.mu.Lock()
+	code, gap := s.failure.Code, s.engGap
+	s.mu.Unlock()
+	if code != "firmware_crash_loop" || gap {
+		t.Fatalf("after the failed restart: failure %q, engGap %v, want the held failure and no gap", code, gap)
+	}
+
+	_, err := s.Set(context.Background(), control.SetRequest{Values: rawVals(map[string]string{"temperature": "31", "port1.fan": `"beta-fan"`})})
+	if errCode(err) != "engine_failed" {
+		t.Fatalf("Set on a dead engine with another failure held: %v, want engine_failed", err)
+	}
+	if s.inputs.Temperature != DefaultTemperature || s.fans[0].FanID != "alpha-fan" {
+		t.Fatalf("record kept a value no engine took: inputs %+v, port1 fan %q", s.inputs, s.fans[0].FanID)
+	}
+}
+
+// While a SimRestart is replacing the engine (engGap) a stopped engine is a gap, not a death: the Set
+// stands and seeds the next engine.
+func TestSetInARestartGapIsKept(t *testing.T) {
+	s := fanSupervisor(t)
+	s.inputs = engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity}
+	s.mu.Lock()
+	s.engGap = true
+	s.mu.Unlock()
+	s.stopEngine(s.slot)
+
+	res, err := s.Set(context.Background(), control.SetRequest{Values: rawVals(map[string]string{"temperature": "31"})})
+	if err != nil || len(res.Applied) != 1 {
+		t.Fatalf("Set in a restart gap = %+v, %v, want applied", res, err)
+	}
+	if s.inputs.Temperature != 31 {
+		t.Fatalf("gap Set not recorded: %+v", s.inputs)
 	}
 }

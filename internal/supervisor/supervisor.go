@@ -139,14 +139,18 @@ type supervisor struct {
 	mu          sync.Mutex
 	slot        *engineSlot
 	engRestarts int
-	fw          *fwProc
-	fwPID       int
-	fwRunning   bool
-	restarts    int
-	restarting  bool
-	stopping    bool
-	lastExit    *control.Exit
-	failure     *apperr.Error
+	// engGap is true from the moment SimRestart starts stopping the old engine until the new one is
+	// in the slot (or the restart gave up). While it is set a stopped engine in the slot is a restart
+	// gap that the next engine will fill from the recorded inputs; otherwise a stopped engine is dead.
+	engGap     bool
+	fw         *fwProc
+	fwPID      int
+	fwRunning  bool
+	restarts   int
+	restarting bool
+	stopping   bool
+	lastExit   *control.Exit
+	failure    *apperr.Error
 
 	// Native-API readiness (guarded by mu): apiReady is set by a probe that
 	// completed a Noise handshake with this instance's key and matched its
@@ -757,11 +761,13 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 	old := s.slot
 	// Counted when the old engine goes away: status shows it during the gap.
 	s.engRestarts++
+	s.engGap = true
 	s.mu.Unlock()
 	s.stopEngine(old)
 	s.log.Info("simulator engine stopped for a restart", "gap", gap)
 	if gap > 0 {
 		if err := s.clk.Sleep(dctx, gap); err != nil {
+			s.endEngGap()
 			return control.Status{}, errStopping()
 		}
 	}
@@ -774,6 +780,7 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 		// existing failure (a firmware crash loop) is the root diagnosis and
 		// is kept: the single slot must not lose it to engine_failed.
 		s.mu.Lock()
+		s.engGap = false
 		if s.failure == nil {
 			s.failure = apperr.AsError(err)
 		}
@@ -781,6 +788,7 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 		return control.Status{}, err
 	}
 	s.mu.Lock()
+	s.engGap = false
 	if s.stopping {
 		s.mu.Unlock()
 		s.inMu.Unlock()
@@ -825,6 +833,13 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 		return control.Status{}, err
 	}
 	return s.Status(ctx)
+}
+
+// endEngGap records that the restart in flight no longer expects a new engine.
+func (s *supervisor) endEngGap() {
+	s.mu.Lock()
+	s.engGap = false
+	s.mu.Unlock()
 }
 
 // currentEngine is the engine in the slot right now.
@@ -1132,12 +1147,16 @@ func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.Set
 	switch err := s.currentEngine().Apply(actx, change); {
 	case err == nil:
 	case errors.Is(err, engine.ErrStopped):
-		// Between the old engine's stop and the new one's start the recorded values seed the new
-		// engine, so the Set stands. An engine that failed for good never takes them: say so.
+		// While a SimRestart is replacing the engine the recorded values seed the new one, so the
+		// Set stands. Any other stopped engine is dead and never takes them: say so, whatever
+		// failure the instance holds.
 		s.mu.Lock()
-		failed := s.failure != nil && s.failure.Code == "engine_failed"
+		gap, stopping := s.engGap, s.stopping
 		s.mu.Unlock()
-		if failed {
+		if !gap {
+			if stopping {
+				return control.SetResult{}, errStopping()
+			}
 			rollback()
 			return control.SetResult{}, apperr.Infra("engine_failed", "the simulator engine is not running; nothing was applied", nil)
 		}
