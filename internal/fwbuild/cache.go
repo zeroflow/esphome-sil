@@ -80,33 +80,7 @@ func hashTree(w io.Writer, label, root string) error {
 	}
 	var rels []string
 	if st.IsDir() {
-		err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() {
-				if d.Name() == "__pycache__" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if strings.HasSuffix(d.Name(), ".pyc") {
-				return nil
-			}
-			info, err := os.Stat(p) // follows symlinks, like the compiler
-			if err != nil {
-				return err
-			}
-			if info.Mode().IsRegular() {
-				rel, err := filepath.Rel(root, p)
-				if err != nil {
-					return err
-				}
-				rels = append(rels, filepath.ToSlash(rel))
-			}
-			return nil
-		})
-		if err != nil {
+		if err = collectRels(root, "", 0, &rels); err != nil {
 			return apperr.Infra("build_failed", "cannot walk a build input for the cache hash", map[string]any{"path": root, "error": err.Error()})
 		}
 		sort.Strings(rels)
@@ -129,6 +103,49 @@ func hashTree(w io.Writer, label, root string) error {
 		}
 		if _, err := w.Write([]byte{'\n'}); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// maxTreeDepth bounds the directory nesting collectRels follows. Symlinks to
+// directories are followed (like the compiler does), so a link cycle would
+// otherwise recurse forever.
+const maxTreeDepth = 64
+
+// collectRels appends to rels the slash-separated path (relative to the hashed
+// root, with prefix) of every regular file under dir. Unlike filepath.WalkDir,
+// which reports a symlinked directory as a non-directory and never descends
+// into it, this follows symlinks for the root and for every sub-directory, so
+// a component tree reached through a link is hashed by content.
+func collectRels(dir, prefix string, depth int, rels *[]string) error {
+	if depth > maxTreeDepth {
+		return fmt.Errorf("directory nesting or symlink loop deeper than %d levels at %s", maxTreeDepth, dir)
+	}
+	entries, err := os.ReadDir(dir) // follows a symlinked dir itself
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		p := filepath.Join(dir, name)
+		if !e.IsDir() && strings.HasSuffix(name, ".pyc") {
+			continue
+		}
+		info, err := os.Stat(p) // follows symlinks, like the compiler
+		if err != nil {
+			return err
+		}
+		switch {
+		case info.IsDir():
+			if name == "__pycache__" {
+				continue
+			}
+			if err := collectRels(p, prefix+name+"/", depth+1, rels); err != nil {
+				return err
+			}
+		case info.Mode().IsRegular():
+			*rels = append(*rels, prefix+name)
 		}
 	}
 	return nil

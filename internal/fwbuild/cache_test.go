@@ -273,3 +273,54 @@ func TestToolcache(t *testing.T) {
 		t.Fatal("a toolcache without registry responses must not count as seeded")
 	}
 }
+
+// A component tree reached through a symlink (the root or a sub-directory)
+// must be hashed by content: filepath.WalkDir reports a link as a
+// non-directory and would silently hash an empty tree, reusing a stale build.
+func TestInputHashFollowsSymlinkedDirs(t *testing.T) {
+	t.Parallel()
+	real := t.TempDir()
+	cacheWrite(t, filepath.Join(real, "sim_bus", "sim_bus.cpp"), "int a;\n")
+	links := t.TempDir()
+	rootLink := filepath.Join(links, "components")
+	if err := os.Symlink(real, rootLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	hashOf := func(dirs ...string) string {
+		return cacheHash(t, HashInputs{RecipeVersion: "1", ImageID: "i", Resolved: []byte("r"), ComponentDirs: dirs})
+	}
+
+	t.Run("root symlink", func(t *testing.T) {
+		before := hashOf(rootLink)
+		if before != hashOf(real) {
+			t.Fatal("a symlinked root hashes differently from its target")
+		}
+		cacheWrite(t, filepath.Join(real, "sim_bus", "sim_bus.cpp"), "int b;\n")
+		if hashOf(rootLink) == before {
+			t.Fatal("edit behind a symlinked root not reflected in the hash")
+		}
+	})
+	t.Run("sub-directory symlink", func(t *testing.T) {
+		outer := t.TempDir()
+		target := t.TempDir()
+		cacheWrite(t, filepath.Join(target, "x.h"), "#define A 1\n")
+		if err := os.Symlink(target, filepath.Join(outer, "inc")); err != nil {
+			t.Fatal(err)
+		}
+		before := hashOf(outer)
+		cacheWrite(t, filepath.Join(target, "x.h"), "#define A 2\n")
+		if hashOf(outer) == before {
+			t.Fatal("edit behind a symlinked sub-directory not reflected in the hash")
+		}
+	})
+	t.Run("symlink loop is an error, not a hang", func(t *testing.T) {
+		loop := t.TempDir()
+		cacheWrite(t, filepath.Join(loop, "a.h"), "x\n")
+		if err := os.Symlink(loop, filepath.Join(loop, "self")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := InputHash(HashInputs{ComponentDirs: []string{loop}}); err == nil {
+			t.Fatal("want an error for a symlink loop")
+		}
+	})
+}
