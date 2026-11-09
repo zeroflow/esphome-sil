@@ -80,9 +80,12 @@ type APIStatus struct {
 	DeviceName string `json:"device_name"`
 	MAC        string `json:"mac"`
 	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	Key        string `json:"key"`
-	Ready      bool   `json:"ready"`
+	// LanHost is the IPv4 address of the default-route interface, where a Home Assistant on
+	// another machine reaches the firmware (null when unknown).
+	LanHost *string `json:"lan_host"`
+	Port    int     `json:"port"`
+	Key     string  `json:"key"`
+	Ready   bool    `json:"ready"`
 }
 
 // FirmwareStatus describes the firmware process.

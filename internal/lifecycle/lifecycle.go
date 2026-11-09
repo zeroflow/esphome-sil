@@ -52,11 +52,13 @@ type UpOptions struct {
 
 // APIInfo is what a client needs to reach the firmware's native API.
 type APIInfo struct {
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	Key        string `json:"key"`
-	DeviceName string `json:"device_name"`
-	MAC        string `json:"mac"`
+	Host string `json:"host"`
+	// LanHost is the default-route IPv4 address for a Home Assistant on another machine (null when unknown).
+	LanHost    *string `json:"lan_host"`
+	Port       int     `json:"port"`
+	Key        string  `json:"key"`
+	DeviceName string  `json:"device_name"`
+	MAC        string  `json:"mac"`
 }
 
 // UpResult is the JSON printed by `sil up`.
@@ -212,12 +214,17 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 		srv.abort()
 		return UpResult{}, err
 	}
-	fmt.Fprintf(progress, "add to Home Assistant manually: host 127.0.0.1 port %d with the key from this JSON (no mDNS on host)\n", id.APIPort)
+	lan := instance.LANHost()
+	hint := lan
+	if hint == "" {
+		hint = "127.0.0.1"
+	}
+	fmt.Fprintf(progress, "add to Home Assistant: host %s port %d, encryption key from this JSON (no mDNS on host; Settings > Devices & Services > Add Integration > ESPHome)\n", hint, id.APIPort)
 
 	return UpResult{
 		Instance: o.Name,
 		API: APIInfo{
-			Host: "127.0.0.1", Port: id.APIPort, Key: id.Key,
+			Host: "127.0.0.1", LanHost: lanHostPtr(lan), Port: id.APIPort, Key: id.Key,
 			DeviceName: id.DeviceName(), MAC: instance.MAC(o.Name),
 		},
 		RunDir: p.RunDir,
@@ -535,4 +542,12 @@ func cleanupRun(p instance.Paths) {
 	for _, f := range []string{p.RunJSON(), p.APISock(), p.BusSock()} {
 		_ = os.Remove(f)
 	}
+}
+
+// lanHostPtr is the JSON form of a LAN address: nil (null) when it is unknown.
+func lanHostPtr(h string) *string {
+	if h == "" {
+		return nil
+	}
+	return &h
 }

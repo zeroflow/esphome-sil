@@ -97,6 +97,8 @@ type supervisor struct {
 	clk    clock.Clock
 	log    *slog.Logger
 	engCfg engine.Config
+	// lanHost is the default-route IPv4 address, computed once in Serve ("" when unknown).
+	lanHost string
 
 	// broker carries the change events of every engine of this instance to the watch streams. It
 	// outlives engine replacement; stopAll closes it. Nil means no events (some unit tests).
@@ -188,6 +190,8 @@ func Serve(ctx context.Context, name string) error {
 		engCfg: engine.Config{Clock: clk, BusPath: p.BusSock(), Log: log, Emit: broker.Publish, Seq: broker.Seq},
 		inputs: engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity},
 		fans:   ports,
+
+		lanHost: instance.LANHost(),
 
 		starter:  ExecStarter{},
 		guard:    NewCrashGuard(clk),
@@ -658,7 +662,7 @@ func (s *supervisor) statusFrom(have *engine.Snapshot) control.Status {
 		Phase:    phase,
 		API: control.APIStatus{
 			DeviceName: s.id.DeviceName(), MAC: instance.MAC(s.id.Name),
-			Host: "127.0.0.1", Port: s.id.APIPort, Key: s.id.Key,
+			Host: "127.0.0.1", LanHost: lanHostPtr(s.lanHost), Port: s.id.APIPort, Key: s.id.Key,
 			Ready: apiReady, // Noise handshake with the instance key and name/MAC match
 		},
 		Firmware: control.FirmwareStatus{PID: pid, Running: running, BusConnected: snap.BusConnected, Restarts: restarts, LastExit: lastExit},
@@ -1257,3 +1261,11 @@ func (s *supervisor) restartCount() int {
 }
 
 var _ control.Control = (*supervisor)(nil)
+
+// lanHostPtr is the JSON form of a LAN address: nil (null) when it is unknown.
+func lanHostPtr(h string) *string {
+	if h == "" {
+		return nil
+	}
+	return &h
+}
