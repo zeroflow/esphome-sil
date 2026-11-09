@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Full Rev 3.3 Bench
 status: executing
-stopped_at: Completed 02-04-PLAN.md
-last_updated: "2026-11-09T07:08:40.525Z"
+stopped_at: Completed 02-05-PLAN.md
+last_updated: "2026-11-09T07:31:08.674Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 2 execution started
-state_head: bdb27d286ddea1dc64f6dd2cb606ae2ba414bc32
+state_head: 9df9265c72b154feb6ef80e56aedaca17cd952d5
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 21
-  completed_plans: 17
+  completed_plans: 18
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 2 (Full Rev 3.3 Bench) — EXECUTING
-Plan: 5 of 8
+Plan: 6 of 8
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 2 execution started
 
@@ -73,6 +73,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 02 P02 | 25 min | 2 tasks | 13 files |
 | Phase 02 P03 | 15 min | 2 tasks | 14 files |
 | Phase 02 P04 | 25min | 2 tasks | 5 files |
+| Phase 02 P05 | 21min | 2 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -122,6 +123,8 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-03: each env value has its own 10 s re-send deadline; inputs live in the supervisor under inMu and seed every engine (sim restart keeps them, a set while the bus is down is accepted)
 - [Phase 02]: 02-03: sil set numbers are plain decimals only (no hex, separators, Inf/NaN, overflow); ranges temperature -40..125, humidity 0..100 (HDC1080, assumption A1 open)
 - [Phase 02]: 02-04: duplicate-channel message names a sim light by its user-written id, not the generated output_id; default_label() is the single partition-to-label mapping
+- [Phase 02]: 02-05: per-port fan list is held by the supervisor and is the single source of every engine's ports; DefaultFan is only the default of sil up --fan
+- [Phase 02]: 02-05: engine.Apply publishes its snapshot before replying, so a status read after sil set returned never shows the old fan
 
 ### Pending Todos
 
@@ -148,8 +151,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T07:08:40.481Z
-Stopped at: Completed 02-04-PLAN.md
+Last session: 2026-11-09T07:31:08.628Z
+Stopped at: Completed 02-05-PLAN.md
 Resume file: None
 
 ## Needs Human

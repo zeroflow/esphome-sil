@@ -34,7 +34,7 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 
 - [x] **MODEL-01**: Each fan port runs a linear duty→RPM model with min duty, start threshold (with hysteresis against stall), max RPM and first-order lag (exact exponential update)
 - [x] **MODEL-02**: Fan parameters come from a `fan.toml` in the fan library; unknown keys are rejected; at least one fan ships in M1
-- [ ] **MODEL-03**: Developer can choose which library fan is plugged into which port
+- [x] **MODEL-03**: Developer can choose which library fan is plugged into which port
 - [x] **MODEL-04**: The simulator reads time only from an injectable clock and integrates by `dt`; sim-bus messages carry sim timestamps; a lint bans wall-clock calls outside the clock (time factor stays fixed at 1 in M1)
 
 ### Example Firmware
@@ -46,7 +46,7 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 ### CLI / JSON API
 
 - [ ] **CLI-01**: Developer can get the full run status as JSON (`sil status`): instance, ports (fan, duty, RPM), LEDs, buttons, temp/humidity, sim time, firmware connected, API host/port/key
-- [ ] **CLI-02**: Developer can set inputs via `sil set` (temperature, humidity, fan per port) and press buttons via `sil press usr1 [--long]`
+- [x] **CLI-02**: Developer can set inputs via `sil set` (temperature, humidity, fan per port) and press buttons via `sil press usr1 [--long]`
 - [ ] **CLI-03**: Developer can follow live events as NDJSON with `sil watch`
 - [ ] **CLI-04**: Developer can read firmware and simulator logs of a run with `sil logs`
 - [x] **CLI-05**: Every command can emit JSON and uses exit codes 0 ok, 1 command failed, 2 infrastructure error
@@ -139,13 +139,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | IO-06 | Phase 1 | Complete |
 | MODEL-01 | Phase 1 | Complete |
 | MODEL-02 | Phase 1 | Complete |
-| MODEL-03 | Phase 2 | Pending |
+| MODEL-03 | Phase 2 | Complete |
 | MODEL-04 | Phase 1 | Complete |
 | FW-01 | Phase 2 | Pending |
 | FW-02 | Phase 2 | Complete |
 | FW-03 | Phase 2 | Pending |
 | CLI-01 | Phase 2 | Pending |
-| CLI-02 | Phase 2 | Pending |
+| CLI-02 | Phase 2 | Complete |
 | CLI-03 | Phase 2 | Pending |
 | CLI-04 | Phase 2 | Pending |
 | CLI-05 | Phase 1 | Complete |

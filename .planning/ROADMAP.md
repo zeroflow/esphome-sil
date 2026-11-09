@@ -74,7 +74,7 @@ Plans:
   4. The user adds a running instance to any Home Assistant using host:port and key from `sil status`, controls fan speed per port, and sees RPM, temperature, humidity and button states follow. Restarting the instance reuses the same HA device with no duplicates, and a second instance appears as a separate device.
   5. One command runs the contract test (builds and runs the example with the simulator; duty to RPM settles, a button press registers, a temperature change arrives) and the aioesphomeapi smoke test (HA-visible entity set, fan command round trip), and both pass.
 
-**Plans:** 4/8 plans executed
+**Plans:** 5/8 plans executed
 
 Plans:
 **Wave 1**
@@ -88,7 +88,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [x] 02-04-PLAN.md — Phase 2 wire contract in PROTOCOL.md and golden vectors (Go + C++); LED and cross-domain channel misconfigurations fail at config time (wave 4)
-- [ ] 02-05-PLAN.md — Fan per port: `sil set portN.fan=` replug, `sil up --fan`, `sil fans`, second shipped fan (Noctua, ASSUMED constants) (wave 4)
+- [x] 02-05-PLAN.md — Fan per port: `sil set portN.fan=` replug, `sil up --fan`, `sil fans`, second shipped fan (Noctua, ASSUMED constants) (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 02-06-PLAN.md — `sil watch` (supervisor event broker, snapshot-then-delta NDJSON) and `sil logs` (tail, follow, raw, redaction) (wave 5)
@@ -123,5 +123,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Closed-Loop Fan Skeleton | 13/13 | In Progress|  |
-| 2. Full Rev 3.3 Bench | 4/8 | In Progress|  |
+| 2. Full Rev 3.3 Bench | 5/8 | In Progress|  |
 | 3. Live Web UI | 0/TBD | Not started | - |
