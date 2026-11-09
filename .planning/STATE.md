@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
 status: executing
-stopped_at: Completed 01-07-PLAN.md
-last_updated: "2026-11-09T01:40:55.577Z"
+stopped_at: Completed 01-08-PLAN.md
+last_updated: "2026-11-09T02:02:20.583Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: 536f00e8a13a0cac2827d512fab976358382e590
+state_head: 3f0ee4f52ee3455e128acac9595b034b5ac902ce
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 7
+  completed_plans: 8
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
-Plan: 8 of 13
+Plan: 9 of 13
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 1 execution started
 
@@ -63,6 +63,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P05 | 6 min | 2 tasks | 6 files |
 | Phase 01 P06 | 8min | 2 tasks | 7 files |
 | Phase 01 P07 | 15min | 2 tasks | 10 files |
+| Phase 01 P08 | 20min | 2 tasks | 15 files |
 
 ## Accumulated Context
 
@@ -91,6 +92,9 @@ Recent decisions affecting current work:
 - [Phase 01]: sim_bus hub path keeps /tmp/sil.sock default; SIL_BUS always overrides at runtime
 - [Phase 01]: Hub drops the connection on any line over 4096 bytes, complete or unfinished
 - [Phase 01]: ESPHome republishes an unchanged sensor mean every update_interval, so no force_update is needed for IO-02
+- [Phase 01]: 01-08: toolcache has two parts, pio_components and pio_http (PlatformIO registry responses with expiry frozen to 2100); a toolcache with only archives is not a seed because the compile resolves libraries through a 1 h registry cache
+- [Phase 01]: 01-08: offline compile failures are named build_failed errors (delete the toolcache to refetch), never a silent online retry; config/generate stages always run --network none
+- [Phase 01]: 01-08: mount root is RepoRoot when it contains the config, else the YAML's git top-level unless that is / or HOME, else the YAML dir
 
 ### Pending Todos
 
@@ -117,8 +121,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T01:40:55.549Z
-Stopped at: Completed 01-07-PLAN.md
+Last session: 2026-11-09T02:02:20.552Z
+Stopped at: Completed 01-08-PLAN.md
 Resume file: None
 
 ## Needs Human

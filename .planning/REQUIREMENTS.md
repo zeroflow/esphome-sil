@@ -10,8 +10,8 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 ### Build & Run
 
 - [ ] **BUILD-01**: Developer can build the example firmware from the working tree with `sil up`, using the pinned `esphome/esphome:2026.10.1` image (non-root `--user`, own `HOME`, no root-owned files left behind)
-- [ ] **BUILD-02**: The firmware is linked statically (`esphome: build_flags: [-static]`) and runs directly on the host (Debian 12, glibc 2.36)
-- [ ] **BUILD-03**: Build fails early with a clear message when the config uses components that do not work on `host:` (`wifi`, `ledc`, `pulse_counter`, `esp32_rmt_led_strip`, `i2c`, `ota`, `http_request`, `update`, `captive_portal`, `web_server`, `sntp`, `esp32`)
+- [x] **BUILD-02**: The firmware is linked statically (`esphome: build_flags: [-static]`) and runs directly on the host (Debian 12, glibc 2.36)
+- [x] **BUILD-03**: Build fails early with a clear message when the config uses components that do not work on `host:` (`wifi`, `ledc`, `pulse_counter`, `esp32_rmt_led_strip`, `i2c`, `ota`, `http_request`, `update`, `captive_portal`, `web_server`, `sntp`, `esp32`)
 - [x] **BUILD-04**: Each run has its own run directory holding sim-bus socket, `ESPHOME_PREFDIR`, logs; runs start fresh by default (no preferences carried over)
 - [ ] **BUILD-05**: Each run gets its own API port, a stable locally administered MAC and device name derived from the instance name, and a stable per-instance API encryption key; two runs can coexist without colliding
 - [ ] **BUILD-06**: Firmware does not exit without an API client (`reboot_timeout: 0s`); `sil up` reports ready only after a real API handshake, and fails clearly if the port is taken
@@ -121,8 +121,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | BUILD-01 | Phase 1 | Pending |
-| BUILD-02 | Phase 1 | Pending |
-| BUILD-03 | Phase 1 | Pending |
+| BUILD-02 | Phase 1 | Complete |
+| BUILD-03 | Phase 1 | Complete |
 | BUILD-04 | Phase 1 | Complete |
 | BUILD-05 | Phase 1 | Pending |
 | BUILD-06 | Phase 1 | Pending |
