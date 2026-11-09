@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Live Web UI
 status: executing
-stopped_at: Phase 2 complete, ready to plan Phase 3
-last_updated: "2026-11-09T12:50:36.663Z"
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-11-09T13:01:43.411Z"
 last_activity: 2026-11-09
-last_activity_desc: Phase 2 complete, transitioned to Phase 3 (Phase 1 verification still deferred)
-state_head: 12985aea75bd05cc13e8a8d60787f814025cda6a
+last_activity_desc: Phase 3 execution started
+state_head: 36de129715d5bf70745d88865f5477c1d97c98d0
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 33
-  completed_plans: 21
+  completed_plans: 22
   percent: 33
 ---
 
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 
 ## Current Position
 
-Phase: 3 (Live Web UI) — READY TO EXECUTE
-Plan: Not started
+Phase: 3 (Live Web UI) — EXECUTING
+Plan: 2 of 12
 Status: Ready to execute
-Last activity: 2026-11-09 — Phase 2 complete (accepted on automated evidence), transitioned to Phase 3; Phase 1 verification deferred (`/gsd-verify-work 1`)
+Last activity: 2026-11-09 — Phase 3 execution started
 
 Progress: [███░░░░░░░] 33%
 
@@ -77,6 +77,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 02 P06 | 28 min | 2 tasks | 17 files |
 | Phase 02 P07 | 26 min | 2 tasks | 9 files |
 | Phase 02 P08 | 25 min | 2 tasks | 9 files |
+| Phase 3 P01 | 40 min | 2 tasks | 16 files |
 
 ## Accumulated Context
 
@@ -134,6 +135,8 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-07: contract state root persists in ~/.cache/sil-contract/state (0700); ct-main/ct-second reserved; warm contract session 22 s (budget 60 s)
 - [Phase 02]: 02-08: api.lan_host from a default-route UDP connect to 192.0.2.1 (nothing sent), null when unknown; sil up hint falls back to 127.0.0.1
 - [Phase 02]: 02-08: examples/rev33.yaml is the default sil up config; HA-01/HA-02 stay pending until the live Home Assistant UAT (only localhost and aioesphomeapi were exercised)
+- [Phase 3]: 03-01: web port allocation excludes the API port decided in the same LoadOrCreate call; explicit --api-port is re-bound only when it changes
+- [Phase 3]: 03-01: redacting wrapper also redacts SimRestart/FwRestart statuses although D-19 refuses those routes (defence in depth)
 
 ### Pending Todos
 
@@ -159,8 +162,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09
-Stopped at: Phase 2 complete, ready to plan Phase 3
+Last session: 2026-11-09T13:01:43.357Z
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None
 
 ## Needs Human

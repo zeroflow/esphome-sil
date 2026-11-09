@@ -112,12 +112,12 @@ Plans:
   4. The page shows sim time, the time factor (fixed at 1), whether the firmware is connected, and a warning when the simulator falls behind real time.
   5. An automated parity check confirms that every value the page displays and every action it performs is available through the CLI/API with the same JSON.
 
-**Plans:** 12 plans
+**Plans:** 1/12 plans executed
 **UI hint**: yes
 
 Plans:
 **Wave 1**
-- [ ] 03-01-PLAN.md — Tracer: `sil up` -> sticky web port -> TCP listener -> embedded page shell + /ws (api.key redacted) -> live frames on the real firmware; lifecycle operations refused on the web listener (wave 1)
+- [x] 03-01-PLAN.md — Tracer: `sil up` -> sticky web port -> TCP listener -> embedded page shell + /ws (api.key redacted) -> live frames on the real firmware; lifecycle operations refused on the web listener (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 03-02-PLAN.md — Live readouts (view.js) proven in headless Chrome: CDP harness recording HTTP requests and WebSocket connections, fake bench, `make test-ui`, offline load, reconnect and resync (wave 2)
@@ -151,4 +151,4 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Closed-Loop Fan Skeleton | 13/13 | In Progress|  |
 | 2. Full Rev 3.3 Bench | 8/8 | Complete    | 2026-11-09 |
-| 3. Live Web UI | 0/12 | Planned | - |
+| 3. Live Web UI | 1/12 | In Progress|  |
