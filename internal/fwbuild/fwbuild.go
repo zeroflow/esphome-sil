@@ -327,15 +327,20 @@ func classifyCompileFailure(exitCode int, log []byte) string {
 }
 
 // stageFailure maps a failed docker run of the config or generate stage: an
-// ESPHome exit is a user-fixable config_invalid carrying ESPHome's message
-// (key redacted) and the file; docker's own failures are infrastructure.
+// ESPHome exit (code 1 or 2) is a user-fixable config_invalid carrying ESPHome's
+// message (key redacted) and the file; any other failure (docker's own, a
+// kill, the OOM killer) is infrastructure.
 func (b *builder) stageFailure(ctx context.Context, err error, what, output string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	var ee *exec.ExitError
-	if !errors.As(err, &ee) || (ee.ExitCode() >= 125 && ee.ExitCode() <= 127) {
-		return apperr.Infra("build_failed", what+": docker could not run the pinned image", map[string]any{"error": err.Error(), "log": b.o.LogPath})
+	// Only ESPHome's own failure exits say the YAML was rejected: 2 when read_config fails (the
+	// validation errors) and 1 for any other EsphomeError (esphome/__main__.py in the pinned image).
+	// Docker's 125..127, an OOM-killed container (137), a signalled client (-1) or anything else is
+	// bench infrastructure, not something editing the YAML fixes.
+	if !errors.As(err, &ee) || (ee.ExitCode() != 1 && ee.ExitCode() != 2) {
+		return apperr.Infra("build_failed", what+": docker could not run the pinned image or the container was killed", map[string]any{"error": err.Error(), "log": b.o.LogPath})
 	}
 	tail := lastLines(cleanOutput(output, b.o.APIKey), tailLines)
 	return apperr.Failed("config_invalid", fmt.Sprintf("%s: %s:\n%s", b.o.ConfigPath, what, tail),

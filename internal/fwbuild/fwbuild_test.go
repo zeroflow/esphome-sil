@@ -1,8 +1,10 @@
 package fwbuild
 
 import (
+	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -282,6 +284,43 @@ func TestClassifyCompileFailure(t *testing.T) {
 	} {
 		if got := classifyCompileFailure(tc.exit, []byte(tc.log)); got != tc.want {
 			t.Errorf("%s: exit %d => %q, want %q", tc.name, tc.exit, got, tc.want)
+		}
+	}
+}
+
+// WR-03: in the config and generate stages only ESPHome's own failure exits (1 and 2) are a user-fixable
+// config_invalid; docker's own codes, an OOM-killed container and a signalled client are bench
+// infrastructure (build_failed), consistent with the compile stage.
+func TestStageFailureClassification(t *testing.T) {
+	t.Parallel()
+	exitErr := func(script string) error {
+		err := exec.Command("sh", "-c", script).Run()
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			t.Fatalf("%q did not fail with an ExitError: %v", script, err)
+		}
+		return err
+	}
+	b := &builder{o: Options{ConfigPath: "/y/dev.yaml", LogPath: "/y/build.log"}}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"esphome rejected the yaml (2)", exitErr("exit 2"), "config_invalid"},
+		{"esphome failed (1)", exitErr("exit 1"), "config_invalid"},
+		{"docker cannot run (125)", exitErr("exit 125"), "build_failed"},
+		{"docker cannot exec (126)", exitErr("exit 126"), "build_failed"},
+		{"docker not found (127)", exitErr("exit 127"), "build_failed"},
+		{"oom killed (137)", exitErr("exit 137"), "build_failed"},
+		{"other exit code (3)", exitErr("exit 3"), "build_failed"},
+		{"killed by a signal (-1)", exitErr("kill -9 $$"), "build_failed"},
+		{"not an exit error", errors.New("docker: not found"), "build_failed"},
+	} {
+		err := b.stageFailure(context.Background(), tc.err, "esphome config failed", "some output\n")
+		var ae *apperr.Error
+		if !errors.As(err, &ae) || ae.Code != tc.want {
+			t.Errorf("%s: got %v, want code %s", tc.name, err, tc.want)
 		}
 	}
 }
