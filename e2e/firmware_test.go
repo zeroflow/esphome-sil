@@ -5,9 +5,11 @@ package e2e
 import (
 	"bytes"
 	"debug/elf"
+	"fmt"
 	"io/fs"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -107,6 +109,73 @@ func TestFirmwareBus(t *testing.T) {
 	if !proc.alive() {
 		t.Fatalf("firmware exited")
 	}
+	t.Run("api_info", func(t *testing.T) {
+		out, code := runAPIClient(t, id.Port, id.Key, "info")
+		if code != 0 {
+			t.Fatalf("info exit %d: %v", code, out)
+		}
+		if out["device_name"] != "sil-"+id.Name {
+			t.Errorf("device_name = %v, want sil-%s", out["device_name"], id.Name)
+		}
+		norm := func(s string) string { return strings.ToLower(strings.ReplaceAll(s, ":", "")) }
+		if mac, _ := out["mac_address"].(string); norm(mac) != norm(id.MAC) {
+			t.Errorf("mac_address = %v, want %s", out["mac_address"], id.MAC)
+		}
+		have := map[string]bool{}
+		if list, ok := out["entities"].([]any); ok {
+			for _, e := range list {
+				if s, ok := e.(string); ok {
+					have[s] = true
+				}
+			}
+		}
+		for n := 1; n <= 4; n++ {
+			for _, name := range []string{fmt.Sprintf("Fan %d", n), fmt.Sprintf("Fan %d Speed", n)} {
+				if !have[name] {
+					t.Errorf("entity %q missing from %v", name, out["entities"])
+				}
+			}
+		}
+	})
+
+	// setFan drives one fan through the encrypted API and expects the duty on the bus.
+	setFan := func(t *testing.T, fan, speed int, want float64) {
+		t.Helper()
+		out, code := runAPIClient(t, id.Port, id.Key, "set-fan", "--fan", fmt.Sprint(fan), "--speed", fmt.Sprint(speed))
+		if code != 0 {
+			t.Fatalf("set-fan exit %d: %v", code, out)
+		}
+		ch := fmt.Sprintf("port%d.duty", fan)
+		m := peer.Next(t, 5*time.Second, fmt.Sprintf("%s = %v", ch, want), func(m map[string]any) bool {
+			return fwOutFor(ch)(m) && m["v"] == want
+		})
+		t.Logf("fan %d speed %d -> %v", fan, speed, m)
+	}
+
+	t.Run("fan1_duty", func(t *testing.T) { setFan(t, 1, 40, 0.4) })
+
+	t.Run("four_ports", func(t *testing.T) {
+		setFan(t, 2, 20, 0.2)
+		setFan(t, 3, 60, 0.6)
+		setFan(t, 4, 100, 1.0)
+	})
+
+	t.Run("rpm_in", func(t *testing.T) {
+		peer.Send(t, `{"k":"in","ch":"port1.rpm","v":1234}`)
+		out, code := runAPIClient(t, id.Port, id.Key, "watch", "--seconds", "3")
+		if code != 0 {
+			t.Fatalf("watch exit %d: %v", code, out)
+		}
+		series, _ := out["series"].(map[string]any)
+		samples, _ := series["Fan 1 Speed"].([]any)
+		for _, s := range samples {
+			if pair, ok := s.([]any); ok && len(pair) == 2 && pair[1] == float64(1234) {
+				return
+			}
+		}
+		t.Fatalf("Fan 1 Speed never reached 1234: %v", series)
+	})
+
 	if after := fwGitStatus(t, root); after != before {
 		t.Fatalf("working tree changed by the build:\nbefore:\n%s\nafter:\n%s", before, after)
 	}

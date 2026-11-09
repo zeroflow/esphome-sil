@@ -7,12 +7,14 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -262,6 +264,46 @@ func waitFor(t testing.TB, timeout time.Duration, what string, cond func() bool)
 			t.Fatalf("timed out after %s waiting for %s", timeout, what)
 		}
 	}
+}
+
+// runAPIClient runs e2e/api_client.py inside the pinned image against the
+// firmware API on 127.0.0.1:port and returns its one JSON object and exit
+// code. The key reaches the container only through the process environment.
+func runAPIClient(t testing.TB, port int, key string, args ...string) (map[string]any, int) {
+	t.Helper()
+	root := repoRoot(t)
+	dockerArgs := []string{
+		"run", "--rm", "--network", "host",
+		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		"-e", "HOME=/tmp",
+		"-e", "PYTHONDONTWRITEBYTECODE=1",
+		"-e", "SIL_API_KEY",
+		"-v", filepath.Join(root, "e2e") + ":/s:ro",
+		"--entrypoint", "python3",
+		fwbuild.Image,
+		"/s/api_client.py", "--port", fmt.Sprint(port),
+	}
+	dockerArgs = append(dockerArgs, args...)
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+	cmd.Env = append(os.Environ(), "SIL_API_KEY="+key)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	code := 0
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			t.Fatalf("run api client: %v", err)
+		}
+		code = ee.ExitCode()
+	}
+	var out map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("api client printed no JSON object (exit %d): %v\nstdout: %s\nstderr: %s", code, err, stdout.String(), stderr.String())
+	}
+	return out, code
 }
 
 // busPeer plays the simulator side of the sim-bus: it listens on a Unix
