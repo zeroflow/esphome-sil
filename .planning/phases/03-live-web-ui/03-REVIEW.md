@@ -1,6 +1,6 @@
 ---
 phase: 03-live-web-ui
-reviewed: 2026-11-09T00:00:00Z
+reviewed: 2026-11-09T18:00:00Z
 depth: standard
 files_reviewed: 62
 files_reviewed_list:
@@ -67,230 +67,147 @@ files_reviewed_list:
   - uitest/plot_test.go
   - uitest/resilience_test.go
 findings:
-  critical: 1
-  warning: 3
-  info: 5
-  total: 9
-status: issues_found
+  critical: 0
+  warning: 0
+  info: 6
+  total: 6
+status: clean
 ---
 
 # Phase 3: Code Review Report
 
-**Reviewed:** 2026-11-09
+**Reviewed:** 2026-11-09T18:00:00Z
 **Depth:** standard
 **Files Reviewed:** 62
-**Status:** issues_found
+**Status:** clean (no critical or warning findings; six info items remain)
 
 ## Summary
 
-I read the non-test source in full: `internal/web`, `internal/control`, `internal/supervisor`
-(including `watch.go`, which is outside the diff but carries the stream contract), `internal/engine`,
-`internal/events`, `internal/instance`, `internal/lifecycle`, `internal/cli`, every file under
-`ui/web/js`, `index.html`, the Makefile and `go.mod`. I skimmed the tests (`cdptest`, the listener
-and websocket tests, the `uitest` helpers) for reliability and flake risk.
+Iteration 3, the final pass. I read api.js, buttons.js and app.js in full, with the bfbb808 diff and the
+tests that go with it (uitest/hold_test.go, uitest/bench_test.go). I then re-read ws.go and web.go and
+checked that the engine and bench code they depend on is consistent.
 
-The required protections hold up under tracing:
+**WR-01 (one stalled button request blocks the cap) is resolved.** Points checked:
 
-- **api.key redaction (D-18).** `redacting` covers `Status`, `SimRestart`, `FwRestart` and the
-  snapshot line of `Watch`, both as a value and as a pointer. Nothing else in `Status`, `Warnings`
-  or the error details carries the key.
-- **Socket-only operations (D-19, D-20).** `NewLANHandler` refuses the `LAN: false` rows before
-  they reach the `Control`. `init()` makes a duplicate row or a missing handler a panic.
-- **Host allowlist, CSP and CSRF.** `requestHost` rejects an empty host, a trailing dot, a bad port
-  and a name that is not allowed. A host that passes is the only text interpolated into the CSP.
-  `CrossOriginProtection` and the library's origin check on `/ws` cover the browser side.
-- **Connection and header limits.** I checked the premise of `Limit` against the Go 1.27.3
-  `net/http/server.go` in this environment. `readRequest` sets a read deadline only at line 1103,
-  after the headers are parsed. `startBackgroundRead` clears it once there is no body left to read,
-  which is why `LimitBody` re-arms it for requests that have a body. The reasoning in the comment
-  is correct.
-- **No XSS path.** The JS writes server strings only through `textContent`, `title`,
-  `setAttribute`, and `option.textContent`. LED colours reach `style.setProperty` only after the
-  `#rrggbb` regex. There is no `innerHTML`, no `eval` and no `document.write`.
-- **No unbounded growth in the browser.** Rings are capped (620 plus 64 slack), the `held` buffer is
-  capped at 3000, and `WeakMap`s hold the per-element state.
-- **Engine.** Sample emission, `behind_real_time` and max-hold release are correct on the
-  engine goroutine. The history ring is filled under the same lock that assigns `seq`, and the
-  samples it hands out share no mutable memory with the engine.
+- **Timer cleanup.** `call()` (api.js:51-61) clears the timer in a `finally` around `await perform(...)`.
+  The `await` matters: `perform` returns `res.json()` for a success, so the timer also covers the answer
+  body. Every exit clears it: success, ApiError, network error and abort. When no `timeoutMs` is given,
+  no signal and no timer are created, so the other callers behave as before.
+- **Abort during the body read.** An abort while `res.json()` or `res.text()` is pending rejects the
+  promise with an AbortError, and `finally` still runs. It is not an ApiError, so it needs no special
+  handling.
+- **AbortError kept out of the message line.** All four consumers filter by `instanceof ApiError`: `say`
+  (buttons.js:26), `failJoin` (app.js:107), `loadFans` and `commit`. The abort never reaches
+  `showError`.
+- **History timeout feeds `failJoin`.** `startJoin` passes `timeoutMs: HISTORY_TIMEOUT_MS`; the abort
+  rejection goes to the second `.then` handler, which calls `failJoin`. That resets the scopes, replays
+  the held samples and sets `done`. A timed-out request is aborted, so there is no late `finishJoin`
+  that could overwrite the live plot (and `join !== j` guards it anyway). **IN-04 is resolved.**
+- **Semantics after a timed-out down.**
+  - The down resolves `false`: it is the error branch of the `.then(ok, err)` pair, which also covers
+    the AbortError.
+  - `holding` is cleared only if `cap.gen === gen`, so a timed-out old down cannot clear a newer
+    press.
+  - `release` then sends no up, so there is no orphan up. `started` is `false`, and the chain
+    continues with `undefined`.
+  - The cap is never lit by the page, so a timed-out down lights nothing. If the server did apply
+    that down late, the cap shows the server's report and the engine's 10 s max hold ends it. The
+    comment in buttons.js says so.
+  - Nothing is shown, which matches D-17.
+- **The chain cannot wedge.** `downDone` never rejects (both branches of the pair resolve), and the up's
+  tail ends in `.catch(say)`, where `say` cannot throw. Each link is bounded by 3 s, so the longest
+  wait for a cap's next press is one stalled request. `call()` itself is `async`, so even a synchronous
+  TypeError becomes a rejection that the down/up handlers absorb.
+- **The new test is sound.** `TestUSRStalledRequestTimesOut` relies on the bench's `StallNext`, which
+  blocks on the request context and so ends when the client aborts (the LAN handler passes
+  `r.Context()`; the listener serves one request per connection, so the abort closes the connection and
+  cancels the context). The stall is consumed once (`delete`) under the mutex, so the second down is
+  not stalled. The gap assertion uses server-side `At` stamps with a 2.5 s lower bound against a 3 s
+  timeout, so it is not tied to the browser's own timing. The only timing sensitivity is the 1 s
+  `settle` against the 3 s timeout (see IN-07).
 
-There is one functional bug in the page (CR-01). The rest are gaps against stated intent
-(WR-01, WR-02, WR-03) and small defects.
+**Confirmation pass.** ws.go, web.go and the fixes behind them still hold. One browser stream takes one
+slot, because `/ws` is built over `rc` and the LAN API over `cappedWatch{rc}`. `release` is idempotent
+through `sync.Once`. A refused 9th page returns before taking a slot. Every Watch exit gives the slot
+back. The error-frame rule (`error` and no `k`) is consistent with `errorFrame` being the only frame
+without `k`. I found nothing new there. The `IN-03` re-wrapped comment and double blank line in
+api.js/buttons.js are fixed.
 
-## Critical Issues
-
-### CR-01: A snapshot of a failed instance is mistaken for a stream-error frame, so the page never renders it
-
-**File:** `ui/web/js/app.js:163-168`, fed by `internal/control/control.go:293-298` and `internal/supervisor/watch.go:79`
-**Issue:** `SnapshotLine` embeds `Status`, and `Status.Error` is tagged `json:"error,omitempty"`.
-The embedded fields are promoted to the top level, so the snapshot of any instance with a failure
-has a top-level `"error": {code, message, ...}` key. That happens for `firmware_crash_loop`, a
-`ready_timeout`, `plaintext_api`, `handshake_rejected`, `api_identity_mismatch` and `engine_failed`.
-`onFrame` takes that key for the final `{"error": ...}` frame that `ws.go` sends when a stream
-fails, shows the message, and calls `lost(ws)` before `apply(frame)` ever runs. The effects:
-
-- The page never shows the state of a failed instance (ports, buttons, LEDs, the fan list), which is
-  exactly when the developer opens it.
-- LINK shows "DISCONNECTED, RETRYING" and the page reconnects forever. The backoff is not reset,
-  because the reset is on the snapshot branch that is never reached. Every attempt takes a Watch slot
-  and a browser slot for a moment.
-- The 5 s message line flashes the instance's failure message, which looks like a transport failure.
-
-The tests do not cover it. `TestErrorFrame` sends a frame without `k`, and no bench snapshot carries
-`Status.Error`.
-
-**Fix:** The server's error frame is the only frame with `error` and no `k`. Test for that, and let
-snapshots with an `error` field through to the store:
-```js
-if (frame && frame.k === undefined && frame.error) {
-  showError(String(frame.error.message));
-  lost(ws);
-  return;
-}
-```
-Add a `uitest` case whose bench snapshot has `phase: "failed"` and `error: {code, message}`. It should
-assert LINK is LIVE and the ports are rendered. A mirror test in `internal/web/ws_test.go` should pin the
-frame shape: a snapshot with a failure has `k: "snapshot"` and `error`.
-
-## Warnings
-
-### WR-01: `GET /api/v1/watch` on the LAN listener bypasses the browser stream cap
-
-**File:** `internal/control/operations.go:54`, `internal/web/web.go:46`, `internal/web/ws.go:24-31`
-**Issue:** The cap of `maxBrowserStreams` (8) is counted only inside the `/ws` handler. The `watch`
-row of the operations table has `LAN: true`, so the same listener serves it as an NDJSON stream with
-no counter. The page does not use it (`OPS` in `api.js` has no `watch` entry). Any LAN client can open
-16 `GET /api/v1/watch` streams. The header deadline does not end them, because it only covers the
-headers. That uses all 16 Watch slots of the instance, so `sil watch` and `sil logs --follow` on the
-machine get `too_many_streams`. The comment at `ws.go:24-26` ("so `sil watch` and `sil logs --follow`
-always keep the rest") and the README ("limits on connections and streams") promise exactly what this
-route defeats. The listener is open by decision (D-08); the stated stream limit is still not met.
-
-**Fix:** Count the LAN NDJSON watch against the same budget, or take it off the LAN. Wrap the LAN
-`Control` handed to `NewLANHandler` so that `Watch` takes a browser slot:
-```go
-type capped struct{ control.Control; acquire func() bool; release func() }
-
-func (c capped) Watch(ctx context.Context, r control.WatchRequest, send func(any) error) error {
-	if !c.acquire() {
-		return errTooManyBrowsers()
-	}
-	defer c.release()
-	return c.Control.Watch(ctx, r, send)
-}
-```
-Share the counter between `newWS` and this wrapper. D-19 requires `/ws`, not the NDJSON route. If a LAN
-`watch` is not needed, the simpler fix is `LAN: false` on that row, updating `operations_test.go` and
-the parity test to match.
-
-### WR-02: The release on tab hide or page unload can be cancelled before it is sent
-
-**File:** `ui/web/js/api.js:47`, `ui/web/js/buttons.js:55-58`, `ui/web/js/buttons.js:148-152`
-**Issue:** `visibilitychange` to hidden and `window.blur` call `releaseAll()`. That is the moment a
-tab is being closed or navigated away from, and the only moment the page still has to send `up`.
-`call()` uses a plain `fetch(path, init)` without `keepalive: true`, and `release()` sends the up in
-a promise continuation after the `down` has been answered. A request that is in flight when the page
-is torn down may be cancelled by the browser. The hold then lasts until the engine's 10 s max hold.
-That is the designed backstop (D-15) and it limits the damage, but a cheap mitigation is missing: the
-"firmware sees a 10 s press" case is exactly what the page-side release is there to avoid.
-
-**Fix:** Let `call()` take a `keepalive` option and set it for `button.up`:
-```js
-export async function call(name, { body, query, params, keepalive } = {}) {
-  ...
-  const init = { method, headers: {}, keepalive: keepalive === true };
-```
-```js
-call("button.up", { params: { id: cap.id }, keepalive: true }).catch(say);
-```
-`keepalive` bodies are limited to 64 KiB, which a body-less up is far below.
-
-### WR-03: A fast re-press can send `down` before the previous `up` has arrived
-
-**File:** `ui/web/js/buttons.js:28-45`, `ui/web/js/buttons.js:49-60`
-**Issue:** `release()` clears `cap.holding` at once and fires the `up` in the background. It does
-not wait for the up to complete. A new `pointerdown` then passes the `cap.holding` guard in `down()`
-and posts a second `button.down`. The web listener serves one request per connection (keep-alives are
-off), so the two requests travel on separate connections and nothing orders them. If `down#2` reaches
-the supervisor first, it fails with `button_busy` (the message is shown, the cap is never held, and
-`holding` is cleared). If `up#1` is delayed past `down#2`, it releases the new hold. Either way, a
-press that is physically held is not held on the bench. The window is one network round trip, so it
-needs a re-press within a few milliseconds, which makes it rare. A stuck or lost hold is the main
-failure mode this page exists to prevent.
-
-**Fix:** Keep the in-flight `up` promise on the cap and chain the next `down` after it:
-```js
-// in release(): remember the up
-cap.upDone = cap.downDone.then((started) => (started ? call("button.up", {...}).catch(say) : undefined));
-// in down(): start after the previous up settles
-cap.downDone = cap.upDone.then(() => call("button.down", {...})).then(() => true, (err) => {...});
-```
-Initialise `upDone` to `Promise.resolve()` in `initButtons`.
+Still valid and carried forward: IN-01, IN-02, IN-03 (narrowed), IN-05 (narrowed), IN-06. New: IN-07.
 
 ## Info
 
 ### IN-01: `commit()` throws away edits typed while the request is in flight
 
 **File:** `ui/web/js/inputs.js:126-156`
-**Issue:** After `await call("set", ...)` succeeds, every field that was in the commit has its `dirty`
-class removed and `el.value` overwritten with the applied value. If the user typed again in the same
-field between pressing Enter and the answer, that edit is lost silently and the field no longer shows
-as dirty.
-**Fix:** Snapshot `el.value` into `values` as now, and after the answer touch only the fields whose
-current value still equals the committed text. For a field that changed, leave it dirty and keep its
-text.
+**Issue:** After `await call("set", ...)` succeeds, every field of the commit has its `dirty` class
+removed and `el.value` overwritten with the applied value. If the user typed again in the same field
+between pressing Enter and the answer, that edit is lost and the field no longer shows as dirty.
+**Fix:** Remember `values[el.id]` and reset only a field whose `el.value` still equals it; leave the
+others dirty.
 
 ### IN-02: The static handler lists directories, and `--ui-dir` exposes a whole directory tree to the LAN
 
-**File:** `internal/web/web.go:57`, `internal/supervisor/supervisor.go:236-241`, `internal/web/listener.go:105-107`
-**Issue:** `http.FileServerFS` renders a listing for `/js/` and `/vendor/`. That is harmless for the
-embedded page. With `--ui-dir`, the same handler serves `os.DirFS(dir)` on 0.0.0.0, including dotfiles
-and symlink targets, so a dev checkout can leak its contents to the LAN. `web.Serve` also keeps the
-default 1 MiB `MaxHeaderBytes`, which is large for a listener whose other limits are tight.
-**Fix:** Wrap the file system so that a directory without `index.html` answers 404, and set
-`srv.MaxHeaderBytes = 16 << 10` in `web.Serve`. Say in the `--ui-dir` help that the directory is
-served as is.
+**File:** `internal/web/web.go:60`, `internal/supervisor/supervisor.go:236-241`, `internal/web/listener.go:105-109`
+**Issue:** `http.FileServerFS` renders a listing for `/js/` and `/vendor/`. With `--ui-dir` the same
+handler serves `os.DirFS(dir)` on the LAN bind, dotfiles and symlink targets included. `web.Serve` also
+keeps the default 1 MiB `MaxHeaderBytes` (no override in `internal/web`).
+**Fix:** Wrap the file system so a directory without `index.html` answers 404 and dotfiles are refused;
+set `MaxHeaderBytes` to a few KiB; warn when `--ui-dir` is combined with a LAN bind.
 
 ### IN-03: Small leftovers and duplication
 
 **File:** `internal/supervisor/supervisor.go:74`, `internal/supervisor/supervisor.go:1382`, `internal/lifecycle/lifecycle.go:648`, `internal/instance/port.go:213`
 **Issue:**
-
-- `maxRestartGap` (supervisor.go:74) is unused; `control.MaxRestartGap` is the real limit.
-- `lanHostPtr` is defined in both `supervisor` and `lifecycle` (a repeat of IN-04 of the phase 2 review).
-- `scheme := "http" + ":" + "//"` in `WebURL` is a constant written in an unusual way. If it exists to
-  dodge a grep for `http://`, say so in a comment; if not, use a plain literal.
+- `maxRestartGap` (supervisor.go:74) has no use anywhere in the module; `control.MaxRestartGap` is the
+  real limit.
+- `lanHostPtr` is defined in both `supervisor` and `lifecycle`.
+- `scheme := "http" + ":" + "//"` in `WebURL` is a constant written in an odd way. If it exists to
+  dodge a grep for `http://`, say so in a comment; otherwise use a plain literal.
 - `web.Serve` copies `control.ServeListener` apart from the keep-alive line.
 
-**Fix:** Delete the constant, move the helper to `instance`, and either comment or simplify the
-scheme. Let `control.ServeListener` take a `keepAlives bool` or an `*http.Server` configurator so
-that `web.Serve` can reuse it.
+**Fix:** Delete the constant, move `lanHostPtr` to `instance`, simplify or comment the scheme, and let
+`control.ServeListener` take a keep-alive option.
 
-### IN-04: The history request has no timeout, so a hung request leaves the plot empty until the next reconnect
+### IN-05: The engine tick can still set `simNow` back after an `Apply` or a button edge
 
-**File:** `ui/web/js/app.js:73-80`, `ui/web/js/api.js:47`
-**Issue:** `startJoin` waits for `GET /api/v1/history` and holds every sample frame until it answers.
-`fetch` has no timeout. If the request hangs while the WebSocket stays up (the ping keeps it alive),
-the scopes stay empty and the live samples pile up in `held`. The cap of 3000 stops memory growth, but
-the plot never starts. `HELD_MAX` is described as "a request that long has failed", and nothing ends
-that request.
-**Fix:** Abort the fetch after a few seconds with `AbortSignal.timeout(5000)` (passed to `fetch` from
-`call()`), so `failJoin` runs and the page continues with live samples.
+**File:** `internal/engine/engine.go:545-549`, `internal/engine/engine.go:751-753`, `internal/engine/engine.go:883-885`
+**Issue:** The two handlers are now monotonic (`if now > e.simNow`), which fixes half of the earlier
+finding. The tick still assigns `e.simNow = now` unconditionally (line 548), where `now` was taken when
+the ticker goroutine forwarded the tick. If a handler ran in between and moved `simNow` forward, the
+tick moves it back, so SIM TIME and the `x` of the next sample can step back by up to one tick.
+**Fix:** `if now > e.simNow { e.simNow = now }` at line 548 (keep `dt := now - last` as it is).
 
-### IN-05: Event times are not monotonic around `Apply` and `SetButton`, so SIM TIME can step back
+### IN-06: The up of a hold is queued behind its own down, so a teardown before the down is answered loses the release
 
-**File:** `internal/engine/engine.go:751-753`, `internal/engine/engine.go:883-885`, `internal/engine/engine.go:545-549`, `ui/web/js/store.js:31-33`
-**Issue:** `handleApply` and `handleButton` set `e.simNow` to `Clock.Now()`. The ticker, however,
-queues `r.Now()` taken when its goroutine forwarded the tick, and the engine sets
-`e.simNow = now` from that older value when it picks the tick up. After an `Apply` or a button edge,
-the next tick can therefore carry a smaller time than the event before it. The sample `x` values come
-from tick times only, so the plots are unaffected. `store.apply` writes `state.sim.time_s = frame.t / 1e6`
-for every frame, so the SIM TIME readout can step back by up to a tick (about 10 ms) after an input.
-It is cosmetic, but it contradicts "t is strictly the stream's sim time".
-**Fix:** In the tick case, use `now = max(now, e.simNow)`. In the store, only move `time_s` forward
-(`if (frame.t / 1e6 > state.sim.time_s)`), unless the frame is a snapshot.
+**File:** `ui/web/js/buttons.js:79-83`
+**Issue:** The up is created only after `cap.downDone` settles. If the tab is hidden or closed while
+the down is still in flight, the up is never sent. The engine's 10 s max hold is the backstop, so the
+effect is a button that stays pressed for up to 10 s. The window is one round trip (3 s at worst
+now that the down is bounded).
+**Fix:** When `document.hidden` or the page is unloading, send the up at once with `keepalive` without
+waiting for the down; the server refuses an up with no hold harmlessly. Or send the down with
+`keepalive` too.
+
+### IN-07: A down that timed out but was applied late makes the next press fail as `button_busy`; the new test has a 2 s margin
+
+**File:** `ui/web/js/buttons.js:45-67`, `uitest/hold_test.go:513-519`
+**Issue:** Two small points about the WR-01 fix.
+- The comment in `down()` says a late-applied down shows as the server's hold and ends at the max hold.
+  A second press queued behind it, sent after the 3 s timeout, then meets a held button, and the
+  server answers `button_busy`. That text is shown, and the press is lost until the max hold ends the
+  first. The path needs a server that applies a request more than 3 s late, which a local sim does not
+  do; no test covers it.
+- `TestUSRStalledRequestTimesOut` asserts that only one down exists after `settle(1s)`. The page's
+  timeout is 3 s, so the margin is 2 s minus CDP latency for the release and press events. On a very
+  loaded machine this could flake. Exporting the timeout to the test, or lengthening `settle` only as
+  far as the margin allows, would not help; a larger `REQUEST_TIMEOUT_MS` in a test build would.
+**Fix:** Optional. Document the `button_busy` case next to the existing comment. For the test, read
+`REQUEST_TIMEOUT_MS` from the page (`import("/js/buttons.js")`) and assert the "one down" window
+relative to it, or accept the margin.
 
 ---
 
-_Reviewed: 2026-11-09_
+_Reviewed: 2026-11-09T18:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
