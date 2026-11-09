@@ -16,6 +16,15 @@ import (
 // wsWriteBudget is how long one frame write may take before the connection is given up.
 const wsWriteBudget = 10 * time.Second
 
+// Liveness and sharing of the stream slots (T-03-15). A browser that does not answer a ping within
+// wsPongBudget is closed; browsers together may hold maxBrowserStreams of the instance's 16 Watch
+// slots, so `sil watch` and `sil logs --follow` always keep the rest.
+const (
+	wsPingEvery       = 15 * time.Second
+	wsPongBudget      = 10 * time.Second
+	maxBrowserStreams = 8
+)
+
 // errorFrame is the last frame of a stream that failed after the upgrade.
 type errorFrame struct {
 	Error *apperr.Error `json:"error"`
