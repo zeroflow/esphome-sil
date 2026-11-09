@@ -153,3 +153,13 @@ Items recorded during the unattended `/gsd-autonomous --from 1 --to 3` run (2026
 | 1 | `sil sim restart` builds a fresh World, so RPM restarts from 0 (D-02) rather than resuming its pre-restart trajectory (Research Pitfall 10). Confirm that is intended under criterion 3 | 01-10-PLAN.md | needs review |
 | 1 | Control server drops `ReadHeaderTimeout` to satisfy the wall-clock lint; slow-client risk accepted on the 0600 `api.sock` (T-01-30) | 01-03-PLAN.md | needs review |
 | 1 | UI gate matched "component" in Phase 1 text (false positive, no frontend); UI-SPEC skipped for Phase 1 | — | info |
+| 1 | Verification `human_needed` (5/5 success criteria verified automatically; full e2e 34/34 green). 6 UAT items pending — run `/gsd-verify-work 1` | 01-VERIFICATION.md, 01-UAT.md | needs human |
+| 1 | Review fixes flagged for human verification: a192260/5fbe66f (`compile_failed` classification), 6dbff8e (run.json before startup, SIGHUP), 1c8519a, cab20ad (not re-reviewed: 3-iteration cap). Open Info: IN-01 SIGHUP defeats `nohup sil up`; IN-02 broad `^FAILED: ` marker | 01-REVIEW-DISPOSITION.md | needs review |
+| 1 | Security: 31/31 threats closed after one fix round (T-01-17 `sil down` runtime-base gap fixed in ce3bed4). SECURITY.md still `status: draft`, sign-off pending. Residual notes: hub `path:` default `/tmp/sil.sock`, first-build network fetch integrity, mount-root check does not resolve symlinks | 01-SECURITY.md | needs review |
+| 1 | `sim.time_s` keeps running across a simulator restart (not reset). `TestRestartEitherOrder` flaked once in 01-12, green since | 01-10/01-12 SUMMARY | info |
+
+## Deferred Verification
+
+| Phase | State | Resume |
+|-------|-------|--------|
+| 1 | verification_deferred_human | /gsd-verify-work 1 |
