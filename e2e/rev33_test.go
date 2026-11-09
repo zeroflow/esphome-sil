@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -517,4 +518,204 @@ func TestEnvSet(t *testing.T) {
 func jgetSlice(v any, path ...any) []any {
 	s, _ := jget(v, path...).([]any)
 	return s
+}
+
+// r33ErrDetail is error.detail of a failed result.
+func r33ErrDetail(out map[string]any) map[string]any {
+	d, _ := jget(out, "error", "detail").(map[string]any)
+	return d
+}
+
+// TestSetVocabulary drives every shape of `sil set` of D-09 against one Rev 3.3 instance: strict,
+// atomic, a named error for each misuse, and the values survive both kinds of restart. The
+// subtests run in order and build on the state the previous one left.
+func TestSetVocabulary(t *testing.T) {
+	in := r33Up(t, "e2e-setv")
+	unchanged := func(t *testing.T, temperature, humidity float64) {
+		t.Helper()
+		if st := in.env.Status(t, in.name); !r33EnvIs(st, temperature, humidity) {
+			t.Fatalf("status env = %v, want %v and %v (a failed set changes nothing)", st["env"], temperature, humidity)
+		}
+	}
+
+	t.Run("atomic_reject", func(t *testing.T) {
+		out, code := in.set(t, "temperature=30", "humidity=101")
+		r33ExpectErr(t, "set temperature=30 humidity=101", out, code, "value_out_of_range")
+		d := r33ErrDetail(out)
+		if d["key"] != "humidity" || d["min"] != float64(0) || d["max"] != float64(100) {
+			t.Fatalf("detail %v, want key humidity, min 0, max 100", d)
+		}
+		unchanged(t, 22, 45)
+	})
+	t.Run("unknown_key", func(t *testing.T) {
+		out, code := in.set(t, "fanspeed=3")
+		r33ExpectErr(t, "set fanspeed=3", out, code, "unknown_key")
+		known := fmt.Sprint(jgetSlice(out, "error", "detail", "known"))
+		if !strings.Contains(known, "temperature") || !strings.Contains(known, "humidity") {
+			t.Fatalf("detail.known = %s, want temperature and humidity", known)
+		}
+		unchanged(t, 22, 45)
+	})
+	t.Run("not_a_number", func(t *testing.T) {
+		for _, v := range []string{"warm", "NaN", "Inf", "-Inf", "0x10", "1e999"} {
+			out, code := in.set(t, "temperature="+v)
+			r33ExpectErr(t, "set temperature="+v, out, code, "invalid_argument")
+		}
+		unchanged(t, 22, 45)
+	})
+	t.Run("bounds", func(t *testing.T) {
+		for _, tc := range [][2]string{{"temperature", "-40"}, {"temperature", "125"}, {"humidity", "0"}, {"humidity", "100"}} {
+			out, code := in.set(t, tc[0]+"="+tc[1])
+			if code != 0 {
+				t.Fatalf("set %s=%s: exit %d: %v, want accepted", tc[0], tc[1], code, out)
+			}
+		}
+		unchanged(t, 125, 100)
+		for _, tc := range [][2]string{{"temperature", "-40.1"}, {"temperature", "125.1"}, {"humidity", "-0.1"}, {"humidity", "100.1"}} {
+			out, code := in.set(t, tc[0]+"="+tc[1])
+			r33ExpectErr(t, "set "+tc[0]+"="+tc[1], out, code, "value_out_of_range")
+			if r33ErrDetail(out)["key"] != tc[0] {
+				t.Fatalf("detail %v, want key %s", r33ErrDetail(out), tc[0])
+			}
+		}
+		unchanged(t, 125, 100)
+		if out, code := in.set(t, "temperature=22", "humidity=45"); code != 0 {
+			t.Fatalf("restoring the defaults: exit %d: %v", code, out)
+		}
+	})
+	t.Run("empty_and_duplicate", func(t *testing.T) {
+		for _, pairs := range [][]string{nil, {"temperature="}, {"temperature"}, {"=5"}, {"temperature=1", "temperature=2"}} {
+			out, code := in.set(t, pairs...)
+			r33ExpectErr(t, fmt.Sprintf("sil set %q", pairs), out, code, "invalid_argument")
+		}
+		unchanged(t, 22, 45)
+	})
+	t.Run("argument_order", func(t *testing.T) {
+		a, ca := in.set(t, "humidity=41", "temperature=23")
+		b, cb := in.set(t, "temperature=23", "humidity=41")
+		if ca != 0 || cb != 0 || fmt.Sprint(a) != fmt.Sprint(b) || fmt.Sprint(a) != "map[applied:map[humidity:41 temperature:23]]" {
+			t.Fatalf("results %v (exit %d) and %v (exit %d), want the same applied map for both orders", a, ca, b, cb)
+		}
+		so, _, _ := in.env.run(t, "set", "temperature=23", "humidity=41", "-i", in.name)
+		if !strings.HasPrefix(so, `{"applied":{"humidity":41,"temperature":23}}`) {
+			t.Fatalf("stdout %q, want applied keys sorted", so)
+		}
+		if out, code := in.set(t, "temperature=22", "humidity=45"); code != 0 {
+			t.Fatalf("restoring the defaults: exit %d: %v", code, out)
+		}
+	})
+	t.Run("survives_sim_restart", func(t *testing.T) {
+		if out, code := in.set(t, "temperature=27.5"); code != 0 {
+			t.Fatalf("set: exit %d: %v", code, out)
+		}
+		if out, code, stderr := in.env.Sil(t, "sim", "restart", in.name); code != 0 {
+			t.Fatalf("sim restart: exit %d: %v\nstderr: %s", code, out, stderr)
+		}
+		in.env.WaitStatus(t, in.name, 3*time.Second, func(st map[string]any) bool { return r33EnvIs(st, 27.5, 45) })
+		in.waitFwEnv(t, 3*time.Second, 27.5, 45)
+	})
+	t.Run("survives_fw_restart", func(t *testing.T) {
+		if out, code, stderr := in.env.Sil(t, "fw", "restart", in.name); code != 0 {
+			t.Fatalf("fw restart: exit %d: %v\nstderr: %s", code, out, stderr)
+		}
+		in.env.WaitStatus(t, in.name, 3*time.Second, func(st map[string]any) bool {
+			return st["phase"] == "ready" && r33EnvIs(st, 27.5, 45)
+		})
+		in.waitFwEnv(t, 3*time.Second, 27.5, 45)
+	})
+	t.Run("bus_down_accepted", func(t *testing.T) {
+		restart := in.async("sim", "restart", "--gap", "3s", in.name)
+		in.env.WaitStatus(t, in.name, 10*time.Second, func(st map[string]any) bool {
+			return jget(st, "firmware", "bus_connected") == false
+		})
+		if out, code := in.set(t, "humidity=55"); code != 0 {
+			t.Fatalf("set while the bus is down: exit %d: %v, want accepted", code, out)
+		}
+		if r := r33Wait(t, "sim restart", restart); r.exit != 0 {
+			t.Fatalf("sim restart: exit %d, %v", r.exit, r.out)
+		}
+		in.env.WaitStatus(t, in.name, 20*time.Second, func(st map[string]any) bool {
+			return st["phase"] == "ready" && r33EnvIs(st, 27.5, 55)
+		})
+		in.waitFwEnv(t, 5*time.Second, 27.5, 55)
+	})
+}
+
+// r33Contract is the entity set of the product's HIL contract (FW-02), exactly.
+var r33Contract = []string{
+	"Button USR1", "Button USR2", "Button USR3",
+	"Fan 1", "Fan 1 Speed", "Fan 2", "Fan 2 Speed", "Fan 3", "Fan 3 Speed", "Fan 4", "Fan 4 Speed",
+	"Humidity", "Temperature",
+}
+
+// TestRev33Entities pins what Home Assistant sees of the Rev 3.3 example: exactly the 13 entities
+// of the HIL contract, no light and nothing else, and `sil status` with every field of CLI-01.
+func TestRev33Entities(t *testing.T) {
+	const name = "e2e-ents"
+	in := r33Up(t, name)
+
+	info, code := in.env.APIClient(t, in.port, in.key, "info")
+	if code != 0 {
+		t.Fatalf("api info: exit %d: %v", code, info)
+	}
+	var got []string
+	for _, e := range jgetSlice(info, "entities") {
+		s, _ := e.(string)
+		got = append(got, s)
+	}
+	if !slices.Equal(got, r33Contract) { // got is sorted by the client; r33Contract is in sorted order
+		t.Fatalf("native API entities = %q, want exactly %q", got, r33Contract)
+	}
+	if info["device_name"] != "sil-"+name {
+		t.Errorf("device_name = %v, want sil-%s", info["device_name"], name)
+	}
+
+	st := in.env.WaitStatus(t, name, 10*time.Second, func(st map[string]any) bool {
+		t_, _ := jget(st, "sim", "time_s").(float64)
+		return st["phase"] == "ready" && t_ > 0
+	})
+	if st["instance"] != name {
+		t.Errorf("instance = %v, want %s", st["instance"], name)
+	}
+	if host, _ := jget(st, "api", "host").(string); host == "" {
+		t.Errorf("api.host = %v, want a host", jget(st, "api", "host"))
+	}
+	if p, _ := jget(st, "api", "port").(float64); int(p) != in.port {
+		t.Errorf("api.port = %v, want %d", jget(st, "api", "port"), in.port)
+	}
+	if k, _ := jget(st, "api", "key").(string); k != in.key {
+		t.Errorf("api.key = %v, want the key of sil up", jget(st, "api", "key"))
+	}
+	if _, ok := jget(st, "firmware", "pid").(float64); !ok {
+		t.Errorf("firmware.pid = %v, want a number", jget(st, "firmware", "pid"))
+	}
+	if jget(st, "firmware", "bus_connected") != true {
+		t.Errorf("firmware.bus_connected = %v, want true", jget(st, "firmware", "bus_connected"))
+	}
+	ports, _ := st["ports"].([]any)
+	if len(ports) != 4 {
+		t.Fatalf("ports = %v, want four", st["ports"])
+	}
+	for i, p := range ports {
+		m, _ := p.(map[string]any)
+		for _, f := range []string{"port", "fan", "duty", "rpm", "state"} {
+			if _, ok := m[f]; !ok {
+				t.Errorf("ports[%d] has no %q: %v", i, f, m)
+			}
+		}
+	}
+	if !r33EnvIs(st, 22, 45) {
+		t.Errorf("env = %v, want temperature 22 and humidity 45", st["env"])
+	}
+	for _, id := range []string{"usr1", "usr2", "usr3"} {
+		if _, ok := r33Buttons(st, id); !ok {
+			t.Errorf("buttons.%s missing: %v", id, st["buttons"])
+		}
+	}
+	if strip := jgetSlice(st, "leds", "strip"); len(strip) != 5 {
+		t.Errorf("leds.strip = %v, want 5 entries", strip)
+	}
+	if _, ok := jget(st, "leds", "segments").(map[string]any); !ok {
+		t.Errorf("leds.segments = %v, want an object", jget(st, "leds", "segments"))
+	}
 }
