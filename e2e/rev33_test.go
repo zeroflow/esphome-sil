@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -140,4 +142,244 @@ func TestPressTracer(t *testing.T) {
 	if got, _ := info["mac_address"].(string); !strings.EqualFold(got, mac) {
 		t.Errorf("firmware device_info mac = %q, want %q (the MAC sil derived)", got, mac)
 	}
+}
+
+// r33Sleep waits d on the real clock.
+func r33Sleep(d time.Duration) { _ = sysClock.Sleep(context.Background(), d) }
+
+// r33Async runs sil in a goroutine and hands back its decoded stdout and exit code.
+type r33Result struct {
+	out  map[string]any
+	exit int
+	err  error
+}
+
+func (in *r33Inst) async(args ...string) <-chan r33Result {
+	ch := make(chan r33Result, 1)
+	go func() {
+		so, exit, err := isoRun(in.env, args...)
+		r := r33Result{exit: exit, err: err}
+		if err == nil {
+			if jerr := json.Unmarshal([]byte(so), &r.out); jerr != nil {
+				r.err = fmt.Errorf("stdout is not a JSON object: %v: %q", jerr, so)
+			}
+		}
+		ch <- r
+	}()
+	return ch
+}
+
+// r33Wait waits for an async sil call.
+func r33Wait(t *testing.T, what string, ch <-chan r33Result) r33Result {
+	t.Helper()
+	tm := sysClock.NewTimer(2 * time.Minute)
+	defer tm.Stop()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("%s: %v", what, r.err)
+		}
+		return r
+	case <-tm.C():
+		t.Fatalf("%s: did not finish", what)
+		return r33Result{}
+	}
+}
+
+// mustPress runs sil press and requires exit 0.
+func (in *r33Inst) mustPress(t *testing.T, args ...string) map[string]any {
+	t.Helper()
+	out, code := in.press(t, args...)
+	if code != 0 {
+		t.Fatalf("sil press %v: exit %d: %v", args, code, out)
+	}
+	return out
+}
+
+// expectErr requires exit 1 with the given error code and returns the result.
+func r33ExpectErr(t *testing.T, what string, out map[string]any, code int, want string) map[string]any {
+	t.Helper()
+	if code != 1 || r33ErrCode(out) != want {
+		t.Fatalf("%s: exit %d, %v, want exit 1 %s", what, code, out, want)
+	}
+	return out
+}
+
+// TestPressVocabulary drives every press form of D-01..D-04 against the real
+// firmware on one Rev 3.3 instance; the subtests run in order and build on the
+// duties the previous one left behind.
+func TestPressVocabulary(t *testing.T) {
+	in := r33Up(t, "e2e-r33-voc")
+
+	// Fan 1 at 40 %, then one USR1 press: Fan 1 50 %, Fans 2-4 10 %.
+	in.setFan(t, 1, 40)
+	in.waitDuties(t, [4]float64{0.4, 0, 0, 0})
+	in.mustPress(t, "usr1")
+	in.waitDuties(t, [4]float64{0.5, 0.1, 0.1, 0.1})
+
+	t.Run("usr3_lowers", func(t *testing.T) {
+		in.mustPress(t, "usr3")
+		in.waitDuties(t, [4]float64{0.4, 0, 0, 0})
+	})
+	t.Run("usr1_long_is_noop", func(t *testing.T) {
+		in.mustPress(t, "usr1", "--long")
+		r33Sleep(1500 * time.Millisecond)
+		if st := in.env.Status(t, in.name); !r33Duties(st, [4]float64{0.4, 0, 0, 0}) {
+			t.Fatalf("a long USR1 press changed the duties: %v", jget(st, "ports"))
+		}
+	})
+	t.Run("usr2_short_is_noop", func(t *testing.T) {
+		in.mustPress(t, "usr2")
+		r33Sleep(500 * time.Millisecond)
+		if st := in.env.Status(t, in.name); !r33Duties(st, [4]float64{0.4, 0, 0, 0}) {
+			t.Fatalf("a short USR2 press changed the duties: %v", jget(st, "ports"))
+		}
+	})
+	t.Run("usr2_long_full", func(t *testing.T) {
+		out := in.mustPress(t, "usr2", "--long")
+		down, _ := out["t_down_us"].(float64)
+		up, _ := out["t_up_us"].(float64)
+		if jget(out, "hold_ms") != float64(1500) || up-down < 1500000 {
+			t.Fatalf("long press result %v, want hold_ms 1500 and t_up_us - t_down_us >= 1500000", out)
+		}
+		in.waitDuties(t, [4]float64{1, 1, 1, 1})
+	})
+	t.Run("status_during_long_press", func(t *testing.T) {
+		done := in.async("press", "usr2", "--long", "-i", in.name)
+		sawHeld, polls := false, 0
+	loop:
+		for {
+			select {
+			case r := <-done:
+				if r.err != nil || r.exit != 0 {
+					t.Fatalf("press during the status polls: exit %d, err %v, %v", r.exit, r.err, r.out)
+				}
+				break loop
+			default:
+			}
+			st := in.env.Status(t, in.name) // fails the test on a non-zero exit or invalid JSON
+			polls++
+			if level, _ := r33Buttons(st, "usr2"); level {
+				sawHeld = true
+			}
+			r33Sleep(200 * time.Millisecond)
+		}
+		if !sawHeld {
+			t.Errorf("none of %d status calls during the 1.5 s press showed buttons.usr2 true", polls)
+		}
+	})
+	t.Run("back_to_back", func(t *testing.T) {
+		in.mustPress(t, "usr3")
+		in.mustPress(t, "usr3") // started as soon as the first returned
+		in.waitDuties(t, [4]float64{0.8, 0.8, 0.8, 0.8})
+	})
+	t.Run("down_up_and_busy", func(t *testing.T) {
+		type watchRes struct {
+			out  map[string]any
+			code int
+		}
+		watch := make(chan watchRes, 1)
+		go func() {
+			out, code := runAPIClient(t, in.port, in.key, "watch", "--seconds", "14")
+			watch <- watchRes{out, code}
+		}()
+		r33Sleep(4 * time.Second)
+
+		out := in.mustPress(t, "usr1", "--down")
+		downAt := sysClock.Now()
+		if out["action"] != "down" || out["level"] != true || out["button"] != "usr1" {
+			t.Fatalf("--down result %v", out)
+		}
+		st := in.env.Status(t, in.name)
+		if level, _ := r33Buttons(st, "usr1"); !level {
+			t.Fatalf("buttons.usr1 is not true after --down: %v", st["buttons"])
+		}
+		o, c := in.press(t, "usr1")
+		if d, _ := r33ExpectErr(t, "press on a held button", o, c, "button_busy")["error"].(map[string]any)["detail"].(map[string]any); d["button"] != "usr1" {
+			t.Fatalf("button_busy detail %v, want button usr1", d)
+		}
+		o, c = in.press(t, "usr1", "--down")
+		r33ExpectErr(t, "--down on a held button", o, c, "button_busy")
+
+		// Hold past the 1000 ms click window so the release is not a click.
+		for sysClock.Now()-downAt < 1200*time.Millisecond {
+			r33Sleep(50 * time.Millisecond)
+		}
+		out = in.mustPress(t, "usr1", "--up")
+		if out["action"] != "up" || out["level"] != false {
+			t.Fatalf("--up result %v", out)
+		}
+		o, c = in.press(t, "usr1", "--up")
+		r33ExpectErr(t, "--up on a released button", o, c, "button_not_held")
+		if st := in.env.Status(t, in.name); !r33Duties(st, [4]float64{0.8, 0.8, 0.8, 0.8}) {
+			t.Fatalf("duties changed during the busy checks: %v", jget(st, "ports"))
+		}
+
+		w := <-watch
+		if w.code != 0 {
+			t.Fatalf("watch: exit %d: %v", w.code, w.out)
+		}
+		series, _ := jget(w.out, "series", "Button USR1").([]any)
+		sawTrue, falseAfter := false, false
+		for _, p := range series {
+			v := jget(p, 1)
+			if v == true {
+				sawTrue = true
+			}
+			if v == false && sawTrue {
+				falseAfter = true
+			}
+		}
+		if !sawTrue || !falseAfter {
+			t.Fatalf("Button USR1 series %v, want true and later false", series)
+		}
+	})
+	t.Run("hold_bounds", func(t *testing.T) {
+		for _, hold := range []string{"61s", "60001ms", "0s"} {
+			o, c := in.press(t, "usr1", "--hold", hold)
+			r33ExpectErr(t, "--hold "+hold, o, c, "invalid_argument")
+		}
+	})
+	t.Run("unknown_button", func(t *testing.T) {
+		o, c := in.press(t, "usr4")
+		r33ExpectErr(t, "press usr4", o, c, "invalid_argument")
+		known, _ := jget(o, "error", "detail", "known").([]any)
+		if fmt.Sprint(known) != "[usr1 usr2 usr3]" {
+			t.Fatalf("detail.known = %v, want [usr1 usr2 usr3]", known)
+		}
+	})
+	t.Run("bus_down", func(t *testing.T) {
+		restart := in.async("sim", "restart", "--gap", "3s", in.name)
+		in.env.WaitStatus(t, in.name, 10*time.Second, func(st map[string]any) bool {
+			return jget(st, "firmware", "bus_connected") == false
+		})
+		o, c := in.press(t, "usr1")
+		r33ExpectErr(t, "press while the bus is down", o, c, "firmware_not_connected")
+		if r := r33Wait(t, "sim restart", restart); r.exit != 0 {
+			t.Fatalf("sim restart: exit %d, %v", r.exit, r.out)
+		}
+		in.env.WaitStatus(t, in.name, 20*time.Second, func(st map[string]any) bool {
+			return st["phase"] == "ready" && r33Duties(st, [4]float64{0.8, 0.8, 0.8, 0.8})
+		})
+		// The first press after the resync counts like any other.
+		in.mustPress(t, "usr3")
+		in.waitDuties(t, [4]float64{0.7, 0.7, 0.7, 0.7})
+	})
+	t.Run("first_press_after_fw_restart", func(t *testing.T) {
+		if out, code, stderr := in.env.Sil(t, "fw", "restart", in.name); code != 0 {
+			t.Fatalf("fw restart: exit %d: %v\nstderr: %s", code, out, stderr)
+		}
+		in.env.WaitStatus(t, in.name, 20*time.Second, func(st map[string]any) bool {
+			return st["phase"] == "ready" && jget(st, "firmware", "bus_connected") == true && r33Duties(st, [4]float64{0, 0, 0, 0})
+		})
+		in.mustPress(t, "usr1")
+		in.waitDuties(t, [4]float64{0.1, 0.1, 0.1, 0.1})
+	})
+	t.Run("input_not_available", func(t *testing.T) {
+		// The Phase 1 skeleton firmware has no buttons.
+		env := newEnv(t)
+		env.Up(t, "e2e-r33-skel")
+		out, code, _ := env.Sil(t, "press", "usr1", "-i", "e2e-r33-skel")
+		r33ExpectErr(t, "press on firmware without buttons", out, code, "input_not_available")
+	})
 }
