@@ -235,7 +235,7 @@ Every action maps to exactly one operation of the shared `/api/v1` vocabulary th
 
 Rules:
 - **Max hold (D-15):** the page always sends a max-hold with `down`. Value: **10 s** of sim time *(default; well above the 1.5 s long-press preset)*. The engine auto-releases and reports it; the cap simply returns to released when the server says so. The safeguard lives in the API, not in JS.
-- **No pointer capture:** do not call `setPointerCapture` on the caps; D-15 relies on `pointerleave` to release.
+- **No pointer capture:** do not call `setPointerCapture` on the caps; release the touch's implicit capture in `pointerdown` (`releasePointerCapture`, Research Pitfall 6) so that `pointerleave` fires when a finger slides off; D-15 relies on `pointerleave` to release.
 - **Server-driven state:** a rejected `down` (already held) shows the API's error in the message line and leaves the cap as the server reports it.
 - **Disabled while stale:** when the WS is down, USR caps, fan selects, inputs and `APPLY VALUES` are disabled (`disabled` attribute plus 0.4 opacity). If a hold is active when the link drops, the server's max-hold releases it.
 - **Fan-library list:** fetched once per (re)connect; the same list populates all four selects. If the call fails, each select shows only its current fan, disabled, and the error goes to the message line.

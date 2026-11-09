@@ -107,7 +107,7 @@ Deferred. Tracked but not in current roadmap.
 | Bundled / auto-configured Home Assistant | User points any HA at the sim; no coupling |
 | Status LEDs exposed to HA | Product keeps them internal; visible in UI/CLI |
 | UI-only capabilities | UI is a pure API client |
-| Auth / remote access for web UI | Local bench only |
+| Auth for the web UI | Trusted LAN by decision (Phase 3 D-08): page and API are unauthenticated; `--listen 127.0.0.1` keeps them on the machine |
 | File-watch auto-rebuild, always-on daemon | Explicit `sil up`/`down` lifecycle |
 | Silent fallbacks (unknown `fan.toml` keys, wrong ESPHome) | Must fail loudly |
 | Cloud simulators, QEMU | Local-only; no ESP32-S2 QEMU machine |

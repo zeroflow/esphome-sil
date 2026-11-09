@@ -12,11 +12,11 @@ humidity, three user buttons and a five-LED status strip.
 
 Everything runs on your own machine; no cloud simulator involved.
 
-**Status:** Phase 1 (closed-loop fan skeleton) and Phase 2 (full Rev 3.3 bench)
-are implemented. The CLI (`sil`) is the primary interface and is usable by
+**Status:** Phase 1 (closed-loop fan skeleton), Phase 2 (full Rev 3.3 bench) and
+Phase 3 (live web UI) are implemented. The CLI (`sil`) is the primary interface and is usable by
 developers and coding agents alike (one JSON value on stdout per command,
-progress and logs on stderr). The web UI, scenarios and the time factor are
-later phases. See [docs/initial-idea.md](docs/initial-idea.md) for the idea
+progress and logs on stderr). Phase 3 adds a live web UI (see
+[Web UI](#web-ui)); scenarios and the time factor are later phases. See [docs/initial-idea.md](docs/initial-idea.md) for the idea
 behind it.
 
 Test pyramid this fits into: host SiL (this repo) -> hardware-in-the-loop rig
@@ -70,6 +70,46 @@ Four additions exist for the web page and are available to every client:
 - `sil press BUTTON --down --max-hold D` (`1ms` to `60s`) releases the button by
   itself after D of sim time with a `button` event `{"v": false, "reason":
   "max_hold"}`, so a client that goes away cannot leave a button held.
+
+## Web UI
+
+Every running instance serves a live page. `sil up` prints the address
+(`web UI: http://<lan-ip>:<port>/`) and `sil status` carries it as `web.url`;
+open it in a browser on this machine, on another machine of the LAN or on a
+phone. The page shows the four fan ports (RPM, duty and a rolling scope with the
+last minute), the five status LEDs, sim time, time factor, the firmware link and
+whether the simulator is behind real time. It also drives the bench: choose the
+fan of a port, hold the USR1..USR3 caps (a short hold is a click, about 1.5 s is
+the long press), and set temperature and humidity. It is a pure client of the
+same HTTP/WebSocket API the CLI uses (`sil status`, `sil watch`, `sil history`,
+`sil fans`, `sil set`, `sil press`); every value it shows and every action it
+takes can be reproduced with `sil`. If the connection is lost, the header reads
+`DISCONNECTED, RETRYING`, the values dim, and the page reconnects by itself
+(also across `sil sim restart` and `sil down` + `sil up` of the same instance);
+no reload is needed. It needs no internet: all assets are inside the `sil`
+binary, there is no CDN and no font download.
+
+**The page and the HTTP API are unauthenticated.** By default they listen on all
+interfaces (`--listen 0.0.0.0`), so anyone who can reach the address can watch
+and drive the bench. This is a decision for a trusted LAN (Phase 3 D-08). `sil up`
+prints the same notice. What protects you without a login: a Host allowlist
+(IP addresses, `localhost` and this machine's name), cross-origin checks on the
+WebSocket and on every state-changing request (a page you visit cannot drive the
+bench), limits on connections and streams, `api.key` shown as `<redacted>` on
+the network listener, and `down`, `sim restart`, `fw restart` and `sil logs`
+refused there.
+
+| Flag of `sil up` | Effect |
+|------------------|--------|
+| `--listen 127.0.0.1` | keep the page and API on this machine (any other IP picks that interface) |
+| `--allow-host NAME` | also accept requests addressed to a DNS name, repeatable (for a reverse proxy or a local DNS entry) |
+| `--web-port N` | web port; it is sticky per instance (first free port from 8054, stored next to the API port), so a bookmark or phone shortcut keeps working across `sil down` + `sil up`; a taken port fails with exit 2 instead of moving |
+| `--ui-dir DIR` | serve the page from a directory instead of the binary (UI development, no Go rebuild) |
+
+Machine-only operations stay on the private Unix socket: the firmware key
+(`api.key`, read it from `sil status` on this machine), `sil down`,
+`sil sim restart`, `sil fw restart` and `sil logs`. On shared networks and on CI
+runners use `--listen 127.0.0.1` or firewall the web port, like the API port.
 
 ## The Rev 3.3 example
 
@@ -153,7 +193,9 @@ takes about half a minute.
 The Go side has its own suites: `make check` (format, vet, unit tests, the
 sim-bus C++ codec test) and `make e2e` (full runs against the pinned image),
 plus `make test-cpp-image` (the codec test with the image's compiler) and
-`make mod-verify`.
+`make mod-verify`. The page is tested with headless Chrome (`make test-ui`,
+needs `google-chrome` or `SIL_CHROME`; the e2e acceptance of the page, `TestWebAcceptance`,
+runs in `make e2e`).
 
 ## Fan library
 

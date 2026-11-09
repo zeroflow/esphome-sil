@@ -301,6 +301,7 @@ Second: the real sensor reports the **average over `update_interval: 1s`**, whic
 - Single JSON schema for status/events used by CLI, WS and tests; CI check that every UI `fetch`/WS action maps to an API route documented and exercised by the CLI; all derived values computed server-side.
 - Serve from disk with a `-dev` flag; embed in release.
 - Bind `127.0.0.1` by default; check `Origin` on WebSocket upgrade and on mutating requests; consider a per-run token.
+  - **Superseded (Phase 3 D-07/D-08):** the web listener binds all interfaces by default (trusted LAN, no token); `--listen 127.0.0.1` keeps it local. Implemented instead: a Host allowlist (DNS-rebinding), Origin checks on the WebSocket upgrade and on every mutating request (CSRF), `api.key` redacted on the network listener, socket-only lifecycle operations and logs (`down`, `sim restart`, `fw restart`, `logs`), and connection and stream caps. The README states plainly that the page and API are unauthenticated.
 - Vendored uPlot with pinned version and license file; CSP `default-src 'self'`; a test that loads the page with the network blocked.
 **Phase:** E.
 
