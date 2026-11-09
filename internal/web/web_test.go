@@ -41,24 +41,31 @@ func testHandler() http.Handler {
 }
 
 func TestStatusKeyIsRedacted(t *testing.T) {
-	h := testHandler()
-	for _, tc := range []struct{ method, path string }{
-		{http.MethodGet, "/api/v1/status"},
-		{http.MethodPost, "/api/v1/sim/restart"},
-		{http.MethodPost, "/api/v1/fw/restart"},
-	} {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
-		if rec.Code != 200 {
-			t.Fatalf("%s %s = %d: %s", tc.method, tc.path, rec.Code, rec.Body)
-		}
-		if strings.Contains(rec.Body.String(), secretKey) {
-			t.Fatalf("%s %s leaks the key: %s", tc.method, tc.path, rec.Body)
-		}
-		var st control.Status
-		if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil || st.API.Key != RedactedKey {
-			t.Fatalf("%s %s api.key = %q (%v), want %q", tc.method, tc.path, st.API.Key, err, RedactedKey)
-		}
+	rec := httptest.NewRecorder()
+	testHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+	if rec.Code != 200 {
+		t.Fatalf("GET /api/v1/status = %d: %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), secretKey) {
+		t.Fatalf("GET /api/v1/status leaks the key: %s", rec.Body)
+	}
+	var st control.Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil || st.API.Key != RedactedKey {
+		t.Fatalf("api.key = %q (%v), want %q", st.API.Key, err, RedactedKey)
+	}
+}
+
+// The restart routes are refused on the web handler, but the wrapper redacts their Status anyway,
+// so a later change to the refusals cannot open a leak.
+func TestRestartStatusKeyIsRedacted(t *testing.T) {
+	r := redacting{keyControl{}}
+	sim, err := r.SimRestart(context.Background(), control.SimRestartRequest{})
+	if err != nil || sim.API.Key != RedactedKey {
+		t.Fatalf("SimRestart api.key = %q (%v), want %q", sim.API.Key, err, RedactedKey)
+	}
+	fw, err := r.FwRestart(context.Background())
+	if err != nil || fw.API.Key != RedactedKey {
+		t.Fatalf("FwRestart api.key = %q (%v), want %q", fw.API.Key, err, RedactedKey)
 	}
 }
 
@@ -107,5 +114,41 @@ func TestWSRejectsUnknownKindBeforeUpgrade(t *testing.T) {
 	testHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ws?kind=nope", nil))
 	if rec.Code != 400 || !strings.Contains(rec.Body.String(), `"invalid_argument"`) {
 		t.Fatalf("GET /ws?kind=nope = %d %s, want 400 invalid_argument", rec.Code, rec.Body)
+	}
+}
+
+// countingControl counts the lifecycle calls that reach it.
+type countingControl struct {
+	keyControl
+	calls int
+}
+
+func (c *countingControl) Down(context.Context) (control.DownResult, error) {
+	c.calls++
+	return control.DownResult{}, nil
+}
+
+func (c *countingControl) SimRestart(context.Context, control.SimRestartRequest) (control.Status, error) {
+	c.calls++
+	return control.Status{}, nil
+}
+
+func (c *countingControl) FwRestart(context.Context) (control.Status, error) {
+	c.calls++
+	return control.Status{}, nil
+}
+
+func TestLifecycleRefusedAndNeverReachesControl(t *testing.T) {
+	c := &countingControl{}
+	h := NewHandler(c, Options{})
+	for _, path := range []string{"/api/v1/down", "/api/v1/sim/restart", "/api/v1/fw/restart"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"gap_s":1}`)))
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"operation_not_allowed"`) {
+			t.Fatalf("POST %s = %d %s, want 403 operation_not_allowed", path, rec.Code, rec.Body)
+		}
+	}
+	if c.calls != 0 {
+		t.Fatalf("%d lifecycle calls reached the Control, want 0", c.calls)
 	}
 }

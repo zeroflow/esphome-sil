@@ -26,6 +26,7 @@ var Registry = map[string]int{
 	"invalid_name":           ExitFailed,
 	"lint_rejected":          ExitFailed,
 	"not_running":            ExitFailed,
+	"operation_not_allowed":  ExitFailed,
 	"port_claimed":           ExitFailed,
 	"stopping":               ExitFailed,
 	"unknown_fan":            ExitFailed,

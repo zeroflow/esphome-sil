@@ -3,7 +3,7 @@
 //
 // The listener is reachable from the LAN without authentication (D-08). What keeps the instance
 // safe on it is what the handler leaves out: the firmware's API key never leaves the process
-// over this handler (D-18).
+// over this handler (D-18) and the lifecycle operations are refused (D-19).
 package web
 
 import (
@@ -41,10 +41,25 @@ func NewHandler(c control.Control, o Options) http.Handler {
 	}
 	rc := redacting{c}
 	mux := http.NewServeMux()
+	// D-19: the three lifecycle operations are refused before the control handler sees them and never
+	// reach the Control. The method-qualified patterns are more specific than "/api/v1/".
+	mux.HandleFunc("POST /api/v1/down", refuse("down", "sil down"))
+	mux.HandleFunc("POST /api/v1/sim/restart", refuse("sim restart", "sil sim restart"))
+	mux.HandleFunc("POST /api/v1/fw/restart", refuse("fw restart", "sil fw restart"))
 	mux.Handle("/api/v1/", control.NewHandler(rc))
 	mux.Handle("GET /ws", newWS(rc, o))
 	mux.Handle("/", staticHandler(o.Static))
 	return mux
+}
+
+// refuse answers 403 operation_not_allowed: the operation exists only on the instance's control
+// socket, where the caller is on the machine (D-19).
+func refuse(operation, cli string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		control.WriteErrorStatus(w, http.StatusForbidden, apperr.Failed("operation_not_allowed",
+			operation+" is only available on the instance's control socket: run `"+cli+"` on this machine",
+			map[string]any{"operation": operation, "listener": "tcp"}))
+	}
 }
 
 // staticHandler serves the page files for GET and HEAD and answers 405 for every other method.
