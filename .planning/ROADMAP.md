@@ -19,6 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ## Phase Details
 
 ### Phase 1: Closed-Loop Fan Skeleton
+
 **Goal**: Developer runs `sil up` and real ESPHome firmware, built in the pinned image and running directly on the host, drives simulated fans whose RPM flows back over the sim-bus; the loop is observable via `sil status`, survives restarts of either side, and stops cleanly with `sil down`
 **Mode:** mvp
 **Depends on**: Nothing (first phase)
@@ -29,9 +30,39 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Restarting the simulator or the firmware, in either order, re-syncs full state without manual steps. The firmware's API stays responsive while the simulator is gone, and the wire format passes the same golden vectors in both the Go and the C++ tests.
   4. Two named instances run side by side, each with its own run dir, API port, MAC, device name and key. `sil up` on a taken port fails with exit code 2 and a JSON error. `sil down` stops both processes, killing the simulator leaves no orphaned firmware, and each new run starts with fresh preferences.
   5. Misconfigurations fail loudly before anything runs: a host-incompatible component (e.g. `wifi:`, `ledc`, `i2c`), a sim platform without `channel:`, an over-long sim-bus socket path, or an unknown key in `fan.toml` each stop the build or start with a message naming the problem.
-**Plans**: TBD
+
+**Plans:** 13 plans
+
+Plans:
+**Wave 1**
+- [ ] 01-01-PLAN.md — Walking skeleton link 1 (tracer): repo sim_bus component + example build statically in the pinned image, run on the host, duty/RPM cross the sim-bus on four ports via the encrypted API (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 01-02-PLAN.md — Walking skeleton link 2 (tracer): Go engine + fan model + fan library close the loop with real firmware; exact duty decimals; wall-clock lint; pinned, provenance-checked modules (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 01-03-PLAN.md — Walking skeleton link 3 (tracer): `sil up` -> detached supervisor -> `sil status` over api.sock -> `sil down`; four ports; CLI error JSON; e2e Env helpers (wave 3)
+- [ ] 01-04-PLAN.md — Manual clock and deterministic engine tests (exact step composition, last-wins, race-free snapshots) (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 01-05-PLAN.md — Fan model (hysteresis, below_min, asymmetric lag) and strict fan.toml library with located errors (wave 4)
+- [ ] 01-06-PLAN.md — Sim-bus wire format: PROTOCOL.md, golden vectors, strict Go codec and header-only C++ codec (wave 4)
+- [ ] 01-07-PLAN.md — Firmware IO platforms: channel/path codegen validation, USE_* guards, output dedupe, 1 s RPM mean (wave 4)
+- [ ] 01-08-PLAN.md — Build guards: image preflight, two-stage lint, identity assertions, build-hash skip, toolcache, static-ELF check (wave 4)
+- [ ] 01-09-PLAN.md — Isolated instances: names, XDG paths, sticky ports, locks, fresh run dirs, real Noise handshake readiness (wave 4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 01-10-PLAN.md — Resync after restarts: HELLO manifest/snapshot session both sides, `sil sim restart [--gap]`, `sil fw restart` (wave 5)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 01-11-PLAN.md — Supervised firmware: auto-restart, crash-loop guard, orphan-proof shutdown, `sil down` fallback (wave 6)
+- [ ] 01-12-PLAN.md — CLI contract: instance resolution, one JSON value per call, `--quiet`, client-only commands (wave 6)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 01-13-PLAN.md — Exit-class registry, dependency tidy and the full Phase 1 acceptance run (wave 7)
 
 ### Phase 2: Full Rev 3.3 Bench
+
 **Goal**: The complete Rev 3.3 IO surface runs in the sim and can be driven both from the CLI and from the user's own Home Assistant, with a contract test that proves the whole loop
 **Mode:** mvp
 **Depends on**: Phase 1
@@ -42,9 +73,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. LED changes made by the firmware, including `partition` lights and effects such as `pulse`, appear with correct colors in `sil status` and `sil watch`. An idle firmware sends LED frames only on change and at a capped rate.
   4. The user adds a running instance to any Home Assistant using host:port and key from `sil status`, controls fan speed per port, and sees RPM, temperature, humidity and button states follow. Restarting the instance reuses the same HA device with no duplicates, and a second instance appears as a separate device.
   5. One command runs the contract test (builds and runs the example with the simulator; duty to RPM settles, a button press registers, a temperature change arrives) and the aioesphomeapi smoke test (HA-visible entity set, fan command round trip), and both pass.
+
 **Plans**: TBD
 
 ### Phase 3: Live Web UI
+
 **Goal**: The developer watches and drives a running bench from a local web page that is a pure client of the same API the CLI uses
 **Mode:** mvp
 **Depends on**: Phase 2
@@ -55,6 +88,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The page shows the virtual LEDs with their current colors, offers short and long press for USR1-3 and setting temperature/humidity, and the firmware (and HA, if connected) reacts exactly as it does to the same CLI commands.
   4. The page shows sim time, the time factor (fixed at 1), whether the firmware is connected, and a warning when the simulator falls behind real time.
   5. An automated parity check confirms that every value the page displays and every action it performs is available through the CLI/API with the same JSON.
+
 **Plans**: TBD
 **UI hint**: yes
 
@@ -65,6 +99,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Closed-Loop Fan Skeleton | 0/TBD | Not started | - |
+| 1. Closed-Loop Fan Skeleton | 0/13 | Planned | - |
 | 2. Full Rev 3.3 Bench | 0/TBD | Not started | - |
 | 3. Live Web UI | 0/TBD | Not started | - |

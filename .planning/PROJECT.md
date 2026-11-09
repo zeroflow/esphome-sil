@@ -76,6 +76,7 @@ Milestone 1 — "the plumbing works end to end":
 | Time factor deferred, but injectable clock from day one | HA in the loop requires x1; retrofitting a clock abstraction is expensive | — Pending |
 | Tach as RPM value, no pulse simulation | Drivers are HIL's job; SiL tests logic | — Pending |
 | Firmware build via pinned ESPHome Docker image | Nothing to install on the host, matches `compile.sh` | — Pending |
+| RPM sensor is a `PollingComponent` (exception to the push-only sensor rule) | IO-02 requires a 1 s windowed mean published at `update_interval`; temp/humidity/buttons stay push-only `Component`s. Decided autonomously 2026-11-09 during Phase 1 planning (plan-checker blocker); needs maintainer review | — Pending |
 
 ## Evolution
 

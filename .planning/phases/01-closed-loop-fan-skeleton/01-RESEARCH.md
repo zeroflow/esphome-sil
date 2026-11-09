@@ -556,22 +556,29 @@ Script uses `aioesphomeapi.APIClient("127.0.0.1", port, None, noise_psk=key)`, `
 | A9 | Repo-root mount at the same absolute path is enough for all Phase 1 configs | Pitfall 15 | Only the default example was exercised |
 | A10 | `sensor: pulse_counter` is not rejected by `esphome config` on host (probe was inconclusive) | Pattern 3 | If it is rejected, lint message is merely redundant |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Does the maintainer want the control API reachable over TCP in Phase 1?**
+All five questions were decided during planning (unattended run, 2026-11-09); each decision follows the recommendation below and is implemented in the named plan. The maintainer may revisit any of them; none is a locked CONTEXT.md decision.
+
+1. **Does the maintainer want the control API reachable over TCP in Phase 1?** — RESOLVED
    - Known: criterion 2 only says "HTTP/JSON API"; `status` carries the encryption key.
    - Unclear: whether quick `curl` access outweighs local-user key exposure.
    - Recommendation: Unix socket now (A3); revisit at Phase 3.
-2. **Which build mode does `sil up` use when the toolcache is empty?**
+   - **Decision:** the control API is served only on `<run>/api.sock` (0600 in the 0700 run dir) in Phase 1; a 127.0.0.1 TCP listener comes in Phase 3 behind the same `control.NewHandler`. Implemented in 01-03 (`internal/control`, assumption A3, threat T-01-03).
+2. **Which build mode does `sil up` use when the toolcache is empty?** — RESOLVED
    - Known: first-ever build needs network for 2 library archives; afterwards fully offline.
    - Recommendation: allow network automatically for that one case and print "fetching noise-c/libsodium (one-time)" on stderr; refuse silently-offline surprises with the explicit error.
-3. **Where does the example YAML's default resolve from when `sil` runs outside the repo?**
+   - **Decision:** `config` and `compile --only-generate` always run with `--network none`; the compile runs offline when the toolcache seed exists and otherwise uses the bridge network once, printing "fetching noise-c/libsodium archives (one-time, needs network)" and recording `sil: compile network=<mode>` in build.log; an offline download failure says the first build needs network. Implemented in 01-08 (fwbuild pipeline steps e/f, `TestOfflineSeeded`).
+3. **Where does the example YAML's default resolve from when `sil` runs outside the repo?** — RESOLVED
    - Recommendation: locate repo root by walking up for `go.mod` with the module path, or `SIL_REPO`; otherwise require `--config`.
-4. **Does `sil status` need the LAN IP for the HA hint?**
+   - **Decision:** `lifecycle.RepoRoot()` uses `SIL_REPO`, else walks up from the cwd, then from `os.Executable()`, for a `go.mod` whose module line is `github.com/zeroflow/esphome-sil`; when none is found the default example cannot be resolved and `sil up` needs `--config` (exit 1 `config_not_found`). Implemented in 01-03.
+4. **Does `sil status` need the LAN IP for the HA hint?** — RESOLVED
    - Known: API binds 0.0.0.0; mDNS is a stub.
    - Recommendation: Phase 1 prints `127.0.0.1`; Phase 2 (HA) adds a LAN hint.
-5. **Behaviour of `fan: speed` with `restore_mode` for the example.**
+   - **Decision:** Phase 1 reports `api.host` 127.0.0.1 and prints the manual Home Assistant hint with 127.0.0.1 and the port on stderr; the LAN-address hint moves to Phase 2 with the HA work. Implemented in 01-03.
+5. **Behaviour of `fan: speed` with `restore_mode` for the example.** — RESOLVED
    - Recommendation: `restore_mode: ALWAYS_OFF` (as prototype) so fresh prefs and restored runs behave the same in Phase 1.
+   - **Decision:** all four fans in `examples/fan-skeleton.yaml` use `restore_mode: ALWAYS_OFF`, so every boot starts with duty 0 whether or not prefs exist (01-10's `TestFwRestartResync` relies on it). Implemented in 01-01.
 
 ## Environment Availability
 

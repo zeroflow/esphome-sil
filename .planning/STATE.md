@@ -2,16 +2,16 @@
 gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
-status: planning
+status: executing
 stopped_at: Phase 3 UI-SPEC approved
-last_updated: "2026-11-08T22:45:01.052Z"
+last_updated: "2026-11-09T00:40:09.020Z"
 last_activity: 2026-11-08
 last_activity_desc: Roadmap created (3 phases, 40/40 v1 requirements mapped)
-state_head: 2db7f0a95d611dcd9fe858138c3e1027bd868445
+state_head: 7dc44b76a62226e71209c42caa1fad35d3d065bf
 progress:
   total_phases: 3
   completed_phases: 0
-  total_plans: 0
+  total_plans: 13
   completed_plans: 0
   percent: 0
 ---
@@ -27,9 +27,9 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 
 ## Current Position
 
-Phase: 1 of 3 (Closed-Loop Fan Skeleton)
+Phase: 1 (Closed-Loop Fan Skeleton) — READY TO EXECUTE
 Plan: 0 of TBD in current phase
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-11-08 — Roadmap created (3 phases, 40/40 v1 requirements mapped)
 
 Progress: [░░░░░░░░░░] 0%
@@ -93,3 +93,17 @@ Items acknowledged and deferred at milestone close, most recent first:
 Last session: 2026-11-08T22:45:01.040Z
 Stopped at: Phase 3 UI-SPEC approved
 Resume file: .planning/phases/03-live-web-ui/03-UI-SPEC.md
+
+## Needs Human
+
+Items recorded during the unattended `/gsd-autonomous --from 1 --to 3` run (2026-11-08/09). Check each in the morning.
+
+| Phase | Item | Where | Status |
+|-------|------|-------|--------|
+| 1 | Decision taken autonomously: RPM sensor is a `PollingComponent` (exception to the push-only sensor rule) because IO-02 requires a 1 s mean at `update_interval`. Plan-checker blocker resolved by recording this decision after 3 revision iterations. Confirm or revert. | PROJECT.md Key Decisions; .claude/CLAUDE.md + research/STACK.md rows; 01-07-PLAN.md | needs review |
+| 1 | Go module provenance (`flynn/noise`, `go.yaml.in/yaml/v3`): human checkpoint replaced by automated proxy-origin + sum.golang.org checks | 01-02-PLAN.md backstop truth | needs review |
+| 1 | Assumptions taken unattended: A1 Arctic fan constants (`start_duty` 0.10, `tau_up` 1.0 s, `tau_down` 2.5 s); A3 control API on a Unix socket only in Phase 1 (TCP in Phase 3); A4 RPM sensor stops publishing on bus disconnect; A2/A5/A10 per plans | 01-RESEARCH.md, plan frontmatter | needs review |
+| 1 | Flagged edge assumptions left unresolved (unclassified probe rows): EDGE-MODEL-04, EDGE-MODEL-02, EDGE-BUS-04, EDGE-IO-02, EDGE-BUILD-02, EDGE-BUILD-07; 6 descriptor-less prohibitions (flagged-unverified) | plan must_haves | needs review |
+| 1 | `sil sim restart` builds a fresh World, so RPM restarts from 0 (D-02) rather than resuming its pre-restart trajectory (Research Pitfall 10). Confirm that is intended under criterion 3 | 01-10-PLAN.md | needs review |
+| 1 | Control server drops `ReadHeaderTimeout` to satisfy the wall-clock lint; slow-client risk accepted on the 0600 `api.sock` (T-01-30) | 01-03-PLAN.md | needs review |
+| 1 | UI gate matched "component" in Phase 1 text (false positive, no frontend); UI-SPEC skipped for Phase 1 | — | info |
