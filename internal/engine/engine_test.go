@@ -405,7 +405,7 @@ func TestEngineAdvancesModelOnlyOnClockTicks(t *testing.T) {
 
 func TestEngineSnapshotOrderAfterHello(t *testing.T) {
 	h := newHarness(t)
-	want := []string{"welcome", "in", "in", "in", "in", "sync"}
+	want := []string{"welcome", "in", "in", "in", "in", "in", "in", "in", "sync"}
 	got := h.fw.waitKinds(len(want))[:len(want)]
 	for i := range want {
 		if got[i] != want[i] {
@@ -418,6 +418,15 @@ func TestEngineSnapshotOrderAfterHello(t *testing.T) {
 		}
 		if v, ok := f.GetF32("v"); !ok || v != 0 {
 			t.Fatalf("snapshot frame %s: rpm %v (present %v), want 0 for a fresh engine", f, v, ok)
+		}
+	}
+	// The released level of every button follows the rpm frames (Research Pitfall 1).
+	for i, f := range h.fw.received()[5:8] {
+		if ch, _ := f.GetStr("ch"); ch != ButtonIDs[i] {
+			t.Fatalf("snapshot frame %d is for %q, want %s (button order)", 5+i, ch, ButtonIDs[i])
+		}
+		if v, ok := f.GetF32("v"); !ok || v != 0 {
+			t.Fatalf("snapshot frame %s: level %v (present %v), want 0 (released)", f, v, ok)
 		}
 	}
 	if w := h.eng.Snapshot().Warnings; len(w) != 0 {
@@ -466,9 +475,9 @@ func TestEngineManifestWarnings(t *testing.T) {
 			fw := h.dial()
 			fw.session(tc.chans)
 			// The session completes whatever the manifest says.
-			got := fw.waitKinds(6)
-			if got[0] != "welcome" || got[5] != "sync" {
-				t.Fatalf("frame kinds = %v, want welcome, four in frames, sync", got)
+			got := fw.waitKinds(9)
+			if got[0] != "welcome" || got[8] != "sync" {
+				t.Fatalf("frame kinds = %v, want welcome, four rpm and three button in frames, sync", got)
 			}
 			waitUntil(t, "the manifest to be checked", func() bool { return h.eng.Snapshot().Synced })
 			s := h.eng.Snapshot()
@@ -534,8 +543,8 @@ func TestEngineSnapshotCarriesCurrentRPM(t *testing.T) {
 	// its hello is answered with the rpm the fan has right now.
 	fw2 := h.dial()
 	fw2.session(fullManifest())
-	got := fw2.waitKinds(6)
-	if got[0] != "welcome" || got[5] != "sync" {
+	got := fw2.waitKinds(9)
+	if got[0] != "welcome" || got[8] != "sync" {
 		t.Fatalf("frame kinds on the new connection = %v", got)
 	}
 	f := fw2.received()[1]

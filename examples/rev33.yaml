@@ -1,0 +1,170 @@
+# Rev 3.3 bench firmware: four fan ports, RPM sensors and the three user buttons on the sim-bus.
+# 02-02 adds the status LEDs and 02-03 temperature and humidity.
+#
+# Identity is never hand-written here. `sil` (and the e2e harness) inject
+# sil_name / sil_mac / sil_port with `-s` and the API key via env SIL_API_KEY;
+# the defaults below only keep `esphome config` usable by hand.
+substitutions:
+  sil_name: dev
+  sil_mac: "02:00:00:00:00:01"
+  sil_port: "6054"
+
+esphome:
+  name: sil-${sil_name}
+  friendly_name: SiL ${sil_name}
+  build_flags:
+    - -static
+
+host:
+  mac_address: ${sil_mac}
+
+logger:
+  level: INFO
+
+api:
+  port: ${sil_port}
+  reboot_timeout: 0s
+  encryption:
+    key: !env_var SIL_API_KEY
+
+# The product repo switches this source to github://zeroflow/esphome-sil@vX.Y.
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [sim_bus]
+
+sim_bus:
+  id: bus
+
+# Thin product-like button logic (not the real product modules): every fan moves by `delta` percent
+# and is turned off at 0.
+script:
+  - id: step_fans
+    mode: queued
+    parameters:
+      delta: int
+    then:
+      - lambda: |-
+          auto step = [&](fan::Fan *f) {
+            int cur = f->state ? f->speed : 0;
+            int n = std::max(0, std::min(100, cur + delta));
+            auto call = f->make_call();
+            if (n == 0) {
+              call.set_state(false);
+            } else {
+              call.set_state(true);
+              call.set_speed(n);
+            }
+            call.perform();
+          };
+          step(id(fan1));
+          step(id(fan2));
+          step(id(fan3));
+          step(id(fan4));
+
+output:
+  - platform: sim_bus
+    id: pwm_fan1
+    channel: port1.duty
+  - platform: sim_bus
+    id: pwm_fan2
+    channel: port2.duty
+  - platform: sim_bus
+    id: pwm_fan3
+    channel: port3.duty
+  - platform: sim_bus
+    id: pwm_fan4
+    channel: port4.duty
+
+fan:
+  - platform: speed
+    output: pwm_fan1
+    name: "Fan 1"
+    id: fan1
+    speed_count: 100
+    restore_mode: ALWAYS_OFF
+  - platform: speed
+    output: pwm_fan2
+    name: "Fan 2"
+    id: fan2
+    speed_count: 100
+    restore_mode: ALWAYS_OFF
+  - platform: speed
+    output: pwm_fan3
+    name: "Fan 3"
+    id: fan3
+    speed_count: 100
+    restore_mode: ALWAYS_OFF
+  - platform: speed
+    output: pwm_fan4
+    name: "Fan 4"
+    id: fan4
+    speed_count: 100
+    restore_mode: ALWAYS_OFF
+
+sensor:
+  - platform: sim_bus
+    channel: port1.rpm
+    name: "Fan 1 Speed"
+    id: fan1_speed
+    unit_of_measurement: RPM
+    accuracy_decimals: 0
+  - platform: sim_bus
+    channel: port2.rpm
+    name: "Fan 2 Speed"
+    id: fan2_speed
+    unit_of_measurement: RPM
+    accuracy_decimals: 0
+  - platform: sim_bus
+    channel: port3.rpm
+    name: "Fan 3 Speed"
+    id: fan3_speed
+    unit_of_measurement: RPM
+    accuracy_decimals: 0
+  - platform: sim_bus
+    channel: port4.rpm
+    name: "Fan 4 Speed"
+    id: fan4_speed
+    unit_of_measurement: RPM
+    accuracy_decimals: 0
+
+# Buttons are levels; the click windows below are what makes a press short or long.
+binary_sensor:
+  - platform: sim_bus
+    channel: usr1
+    name: "Button USR1"
+    id: btn_usr1
+    on_click:
+      min_length: 50ms
+      max_length: 1000ms
+      then:
+        - script.execute:
+            id: step_fans
+            delta: 10
+  - platform: sim_bus
+    channel: usr2
+    name: "Button USR2"
+    id: btn_usr2
+    on_click:
+      min_length: 1000ms
+      max_length: 10s
+      then:
+        - lambda: |-
+            for (auto *f : {id(fan1), id(fan2), id(fan3), id(fan4)}) {
+              auto call = f->make_call();
+              call.set_state(true);
+              call.set_speed(100);
+              call.perform();
+            }
+  - platform: sim_bus
+    channel: usr3
+    name: "Button USR3"
+    id: btn_usr3
+    on_click:
+      min_length: 50ms
+      max_length: 1000ms
+      then:
+        - script.execute:
+            id: step_fans
+            delta: -10

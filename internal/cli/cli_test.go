@@ -95,12 +95,13 @@ func (r result) detail(t *testing.T) map[string]any {
 // fakeControl is the control.Control a supervisor would be: it records what
 // the CLI asked and answers canned values.
 type fakeControl struct {
-	mu     sync.Mutex
-	calls  []string
-	sim    []control.SimRestartRequest
-	status control.Status
-	err    error
-	onDown func() // runs when a down request arrives (e.g. to end the stand-in supervisor)
+	control.Control // later additions to the interface compile without touching this fake
+	mu              sync.Mutex
+	calls           []string
+	sim             []control.SimRestartRequest
+	status          control.Status
+	err             error
+	onDown          func() // runs when a down request arrives (e.g. to end the stand-in supervisor)
 }
 
 func (f *fakeControl) record(call string) error {

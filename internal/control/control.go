@@ -17,6 +17,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -46,8 +47,10 @@ type Status struct {
 	Firmware FirmwareStatus `json:"firmware"`
 	Sim      SimStatus      `json:"sim"`
 	Ports    []PortStatus   `json:"ports"`
-	Warnings []string       `json:"warnings"`
-	Error    *apperr.Error  `json:"error,omitempty"`
+	// Buttons is the current level of every button (true = held): usr1, usr2, usr3.
+	Buttons  map[string]bool `json:"buttons"`
+	Warnings []string        `json:"warnings"`
+	Error    *apperr.Error   `json:"error,omitempty"`
 }
 
 // APIStatus describes the firmware's native API endpoint.
@@ -118,6 +121,40 @@ func (r SimRestartRequest) Validate() error {
 	return nil
 }
 
+// Button presses. The presets are shared by the CLI and later clients; the HTTP API itself needs an
+// explicit hold_ms.
+const (
+	ShortPress = 200 * time.Millisecond
+	LongPress  = 1500 * time.Millisecond
+	MaxHold    = 60 * time.Second
+)
+
+// PressRequest is the body of POST /api/v1/buttons/{id}/press.
+type PressRequest struct {
+	// HoldMS is how long the button is held, in milliseconds of sim time.
+	HoldMS int64 `json:"hold_ms"`
+}
+
+// Validate answers invalid_argument unless 1 <= hold_ms <= 60000.
+func (r PressRequest) Validate() error {
+	if r.HoldMS < 1 || r.HoldMS > MaxHold.Milliseconds() {
+		return apperr.Failed("invalid_argument", fmt.Sprintf("hold_ms must be between 1 and %d", MaxHold.Milliseconds()),
+			map[string]any{"hold_ms": r.HoldMS})
+	}
+	return nil
+}
+
+// PressResult is the outcome of a press, a down or an up.
+type PressResult struct {
+	Button string `json:"button"`
+	Action string `json:"action"` // press|down|up
+	HoldMS int64  `json:"hold_ms,omitempty"`
+	Level  bool   `json:"level"`
+	// TDownUS and TUpUS are the sim times (microseconds) of the edges.
+	TDownUS int64 `json:"t_down_us,omitempty"`
+	TUpUS   int64 `json:"t_up_us,omitempty"`
+}
+
 // Restart budgets of the client: the longest a restart request may take
 // (30 s gap plus resync, or stop grace plus readiness) is well inside it.
 const restartBudget = 60 * time.Second
@@ -132,6 +169,11 @@ type Control interface {
 	// FwRestart restarts the firmware process and returns the Status once the
 	// instance is ready again.
 	FwRestart(ctx context.Context) (Status, error)
+	// Press holds button id for r.HoldMS of sim time and returns once the
+	// release edge was handed to the bus.
+	Press(ctx context.Context, id string, r PressRequest) (PressResult, error)
+	// SetButton sets the level of button id (down = held) and returns at once.
+	SetButton(ctx context.Context, id string, down bool) (PressResult, error)
 }
 
 type errorBody struct {
@@ -139,7 +181,8 @@ type errorBody struct {
 }
 
 // NewHandler exposes c as GET /api/v1/status, POST /api/v1/down,
-// POST /api/v1/sim/restart and POST /api/v1/fw/restart. An
+// POST /api/v1/sim/restart, POST /api/v1/fw/restart and
+// POST /api/v1/buttons/{id}/press|down|up. An
 // *apperr.Error becomes {"error":{...}} with HTTP 4xx (exit class 1) or 5xx
 // (exit class 2).
 func NewHandler(c Control) http.Handler {
@@ -177,6 +220,34 @@ func NewHandler(c Control) http.Handler {
 	mux.HandleFunc("POST /api/v1/fw/restart", func(w http.ResponseWriter, r *http.Request) {
 		st, err := c.FwRestart(r.Context())
 		reply(w, st, err)
+	})
+	mux.HandleFunc("POST /api/v1/buttons/{id}/press", func(w http.ResponseWriter, r *http.Request) {
+		var req PressRequest
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		if err != nil {
+			reply(w, nil, apperr.Failed("invalid_argument", "cannot read the request body: "+err.Error(), nil))
+			return
+		}
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			reply(w, nil, apperr.Failed("invalid_argument", "bad request body, want {\"hold_ms\": N}: "+err.Error(), nil))
+			return
+		}
+		if err := req.Validate(); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		res, err := c.Press(r.Context(), r.PathValue("id"), req)
+		reply(w, res, err)
+	})
+	mux.HandleFunc("POST /api/v1/buttons/{id}/down", func(w http.ResponseWriter, r *http.Request) {
+		res, err := c.SetButton(r.Context(), r.PathValue("id"), true)
+		reply(w, res, err)
+	})
+	mux.HandleFunc("POST /api/v1/buttons/{id}/up", func(w http.ResponseWriter, r *http.Request) {
+		res, err := c.SetButton(r.Context(), r.PathValue("id"), false)
+		reply(w, res, err)
 	})
 	return mux
 }
@@ -320,6 +391,38 @@ func (c *Client) FwRestart(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	return st, nil
+}
+
+// Press implements Control. The request is bounded by MaxHold plus slack on
+// the real clock; a fired budget is control_unreachable.
+func (c *Client) Press(ctx context.Context, id string, r PressRequest) (PressResult, error) {
+	rctx, cancel := clock.WithTimeout(ctx, clock.NewReal(), MaxHold+10*time.Second)
+	defer cancel()
+	body, err := json.Marshal(r)
+	if err != nil {
+		return PressResult{}, apperr.Infra("internal", err.Error(), nil)
+	}
+	var res PressResult
+	if err := c.do(rctx, http.MethodPost, "/api/v1/buttons/"+url.PathEscape(id)+"/press", body, &res); err != nil {
+		if clock.TimedOut(rctx) {
+			return PressResult{}, apperr.Infra("control_unreachable", "no answer to the button press in time", nil)
+		}
+		return PressResult{}, err
+	}
+	return res, nil
+}
+
+// SetButton implements Control.
+func (c *Client) SetButton(ctx context.Context, id string, down bool) (PressResult, error) {
+	action := "up"
+	if down {
+		action = "down"
+	}
+	var res PressResult
+	if err := c.do(ctx, http.MethodPost, "/api/v1/buttons/"+url.PathEscape(id)+"/"+action, nil, &res); err != nil {
+		return PressResult{}, err
+	}
+	return res, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in []byte, out any) error {

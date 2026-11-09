@@ -13,8 +13,9 @@ import (
 
 // fakeControl records the restart requests the handler forwards.
 type fakeControl struct {
-	sim []SimRestartRequest
-	fw  int
+	Control // later additions to the interface compile without touching this fake
+	sim     []SimRestartRequest
+	fw      int
 }
 
 func (f *fakeControl) Status(context.Context) (Status, error) { return Status{Phase: PhaseReady}, nil }

@@ -2,7 +2,7 @@ import re
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.const import CONF_ID, CONF_PATH
+from esphome.const import CONF_ID, CONF_OUTPUT_ID, CONF_PATH
 import esphome.final_validate as fv
 
 CODEOWNERS = ["@zeroflow"]
@@ -64,7 +64,7 @@ def check_unique_channels(config):
     """
     full = fv.full_config.get()
     seen = {}
-    for domain in ("output", "sensor"):
+    for domain in ("output", "sensor", "binary_sensor", "light"):
         entries = full.get(domain) or []
         if isinstance(entries, dict):
             entries = [entries]
@@ -74,7 +74,8 @@ def check_unique_channels(config):
             channel = entry.get(CONF_CHANNEL)
             if channel is None:
                 continue
-            ident = entry.get(CONF_ID)
+            # A light is named by its output_id when it has one (the id of the underlying light).
+            ident = entry.get(CONF_OUTPUT_ID) or entry.get(CONF_ID)
             ident = getattr(ident, "id", None) or str(ident)
             if channel in seen:
                 raise cv.Invalid(

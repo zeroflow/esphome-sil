@@ -9,6 +9,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -23,6 +24,24 @@ import (
 const (
 	tick         = 10 * time.Millisecond
 	rpmFrameStep = 50 * time.Millisecond
+)
+
+// ButtonIDs are the user buttons of the Rev 3.3 board, in snapshot order. They are also the names
+// of the sim-bus `in` channels that carry the button levels.
+var ButtonIDs = []string{"usr1", "usr2", "usr3"}
+
+// Errors of the engine's operations. They are sentinels: compare with errors.Is.
+var (
+	// ErrNotConnected: the firmware is not on the bus or has not sent its manifest yet.
+	ErrNotConnected = errors.New("the firmware is not connected to the sim-bus")
+	// ErrInputNotAvailable: the firmware's manifest has no channel for the input.
+	ErrInputNotAvailable = errors.New("the firmware has no such input")
+	// ErrButtonBusy: the button is already held.
+	ErrButtonBusy = errors.New("the button is already held")
+	// ErrButtonNotHeld: the button is not held.
+	ErrButtonNotHeld = errors.New("the button is not held")
+	// ErrStopped: the engine's Run has returned; the engine answers at once and never blocks.
+	ErrStopped = errors.New("the simulator engine has stopped")
 )
 
 // PortConfig binds a fan model to a port.
@@ -55,8 +74,10 @@ type Snapshot struct {
 	BusConnected bool
 	BusProto     int
 	// Synced is true once the firmware's manifest of the current session has been checked.
-	Synced   bool
-	Ports    []PortState
+	Synced bool
+	Ports  []PortState
+	// Buttons is the level of every button in ButtonIDs (true = held); always all of them.
+	Buttons  map[string]bool
 	Warnings []string
 }
 
@@ -67,6 +88,7 @@ const (
 	evManifest
 	evFrame
 	evDisconnected
+	evButton
 )
 
 type event struct {
@@ -76,6 +98,21 @@ type event struct {
 	chans  []bus.Channel
 	reason string
 	reply  chan []bus.Frame
+
+	// evButton
+	button buttonOp
+}
+
+// buttonOp is one SetButton request; the reply channel has capacity 1.
+type buttonOp struct {
+	id            string
+	level, strict bool
+	reply         chan buttonReply
+}
+
+type buttonReply struct {
+	t   time.Duration
+	err error
 }
 
 // Engine is the simulator core.
@@ -94,6 +131,13 @@ type Engine struct {
 	simNow    time.Duration
 	srv       *bus.Server
 	nextRPM   time.Duration
+
+	// done is closed when Run has returned, so operations never block on a dead engine.
+	done chan struct{}
+	// buttons is the held level per button id; an id is always present.
+	buttons map[string]bool
+	// btnAvail records the optional button channels of the current session's manifest.
+	btnAvail map[string]bool
 }
 
 type portRuntime struct {
@@ -111,7 +155,13 @@ func New(cfg Config) *Engine {
 	if cfg.Log == nil {
 		cfg.Log = slog.New(slog.DiscardHandler)
 	}
-	e := &Engine{cfg: cfg, ready: make(chan struct{}), inbox: make(chan event, 1024)}
+	e := &Engine{
+		cfg: cfg, ready: make(chan struct{}), inbox: make(chan event, 1024), done: make(chan struct{}),
+		buttons: map[string]bool{}, btnAvail: map[string]bool{},
+	}
+	for _, id := range ButtonIDs {
+		e.buttons[id] = false
+	}
 	for _, pc := range cfg.Ports {
 		e.ports = append(e.ports, portRuntime{
 			cfg:    pc,
@@ -137,6 +187,7 @@ func (e *Engine) publish() {
 		BusProto:     e.proto,
 		Synced:       e.synced,
 		Ports:        make([]PortState, len(e.ports)),
+		Buttons:      make(map[string]bool, len(e.buttons)),
 		Warnings:     append([]string{}, e.warnings...),
 	}
 	for i := range e.ports {
@@ -146,6 +197,9 @@ func (e *Engine) publish() {
 			state = "running"
 		}
 		s.Ports[i] = PortState{Port: p.cfg.Port, Fan: p.cfg.FanID, Duty: p.duty, RPM: p.state.RPM, State: state}
+	}
+	for id, v := range e.buttons {
+		s.Buttons[id] = v
 	}
 	e.snap.Store(s)
 }
@@ -246,13 +300,16 @@ func (e *Engine) Run(ctx context.Context) error {
 // bus is gone, so a status read during a simulator restart says so.
 func (e *Engine) stopped() {
 	e.connected, e.synced, e.proto = false, false, 0
+	e.btnAvail = map[string]bool{}
 	e.publish()
+	close(e.done)
 }
 
 func (e *Engine) handle(ev event) {
 	switch ev.kind {
 	case evHello:
 		e.connected, e.synced = true, false
+		e.btnAvail = map[string]bool{}
 		e.proto = int(ev.hello.Proto)
 		e.warnings = nil
 		ev.reply <- e.inSnapshot()
@@ -261,6 +318,7 @@ func (e *Engine) handle(ev event) {
 		e.checkManifest(ev.chans)
 	case evDisconnected:
 		e.connected, e.synced = false, false
+		e.btnAvail = map[string]bool{}
 		e.proto = 0
 		e.warnings = nil
 		switch ev.reason {
@@ -272,6 +330,8 @@ func (e *Engine) handle(ev event) {
 		}
 	case evFrame:
 		e.handleFrame(ev.frame)
+	case evButton:
+		e.handleButton(ev.button)
 	}
 }
 
@@ -286,16 +346,101 @@ func (e *Engine) warn(w string) {
 }
 
 // inSnapshot is the in frame of every port with its current rpm, in port
-// order. It also marks the values as sent, so the steady-state rate rule only
-// sends changes from here on.
+// order, then the level of every button in ButtonIDs order. The released
+// levels matter: ESPHome runs no state callbacks for an entity's first state,
+// so a button whose first level were 1 would lose its first press. It also
+// marks the rpm values as sent, so the steady-state rate rule only sends
+// changes from here on.
 func (e *Engine) inSnapshot() []bus.Frame {
-	frames := make([]bus.Frame, 0, len(e.ports))
+	frames := make([]bus.Frame, 0, len(e.ports)+len(ButtonIDs))
 	for i := range e.ports {
 		p := &e.ports[i]
 		p.sent, p.sentOnce = float32(p.state.RPM), true
 		frames = append(frames, bus.NewFrame("in").Str("ch", p.rpmCh).Num("v", float64(p.sent)).Int("t", e.micros()))
 	}
+	for _, id := range ButtonIDs {
+		frames = append(frames, e.buttonFrame(id))
+	}
 	return frames
+}
+
+// buttonFrame is the in frame carrying the current level of button id.
+func (e *Engine) buttonFrame(id string) bus.Frame {
+	v := 0.0
+	if e.buttons[id] {
+		v = 1
+	}
+	return bus.NewFrame("in").Str("ch", id).Num("v", v).Int("t", e.micros())
+}
+
+// SetButton sets the level of button id (true = held) and returns the sim
+// time of the edge. strict applies the press rules in this order: the bus must
+// be connected and the manifest received (ErrNotConnected), the manifest must
+// have the channel (ErrInputNotAvailable), a hold needs a released button
+// (ErrButtonBusy) and a release a held one (ErrButtonNotHeld). Non-strict only
+// sets the level. An engine whose Run has returned answers ErrStopped at once.
+func (e *Engine) SetButton(ctx context.Context, id string, level, strict bool) (time.Duration, error) {
+	select {
+	case <-e.done:
+		return 0, ErrStopped
+	default:
+	}
+	op := buttonOp{id: id, level: level, strict: strict, reply: make(chan buttonReply, 1)}
+	select {
+	case e.inbox <- event{kind: evButton, button: op}:
+	case <-e.done:
+		return 0, ErrStopped
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+	select {
+	case r := <-op.reply:
+		return r.t, r.err
+	case <-e.done:
+		// A reply that was sent before the engine stopped still counts.
+		select {
+		case r := <-op.reply:
+			return r.t, r.err
+		default:
+			return 0, ErrStopped
+		}
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
+// handleButton applies one SetButton on the engine goroutine. The edge is
+// stamped with the clock's current time (not the last tick), so two edges
+// separated by a clock sleep are at least that far apart in sim time.
+func (e *Engine) handleButton(op buttonOp) {
+	if _, ok := e.buttons[op.id]; !ok {
+		op.reply <- buttonReply{err: fmt.Errorf("unknown button %q", op.id)}
+		return
+	}
+	if op.strict {
+		switch {
+		case !e.connected || !e.synced:
+			op.reply <- buttonReply{err: ErrNotConnected}
+			return
+		case !e.btnAvail[op.id]:
+			op.reply <- buttonReply{err: ErrInputNotAvailable}
+			return
+		case op.level && e.buttons[op.id]:
+			op.reply <- buttonReply{err: ErrButtonBusy}
+			return
+		case !op.level && !e.buttons[op.id]:
+			op.reply <- buttonReply{err: ErrButtonNotHeld}
+			return
+		}
+	}
+	if now := e.cfg.Clock.Now(); now > e.simNow {
+		e.simNow = now
+	}
+	e.buttons[op.id] = op.level
+	if e.connected {
+		e.send(e.buttonFrame(op.id))
+	}
+	op.reply <- buttonReply{t: e.simNow}
 }
 
 // expectedChannel returns the manifest entry a configured port requires.
@@ -314,6 +459,20 @@ func (e *Engine) checkManifest(chs []bus.Channel) {
 	for _, c := range chs {
 		if _, dup := have[c.Ch]; !dup {
 			have[c.Ch] = c
+		}
+	}
+	// Optional channels: their presence enables the matching operation; a missing one never warns.
+	for _, id := range ButtonIDs {
+		known[id] = true
+		c, ok := have[id]
+		switch {
+		case !ok:
+		case c.Dir != "in":
+			e.warn(fmt.Sprintf("channel %s has direction %q, expected \"in\"", id, c.Dir))
+		case c.Type != "f32":
+			e.warn(fmt.Sprintf("channel %s has type %q, expected \"f32\"", id, c.Type))
+		default:
+			e.btnAvail[id] = true
 		}
 	}
 	for _, w := range want {

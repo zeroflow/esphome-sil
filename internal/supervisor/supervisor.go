@@ -24,6 +24,7 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -613,11 +614,15 @@ func (s *supervisor) Status(_ context.Context) (control.Status, error) {
 		Firmware: control.FirmwareStatus{PID: pid, Running: running, BusConnected: snap.BusConnected, Restarts: restarts, LastExit: lastExit},
 		Sim:      control.SimStatus{TimeS: snap.SimTime.Seconds(), TimeFactor: 1, EngineRestarts: engRestarts, BusProto: snap.BusProto},
 		Ports:    make([]control.PortStatus, 0, len(snap.Ports)),
+		Buttons:  make(map[string]bool, len(engine.ButtonIDs)),
 		Warnings: append([]string{}, snap.Warnings...),
 		Error:    failure,
 	}
 	for _, p := range snap.Ports {
 		st.Ports = append(st.Ports, control.PortStatus{Port: p.Port, Fan: p.Fan, Duty: p.Duty, RPM: p.RPM, State: p.State})
+	}
+	for _, id := range engine.ButtonIDs {
+		st.Buttons[id] = snap.Buttons[id]
 	}
 	return st, nil
 }
@@ -752,6 +757,95 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 		return control.Status{}, err
 	}
 	return s.Status(ctx)
+}
+
+// currentEngine is the engine in the slot right now.
+func (s *supervisor) currentEngine() *engine.Engine {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.slot.eng
+}
+
+// checkButton answers invalid_argument unless id is one of the buttons.
+func checkButton(id string) error {
+	for _, k := range engine.ButtonIDs {
+		if id == k {
+			return nil
+		}
+	}
+	return apperr.Failed("invalid_argument", fmt.Sprintf("unknown button %q; known: %s", id, strings.Join(engine.ButtonIDs, ", ")),
+		map[string]any{"button": id, "known": engine.ButtonIDs})
+}
+
+// buttonErr maps an engine sentinel to its CLI error. Literal codes at the
+// call sites, so the registry scan sees them. A context error and anything
+// foreign pass through unchanged.
+func buttonErr(id string, err error) error {
+	detail := map[string]any{"button": id}
+	switch {
+	case errors.Is(err, engine.ErrNotConnected), errors.Is(err, engine.ErrStopped):
+		return apperr.Failed("firmware_not_connected", "the firmware is not connected to the simulator, so the button cannot be pressed now", detail)
+	case errors.Is(err, engine.ErrInputNotAvailable):
+		return apperr.Failed("input_not_available", "the firmware has no input "+id+" on the sim-bus", detail)
+	case errors.Is(err, engine.ErrButtonBusy):
+		return apperr.Failed("button_busy", "button "+id+" is already held", detail)
+	case errors.Is(err, engine.ErrButtonNotHeld):
+		return apperr.Failed("button_not_held", "button "+id+" is not held", detail)
+	}
+	return err
+}
+
+// Press implements control.Control (D-01, D-02, D-04): the button is held for
+// r.HoldMS of sim clock time, then released; it returns once the release edge
+// was handed to the bus. The release always happens, also when the caller went
+// away during the hold, so a press never leaves a button stuck.
+func (s *supervisor) Press(ctx context.Context, id string, r control.PressRequest) (control.PressResult, error) {
+	if err := checkButton(id); err != nil {
+		return control.PressResult{}, err
+	}
+	if err := r.Validate(); err != nil {
+		return control.PressResult{}, err
+	}
+	if s.isStopping() {
+		return control.PressResult{}, errStopping()
+	}
+	eng := s.currentEngine()
+	down, err := eng.SetButton(ctx, id, true, true)
+	if err != nil {
+		return control.PressResult{}, buttonErr(id, err)
+	}
+	pctx, cancel := s.withDown(ctx)
+	defer cancel()
+	sleepErr := s.clk.Sleep(pctx, time.Duration(r.HoldMS)*time.Millisecond)
+	// The release goes to whichever engine is in the slot now. A replaced
+	// engine (sim restart) left a fresh World with the button released, and a
+	// stopped one answers ErrStopped at once: both count as released.
+	up, err := s.currentEngine().SetButton(context.Background(), id, false, false)
+	if err != nil {
+		if !errors.Is(err, engine.ErrStopped) {
+			return control.PressResult{}, buttonErr(id, err)
+		}
+		up = s.clk.Now()
+	}
+	if sleepErr != nil {
+		if s.isStopping() || isDown(s.downReq) {
+			return control.PressResult{}, errStopping()
+		}
+		return control.PressResult{}, sleepErr
+	}
+	return control.PressResult{
+		Button: id, Action: "press", HoldMS: r.HoldMS, Level: false,
+		TDownUS: down.Microseconds(), TUpUS: up.Microseconds(),
+	}, nil
+}
+
+// SetButton implements control.Control (D-03): one strict edge, no hold.
+func (s *supervisor) SetButton(ctx context.Context, id string, down bool) (control.PressResult, error) {
+	if err := checkButton(id); err != nil {
+		return control.PressResult{}, err
+	}
+	// 02-01 task 1 stub: the raw down/up edges are wired in task 2.
+	return control.PressResult{}, apperr.Infra("internal", "raw button control is not implemented yet", nil)
 }
 
 func isDown(ch <-chan struct{}) bool {

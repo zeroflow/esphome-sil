@@ -50,6 +50,7 @@ type CLI struct {
 	Down   DownCmd   `cmd:"" help:"Stop the instance."`
 	Sim    SimCmd    `cmd:"" help:"Operate on the simulator of an instance."`
 	Fw     FwCmd     `cmd:"" help:"Operate on the firmware of an instance."`
+	Press  PressCmd  `cmd:"" help:"Press a button (usr1..usr3): 200 ms by default, --long holds 1500 ms, --hold DUR sets the hold; --down/--up set the level and return."`
 	Serve  ServeCmd  `cmd:"" hidden:"" help:"Run the detached supervisor (internal)."`
 }
 
@@ -90,6 +91,17 @@ type FwCmd struct {
 // FwRestartCmd is `sil fw restart`.
 type FwRestartCmd struct {
 	Name string `arg:"" optional:"" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
+}
+
+// PressCmd is `sil press`. --instance/-i is the instance selector of the verbs
+// that take further arguments (the positional slot is taken by the button).
+type PressCmd struct {
+	Button   string         `arg:"" help:"Button: usr1, usr2 or usr3."`
+	Long     bool           `xor:"mode" help:"Hold 1500 ms (past the product's 1000 ms long-press threshold)."`
+	Hold     *time.Duration `xor:"mode" help:"Hold for this long (1ms to 60s), e.g. 750ms."`
+	Down     bool           `xor:"mode" help:"Hold the button down and return at once."`
+	Up       bool           `xor:"mode" help:"Release the button and return at once."`
+	Instance string         `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
 }
 
 // ServeCmd is the hidden `sil serve`.
@@ -301,6 +313,34 @@ func (c *FwRestartCmd) Run(env *runEnv) error {
 		return err
 	}
 	env.result = st
+	return nil
+}
+
+// Run implements `sil press`: the PressResult once the release edge was sent
+// (--down and --up answer at once).
+func (c *PressCmd) Run(env *runEnv) error {
+	_, client, err := connect(c.Instance)
+	if err != nil {
+		return err
+	}
+	var res control.PressResult
+	switch {
+	case c.Down, c.Up:
+		res, err = client.SetButton(env.context, c.Button, c.Down)
+	default:
+		hold := control.ShortPress
+		if c.Long {
+			hold = control.LongPress
+		}
+		if c.Hold != nil {
+			hold = *c.Hold // an explicit --hold 0s reaches the server as hold_ms 0 and fails validation
+		}
+		res, err = client.Press(env.context, c.Button, control.PressRequest{HoldMS: hold.Milliseconds()})
+	}
+	if err != nil {
+		return err
+	}
+	env.result = res
 	return nil
 }
 
