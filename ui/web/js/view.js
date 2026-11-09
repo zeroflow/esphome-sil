@@ -3,6 +3,8 @@
 // dotted path into the status JSON) and data-fmt (the formatter); until the first snapshot, and
 // for a path the state does not hold, the element shows `--`, never a fake zero.
 
+import { initFanSelects, renderInputs } from "./inputs.js";
+
 const NONE = "--";
 
 const LINK_TEXT = {
@@ -35,6 +37,8 @@ const formats = {
   factor: (v) => "x" + v,
   firmware: (v) => (v ? "CONNECTED" : "DISCONNECTED"),
   hex: (v) => String(v),
+  select: (v) => String(v),
+  num: (v) => String(v),
 };
 
 // lookup walks a dotted path ("ports.0.rpm") through the state; undefined when any step is missing.
@@ -75,6 +79,7 @@ function buildPanels(n) {
     for (const el of frag.querySelectorAll("[data-src]")) {
       el.dataset.src = el.dataset.src.replace("{i}", String(i));
     }
+    initFanSelects(frag);
     host.appendChild(frag);
   }
   panelCount = n;
@@ -203,8 +208,12 @@ function paint(state, linkState) {
     buildLeds(leds);
   }
   for (const el of document.querySelectorAll("[data-src]")) {
-    el.textContent = shown(state, el);
+    // Form controls show their value through inputs.js (options, dirty and focus rules).
+    if (el.tagName !== "INPUT" && el.tagName !== "SELECT") {
+      el.textContent = shown(state, el);
+    }
   }
+  renderInputs(state, linkState, (el) => shown(state, el));
   const instance = state !== null && typeof state.instance === "string" ? state.instance : "";
   paintLeds(state);
   document.title = instance === "" ? "sil" : "sil — " + instance;

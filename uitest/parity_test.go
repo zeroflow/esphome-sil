@@ -25,9 +25,9 @@ import (
 )
 
 // pageOps names the operations of control.Operations the page uses, by row name. The page watches
-// through its WebSocket; plans that make the page do more (press, set, fans) append the rows they
-// use and extend the session of TestParityRequests.
-var pageOps = []string{"watch.ws"}
+// through its WebSocket, lists the fan library and sets values; plans that make the page do more
+// (press, history) append the rows they use and extend the session of TestParityRequests.
+var pageOps = []string{"watch.ws", "fans", "set"}
 
 // TestParityRequests (UI-06 check a): every request the page makes, HTTP and WebSocket alike, is
 // same-origin and is either a file of the embedded page or a row of control.Operations that the
@@ -38,7 +38,13 @@ func TestParityRequests(t *testing.T) {
 	p := openPage(t, base)
 	waitText(t, p, "#link", "LIVE", 15*time.Second)
 
-	// The session: one event, then a lost stream so the reconnect request is observed too.
+	// The session: one fan change from the select (a set), one event, then a lost stream so the
+	// reconnect request is observed too.
+	if err := p.WaitFor(within(t, 10*time.Second), `document.querySelector('select[aria-label="Fan on port 1"]').options.length === 2`); err != nil {
+		t.Fatalf("the fan list never arrived: %v", err)
+	}
+	chooseFan(t, p, 1, noctua)
+	b.waitCalls(t, "Set", 1, 5*time.Second)
 	b.Emit(events.Event{K: "env", ID: "temperature", V: 24.5}, func(st *control.Status) { st.Env.Temperature = 24.5 })
 	b.DropStreams()
 	b.waitCalls(t, "Watch", 2, 10*time.Second)
@@ -133,6 +139,9 @@ func fmtOracle(kind string, v any) string {
 		return "DISCONNECTED"
 	case "num":
 		return strconv.FormatFloat(num(), 'f', -1, 64)
+	case "select":
+		s, _ := v.(string)
+		return s
 	}
 	return "<no oracle for data-fmt " + kind + ">"
 }

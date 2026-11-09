@@ -29,7 +29,7 @@
   <section class="port">
     <div class="row">
       <span class="chip" data-src="ports.{i}.port" data-fmt="chip">--</span>
-      <span class="fan" data-src="ports.{i}.fan" data-fmt="text">--</span>
+      <select class="fan" data-src="ports.{i}.fan" data-fmt="select" disabled><option value="--">--</option></select>
       <span class="readout"><span class="value rpm" data-src="ports.{i}.rpm" data-fmt="rpm">--</span><span class="unit">RPM</span></span>
       <span class="readout"><span class="value duty" data-src="ports.{i}.duty" data-fmt="pct">--</span><span class="unit">% DUTY</span></span>
     </div>

@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/control"
 	"github.com/zeroflow/esphome-sil/internal/events"
+	"github.com/zeroflow/esphome-sil/internal/fanlib"
 )
 
 // call is one recorded call on the bench: the operation, its arguments as text and when it came
@@ -91,8 +94,8 @@ func (b *bench) enter(op string, args ...any) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.record(op, args...)
-	if err := b.fail[op]; err != nil {
-		delete(b.fail, op)
+	if err := b.fail[strings.ToLower(op)]; err != nil {
+		delete(b.fail, strings.ToLower(op))
 		return err
 	}
 	return nil
@@ -249,11 +252,11 @@ func (b *bench) callsOf(op string) []call {
 	return out
 }
 
-// FailNext makes the next call of op return err.
+// FailNext makes the next call of op (any letter case: "set", "Set") return err.
 func (b *bench) FailNext(op string, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.fail[op] = err
+	b.fail[strings.ToLower(op)] = err
 }
 
 // waitCalls waits until op has been called n times (at least) and returns those calls.
@@ -268,4 +271,100 @@ func (b *bench) waitCalls(t *testing.T, op string, n int, d time.Duration) []cal
 			t.Fatalf("waiting for %d %s calls, got %d: %v", n, op, len(b.callsOf(op)), err)
 		}
 	}
+}
+
+// Fans implements control.Control: every fan of the shipped library, sorted by id.
+func (b *bench) Fans(ctx context.Context) (control.FansResult, error) {
+	if err := b.enter("Fans"); err != nil {
+		return control.FansResult{}, err
+	}
+	ids, err := fanlib.IDs()
+	if err != nil {
+		return control.FansResult{}, apperr.Infra("internal", err.Error(), nil)
+	}
+	res := control.FansResult{Fans: make([]control.FanInfo, 0, len(ids))}
+	for _, id := range ids {
+		p, err := fanlib.Load(id)
+		if err != nil {
+			return control.FansResult{}, apperr.Infra("internal", err.Error(), nil)
+		}
+		res.Fans = append(res.Fans, control.FanInfo{ID: id, Name: p.Name, MinRPM: p.MinRPM, MaxRPM: p.MaxRPM, BelowMin: p.BelowMin})
+	}
+	return res, nil
+}
+
+// Set implements control.Control the way the page needs it: the call is recorded with its values as
+// compact JSON (keys sorted), FailNext("set") answers with the armed error, and otherwise every pair
+// is validated first (a known fan id for portN.fan, a number or numeric string for temperature and
+// humidity; no ranges, so the tests choose the refusals) and then applied as the events `fan` and
+// `env`, which also change the status.
+func (b *bench) Set(ctx context.Context, r control.SetRequest) (control.SetResult, error) {
+	raw, _ := json.Marshal(r.Values)
+	if err := b.enter("Set", string(raw)); err != nil {
+		return control.SetResult{}, err
+	}
+	ids, err := fanlib.IDs()
+	if err != nil {
+		return control.SetResult{}, apperr.Infra("internal", err.Error(), nil)
+	}
+	keys := make([]string, 0, len(r.Values))
+	for k := range r.Values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	type change struct {
+		ev     events.Event
+		mutate func(*control.Status)
+	}
+	var changes []change
+	applied := map[string]any{}
+	for _, k := range keys {
+		text := strings.TrimSpace(string(r.Values[k]))
+		var port int
+		if _, err := fmt.Sscanf(k, "port%d.fan", &port); err == nil && port >= 1 && port <= len(b.st.Ports) {
+			var id string
+			if json.Unmarshal([]byte(text), &id) != nil || !contains(ids, id) {
+				return control.SetResult{}, apperr.Failed("unknown_fan", fmt.Sprintf("unknown fan %s for %s", text, k),
+					map[string]any{"key": k, "fan": text})
+			}
+			changes = append(changes, change{events.Event{K: "fan", Port: port, V: id}, func(st *control.Status) { st.Ports[port-1].Fan = id }})
+			applied[k] = id
+			continue
+		}
+		if k != "temperature" && k != "humidity" {
+			return control.SetResult{}, apperr.Failed("unknown_key", fmt.Sprintf("unknown key %q", k), map[string]any{"key": k})
+		}
+		var v float64
+		var s string
+		if json.Unmarshal([]byte(text), &s) == nil {
+			text = s
+		}
+		v, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return control.SetResult{}, apperr.Failed("invalid_argument", fmt.Sprintf("%s needs a finite number, got %s", k, text),
+				map[string]any{"key": k, "value": text})
+		}
+		key := k
+		changes = append(changes, change{events.Event{K: "env", ID: key, V: v}, func(st *control.Status) {
+			if key == "temperature" {
+				st.Env.Temperature = v
+			} else {
+				st.Env.Humidity = v
+			}
+		}})
+		applied[k] = v
+	}
+	for _, c := range changes {
+		b.Emit(c.ev, c.mutate)
+	}
+	return control.SetResult{Applied: applied}, nil
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

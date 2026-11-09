@@ -815,3 +815,82 @@ func webReq(t *testing.T, port int, method, path, host, body string, hdr ...stri
 	}
 	return res.StatusCode, res.Header, raw
 }
+
+// TestWebFanSelect (UI-02) proves the page's first write path on a real Rev 3.3 instance: choosing
+// another fan in the select of port 2 sends exactly one POST /api/v1/set, the instance then reports
+// that fan in `sil status`, and the select shows it.
+func TestWebFanSelect(t *testing.T) {
+	in := r33Up(t, "e2e-webfan")
+	st := in.env.Status(t, in.name)
+	port := int(jget(st, "web", "port").(float64))
+	const want = "noctua-nf-a12x25-pwm"
+	if cur := jget(st, "ports", 1, "fan"); cur == want {
+		t.Fatalf("ports[1].fan is already %v: the test needs another fan to switch to", cur)
+	}
+
+	lctx, lcancel := clock.WithTimeout(context.Background(), sysClock, 60*time.Second)
+	defer lcancel()
+	b, err := cdptest.Launch(lctx, sysClock, cdptest.LaunchOptions{Offline: true, Width: 1280, Height: 720})
+	if errors.Is(err, cdptest.ErrNoChrome) {
+		t.Fatal("Chrome not found; install google-chrome or set SIL_CHROME")
+	}
+	if err != nil {
+		t.Fatalf("launch Chrome: %v", err)
+	}
+	defer b.Close()
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 60*time.Second)
+	defer cancel()
+	page, err := b.NewPage(ctx)
+	if err != nil {
+		t.Fatalf("new page: %v", err)
+	}
+	defer page.Close()
+	base := webBase(port) + "/"
+	if err := page.Navigate(ctx, base); err != nil {
+		t.Fatalf("navigate to %s: %v", base, err)
+	}
+	wait := func(what, pred string, budget time.Duration) {
+		t.Helper()
+		wctx, wcancel := clock.WithTimeout(context.Background(), sysClock, budget)
+		defer wcancel()
+		if err := page.WaitFor(wctx, pred); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	const sel = `document.querySelector('select[aria-label="Fan on port 2"]')`
+	wait("LINK LIVE", `document.getElementById('link').textContent === 'LIVE'`, 15*time.Second)
+	wait("the fan list", sel+`.options.length >= 2 && !`+sel+`.disabled`, 10*time.Second)
+
+	var got string
+	choose := fmt.Sprintf(`(() => { const s = %s; s.value = %q; s.dispatchEvent(new Event('change', {bubbles: true})); return s.value; })()`, sel, want)
+	if err := page.Eval(ctx, choose, &got); err != nil || got != want {
+		t.Fatalf("choosing %s: got %q (%v)", want, got, err)
+	}
+	wait("the select showing the new fan", sel+`.value === `+fmt.Sprintf("%q", want), 3*time.Second)
+
+	deadline := sysClock.Now() + 3*time.Second
+	for {
+		if fan := jget(in.env.Status(t, in.name), "ports", 1, "fan"); fan == want {
+			break
+		}
+		if sysClock.Now() > deadline {
+			t.Fatalf("sil status never showed ports[1].fan = %s", want)
+		}
+		if err := sysClock.Sleep(ctx, 100*time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	posts := 0
+	for _, r := range page.Requests() {
+		if r.Kind == "http" && r.Method == http.MethodPost {
+			posts++
+			if u, err := url.Parse(r.URL); err != nil || u.Path != "/api/v1/set" {
+				t.Errorf("unexpected POST %s", r.URL)
+			}
+		}
+	}
+	if posts != 1 {
+		t.Errorf("%d POST requests from the page, want exactly one POST /api/v1/set: %v", posts, page.Requests())
+	}
+}

@@ -253,12 +253,25 @@ input {
   border-radius: 2px;
 }
 
-.fan {
+/* The fan select: a softkey, shrinks with an ellipsis down to 160 px. */
+select.fan {
   flex: 1 1 160px;
   min-width: 160px;
+  height: 44px;
+  padding: 0 8px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+select.error,
+input.error {
+  outline: 2px solid var(--error);
+  outline-offset: 0;
+}
+
+#message.error {
+  color: var(--error);
 }
 
 .readout {
@@ -417,7 +430,7 @@ input {
     flex-wrap: wrap;
   }
 
-  .fan {
+  select.fan {
     flex: 1 1 calc(100% - 48px);
   }
 
