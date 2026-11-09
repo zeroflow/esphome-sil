@@ -1,18 +1,25 @@
 // Wiring of the page: the WebSocket link to the instance and its reconnect loop. Frames are
 // `sil watch` lines; store.js folds them into the status mirror.
-import { apply } from "./store.js";
+import { apply, getState } from "./store.js";
+import { render } from "./view.js";
 
 const RETRY_MIN_MS = 500;
 const RETRY_MAX_MS = 5000;
 
-const link = document.getElementById("link");
 const message = document.getElementById("message");
 
 let socket = null;
 let delay = RETRY_MIN_MS;
+let linkState = "connecting";
 
-function setLink(text) {
-  link.textContent = text;
+// refresh paints the current state and link state; every applied frame and every link change ends here.
+function refresh() {
+  render(getState(), linkState);
+}
+
+function setLink(next) {
+  linkState = next;
+  refresh();
 }
 
 // lost handles the end of one connection (close, error or a frame asking for a resync): the state
@@ -28,7 +35,7 @@ function lost(ws) {
   } catch (e) {
     // already closed
   }
-  setLink("DISCONNECTED, RETRYING");
+  setLink("retrying");
   setTimeout(connect, delay);
   delay = Math.min(delay * 2, RETRY_MAX_MS);
 }
@@ -48,8 +55,10 @@ function onFrame(ws, data) {
   const res = apply(frame);
   if (frame && frame.k === "snapshot") {
     delay = RETRY_MIN_MS;
-    setLink("LIVE");
+    message.textContent = "";
+    linkState = "live";
   }
+  refresh();
   if (res.resync) {
     lost(ws);
   }
@@ -64,4 +73,5 @@ function connect() {
   ws.onerror = () => lost(ws);
 }
 
+refresh();
 connect();

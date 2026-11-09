@@ -4,8 +4,9 @@ GO ?= go
 RUN ?= .
 PKG ?= ./...
 E2E_RUN ?= .
+UI_RUN ?= .
 
-.PHONY: build test test-pkg vet fmt-check check mod-verify e2e test-cpp test-cpp-image lock-check test-contract
+.PHONY: build test test-pkg vet fmt-check check mod-verify e2e test-ui test-cpp test-cpp-image lock-check test-contract
 
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/sil ./cmd/sil
@@ -19,6 +20,7 @@ test-pkg:
 vet:
 	$(GO) vet ./...
 	$(GO) vet -tags sil_e2e ./e2e/
+	$(GO) vet -tags sil_ui ./uitest/
 
 # Fails when gofmt would change any Go file (prototype/ is the frozen spike).
 fmt-check:
@@ -49,6 +51,11 @@ mod-verify:
 
 e2e:
 	$(GO) test -tags sil_e2e -count=1 -timeout 30m -v -run '$(E2E_RUN)' ./e2e/
+
+# Browser tests of the page (headless Chrome, offline) against a fake bench behind the real web handler.
+# Needs Chrome (google-chrome on PATH, or SIL_CHROME); not part of `check`, like e2e.
+test-ui:
+	$(GO) test -tags sil_ui -count=1 -timeout 10m -v -run '$(UI_RUN)' ./uitest/
 
 # The Python test dependencies are reviewed through the product repo's lock: every package of
 # tests/uv.lock must exist in LOCK_REF with the same version and the identical sdist/wheel sha256 set.
