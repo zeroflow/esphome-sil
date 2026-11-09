@@ -163,7 +163,7 @@ func TestCLIErrors(t *testing.T) {
 		{"status of an instance that never ran", []string{"status", "e2e-nothing"}, "not_running"},
 		{"invalid instance name", []string{"up", "Bad_Name"}, "invalid_name"},
 		{"missing --config file", []string{"up", "e2e-cfg", "--config", filepath.Join(t.TempDir(), "missing.yaml")}, "config_not_found"},
-		{"status without a name", []string{"status"}, "instance_required"},
+		{"status without a name", []string{"status"}, "instance_ambiguous"},
 	} {
 		t.Run(c.code, func(t *testing.T) {
 			out, exit, stderr := env.Sil(t, c.args...) // fails unless stdout is exactly one JSON object
