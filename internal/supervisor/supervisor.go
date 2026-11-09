@@ -376,9 +376,16 @@ func (s *supervisor) stopAll() {
 		s.mu.Lock()
 		s.stopping = true
 		fw, sl := s.fw, s.slot
+		cancelProbe := s.probeCancel
 		s.mu.Unlock()
+		// The probe would otherwise keep dialling the dead API port and report
+		// a ready_timeout for an instance that is already stopping.
+		if cancelProbe != nil {
+			cancelProbe()
+		}
 		s.stopProc(fw)
 		s.stopEngine(sl)
+		s.probeWG.Wait()
 		close(s.stopped)
 	})
 }
