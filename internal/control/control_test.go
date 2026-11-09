@@ -373,3 +373,101 @@ type lostControl struct{ Control }
 func (lostControl) Watch(_ context.Context, _ WatchRequest, send func(any) error) error {
 	return send(map[string]any{"k": "duty", "seq": 1})
 }
+
+// logsControl records the logs requests and answers canned lines.
+type logsControl struct {
+	Control
+	got    []LogsRequest
+	follow bool
+}
+
+func (f *logsControl) Logs(_ context.Context, r LogsRequest) (LogsResult, error) {
+	f.got = append(f.got, r)
+	return LogsResult{Source: r.Source, Lines: []LogLine{{Src: "firmware", Line: "=== firmware start 1 ==="}}}, nil
+}
+
+func (f *logsControl) FollowLogs(_ context.Context, r LogsRequest, send func(any) error) error {
+	f.got = append(f.got, r)
+	f.follow = true
+	if err := send(LogLine{Src: "firmware", Line: "tail"}); err != nil {
+		return err
+	}
+	return send(NewStoppedLine(0))
+}
+
+func TestLogsRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name, query string
+		code        int
+		want        LogsRequest
+		errCode     string
+	}{
+		{"defaults", "", 200, LogsRequest{Source: "firmware", Tail: 100}, ""},
+		{"all", "source=all&tail=7&raw=1", 200, LogsRequest{Source: "all", Tail: 7, Raw: true}, ""},
+		{"upper bound", "tail=10000", 200, LogsRequest{Source: "firmware", Tail: 10000}, ""},
+		{"unknown source", "source=nope", 400, LogsRequest{}, "invalid_argument"},
+		{"build log is not a source", "source=build", 400, LogsRequest{}, "invalid_argument"},
+		{"a path is not a source", "source=../firmware.log", 400, LogsRequest{}, "invalid_argument"},
+		{"tail zero", "tail=0", 400, LogsRequest{}, "invalid_argument"},
+		{"tail too big", "tail=10001", 400, LogsRequest{}, "invalid_argument"},
+		{"tail not a number", "tail=x", 400, LogsRequest{}, "invalid_argument"},
+		{"raw not 0 or 1", "raw=yes", 400, LogsRequest{}, "invalid_argument"},
+		{"follow not 0 or 1", "follow=2", 400, LogsRequest{}, "invalid_argument"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := &logsControl{}
+			rec := httptest.NewRecorder()
+			NewHandler(fc).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/logs?"+tc.query, nil))
+			if rec.Code != tc.code {
+				t.Fatalf("status %d (%s), want %d", rec.Code, rec.Body.String(), tc.code)
+			}
+			if tc.errCode != "" {
+				var body struct {
+					Error *apperr.Error `json:"error"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Error == nil || body.Error.Code != tc.errCode || len(fc.got) != 0 {
+					t.Fatalf("body %s (requests reaching the control: %v), want %s without reaching it", rec.Body.String(), fc.got, tc.errCode)
+				}
+				return
+			}
+			if len(fc.got) != 1 || fc.got[0] != tc.want {
+				t.Fatalf("control got %+v, want %+v", fc.got, tc.want)
+			}
+			if rec.Header().Get("Content-Type") != "application/json" {
+				t.Fatalf("Content-Type %q", rec.Header().Get("Content-Type"))
+			}
+		})
+	}
+}
+
+func TestLogsFollowStreamsNDJSON(t *testing.T) {
+	fc := &logsControl{}
+	rec := httptest.NewRecorder()
+	NewHandler(fc).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/logs?follow=1&source=sim", nil))
+	if rec.Header().Get("Content-Type") != "application/x-ndjson" || !fc.follow {
+		t.Fatalf("type %q follow %v, want application/x-ndjson from FollowLogs", rec.Header().Get("Content-Type"), fc.follow)
+	}
+	if lines := strings.Split(strings.TrimSpace(rec.Body.String()), "\n"); len(lines) != 2 || !IsStoppedLine([]byte(lines[1])) {
+		t.Fatalf("body %q, want the tail line and the stopped line", rec.Body.String())
+	}
+}
+
+func TestClientLogsAndFollow(t *testing.T) {
+	fc := &logsControl{}
+	c := serveStream(t, fc)
+	res, err := c.Logs(context.Background(), LogsRequest{Source: "all", Tail: 3, Raw: true})
+	if err != nil || res.Source != "all" || len(res.Lines) != 1 || fc.got[0] != (LogsRequest{Source: "all", Tail: 3, Raw: true}) {
+		t.Fatalf("Client.Logs = %+v, %v (control got %+v)", res, err, fc.got)
+	}
+	var lines []string
+	err = c.FollowLogs(context.Background(), LogsRequest{Source: "firmware", Tail: 5}, func(v any) error {
+		lines = append(lines, string(v.(json.RawMessage)))
+		return nil
+	})
+	if err != nil || len(lines) != 2 || lines[0] != `{"src":"firmware","line":"tail"}` {
+		t.Fatalf("Client.FollowLogs = %q, %v", lines, err)
+	}
+	if _, err := c.Logs(context.Background(), LogsRequest{Source: "nope", Tail: 3}); err == nil {
+		t.Fatal("an invalid source reached the control")
+	}
+}

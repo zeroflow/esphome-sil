@@ -48,6 +48,7 @@ var Registry = map[string]int{
 	"image_missing":          ExitInfra,
 	"internal":               ExitInfra,
 	"lock_failed":            ExitInfra,
+	"logs_unreadable":        ExitInfra,
 	"lock_timeout":           ExitInfra,
 	"no_free_port":           ExitInfra,
 	"no_home":                ExitInfra,

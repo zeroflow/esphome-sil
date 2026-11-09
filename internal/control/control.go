@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -245,6 +246,68 @@ func (r WatchRequest) WatchPath() string {
 	return "/api/v1/watch?kind=" + url.QueryEscape(strings.Join(r.Kinds, ","))
 }
 
+// Log sources of a logs request: the firmware's output, the simulator's own log (sil.log), both.
+const (
+	LogSourceFirmware = "firmware"
+	LogSourceSim      = "sim"
+	LogSourceAll      = "all"
+)
+
+// Bounds of a logs request.
+const (
+	DefaultLogTail = 100
+	MaxLogTail     = 10000
+)
+
+// LogsRequest selects what GET /api/v1/logs returns.
+type LogsRequest struct {
+	Source string // firmware|sim|all
+	Tail   int    // lines per source, 1..MaxLogTail
+	Raw    bool   // keep ANSI colour sequences
+}
+
+// Validate answers invalid_argument unless source is an enum value and 1 <= tail <= 10000.
+func (r LogsRequest) Validate() error {
+	switch r.Source {
+	case LogSourceFirmware, LogSourceSim, LogSourceAll:
+	default:
+		return apperr.Failed("invalid_argument", fmt.Sprintf("unknown log source %q; known: firmware, sim, all", r.Source),
+			map[string]any{"source": r.Source, "known": []string{LogSourceFirmware, LogSourceSim, LogSourceAll}})
+	}
+	if r.Tail < 1 || r.Tail > MaxLogTail {
+		return apperr.Failed("invalid_argument", fmt.Sprintf("tail must be between 1 and %d lines, got %d", MaxLogTail, r.Tail),
+			map[string]any{"tail": r.Tail, "min": 1, "max": MaxLogTail})
+	}
+	return nil
+}
+
+// LogsPath is the request path of a logs request (for Client.Stream with follow set).
+func (r LogsRequest) LogsPath(follow bool) string {
+	q := url.Values{}
+	q.Set("source", r.Source)
+	q.Set("tail", strconv.Itoa(r.Tail))
+	if r.Raw {
+		q.Set("raw", "1")
+	}
+	if follow {
+		q.Set("follow", "1")
+	}
+	return "/api/v1/logs?" + q.Encode()
+}
+
+// LogLine is one log line with the source it came from (firmware or sim).
+type LogLine struct {
+	Src  string `json:"src"`
+	Line string `json:"line"`
+}
+
+// LogsResult is the body of GET /api/v1/logs: the last lines of the selected sources, firmware
+// first. Lines is never null.
+type LogsResult struct {
+	Source string    `json:"source"`
+	Lines  []LogLine `json:"lines"`
+}
+
 // Restart budgets of the client: the longest a restart request may take
 // (30 s gap plus resync, or stop grace plus readiness) is well inside it.
 const restartBudget = 60 * time.Second
@@ -272,6 +335,11 @@ type Control interface {
 	// the instance stops. It returns when the instance stops, ctx ends or send fails. An error
 	// before the first send becomes a normal error reply.
 	Watch(ctx context.Context, r WatchRequest, send func(v any) error) error
+	// Logs returns the last r.Tail lines of the selected log files.
+	Logs(ctx context.Context, r LogsRequest) (LogsResult, error)
+	// FollowLogs sends the tail as LogLine values, then every new line, then the stopped line
+	// when the instance stops (same contract as Watch).
+	FollowLogs(ctx context.Context, r LogsRequest, send func(v any) error) error
 }
 
 type errorBody struct {
@@ -381,6 +449,43 @@ func NewHandler(c Control) http.Handler {
 			return
 		}
 		streamNDJSON(w, func(send func(any) error) error { return c.Watch(r.Context(), req, send) })
+	})
+	mux.HandleFunc("GET /api/v1/logs", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		req := LogsRequest{Source: LogSourceFirmware, Tail: DefaultLogTail}
+		if v := q.Get("source"); v != "" {
+			req.Source = v
+		}
+		if v := q.Get("tail"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				reply(w, nil, apperr.Failed("invalid_argument", fmt.Sprintf("tail needs an integer, got %q", v), map[string]any{"tail": v}))
+				return
+			}
+			req.Tail = n
+		}
+		flags := map[string]bool{}
+		for _, name := range []string{"raw", "follow"} {
+			switch v := q.Get(name); v {
+			case "", "0":
+			case "1":
+				flags[name] = true
+			default:
+				reply(w, nil, apperr.Failed("invalid_argument", fmt.Sprintf("%s must be 0 or 1, got %q", name, v), map[string]any{name: v}))
+				return
+			}
+		}
+		req.Raw = flags["raw"]
+		if err := req.Validate(); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		if flags["follow"] {
+			streamNDJSON(w, func(send func(any) error) error { return c.FollowLogs(r.Context(), req, send) })
+			return
+		}
+		res, err := c.Logs(r.Context(), req)
+		reply(w, res, err)
 	})
 	return mux
 }
@@ -619,6 +724,20 @@ func (c *Client) Fans(ctx context.Context) (FansResult, error) {
 // returns nil after the stopped line and control_unreachable when the stream ends without one.
 func (c *Client) Watch(ctx context.Context, r WatchRequest, send func(v any) error) error {
 	return c.relay(ctx, r.WatchPath(), send)
+}
+
+// Logs implements Control.
+func (c *Client) Logs(ctx context.Context, r LogsRequest) (LogsResult, error) {
+	var res LogsResult
+	if err := c.do(ctx, http.MethodGet, r.LogsPath(false), nil, &res); err != nil {
+		return LogsResult{}, err
+	}
+	return res, nil
+}
+
+// FollowLogs implements Control like Watch: each line goes to send as a json.RawMessage.
+func (c *Client) FollowLogs(ctx context.Context, r LogsRequest, send func(v any) error) error {
+	return c.relay(ctx, r.LogsPath(true), send)
 }
 
 // relay reads the NDJSON stream at path line by line into send (see Watch).

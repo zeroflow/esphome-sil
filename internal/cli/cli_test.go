@@ -112,6 +112,10 @@ type fakeControl struct {
 	// watch, when set, is the Watch handler; watchKinds records the kinds each watch asked for.
 	watch      func(ctx context.Context, send func(any) error) error
 	watchKinds [][]string
+	// logs is the canned answer of Logs; follow, when set, is the FollowLogs handler.
+	logs       control.LogsResult
+	logsReqs   []control.LogsRequest
+	followLogs func(ctx context.Context, send func(any) error) error
 }
 
 func (f *fakeControl) record(call string) error {
@@ -188,6 +192,25 @@ func (f *fakeControl) Watch(ctx context.Context, r control.WatchRequest, send fu
 		return nil
 	}
 	return watch(ctx, send)
+}
+
+func (f *fakeControl) Logs(_ context.Context, r control.LogsRequest) (control.LogsResult, error) {
+	f.mu.Lock()
+	f.logsReqs = append(f.logsReqs, r)
+	f.mu.Unlock()
+	return f.logs, f.record("logs")
+}
+
+func (f *fakeControl) FollowLogs(ctx context.Context, r control.LogsRequest, send func(any) error) error {
+	f.mu.Lock()
+	f.logsReqs = append(f.logsReqs, r)
+	follow := f.followLogs
+	f.mu.Unlock()
+	f.record("logs.follow")
+	if follow == nil {
+		return nil
+	}
+	return follow(ctx, send)
 }
 
 func (f *fakeControl) seen() []string {

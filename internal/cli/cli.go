@@ -56,6 +56,7 @@ type CLI struct {
 	Set    SetCmd    `cmd:"" help:"Set inputs: key=value pairs (temperature in degrees Celsius, humidity in %RH, portN.fan=ID to plug a library fan into port N), validated first and applied together."`
 	Fans   FansCmd   `cmd:"" help:"List the fans of the instance's fan library."`
 	Watch  WatchCmd  `cmd:"" help:"Follow the instance live as NDJSON: one snapshot line, then one line per change, until it stops (Ctrl-C ends it too)."`
+	Logs   LogsCmd   `cmd:"" help:"Print the last lines of the firmware's and the simulator's logs (colour removed, the API key redacted); --follow keeps streaming."`
 	Serve  ServeCmd  `cmd:"" hidden:"" help:"Run the detached supervisor (internal)."`
 }
 
@@ -127,6 +128,15 @@ type WatchCmd struct {
 	Kind     []string `sep:"," help:"Only these event kinds, comma separated (duty, rpm, state, fan, button, env, leds, firmware, sim); the snapshot, lagged and stopped lines always come."`
 	Count    int      `help:"Exit 0 after this many event lines following the snapshot (0 = until the instance stops)."`
 	Instance string   `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
+}
+
+// LogsCmd is `sil logs`. Like press, the instance is selected with --instance/-i.
+type LogsCmd struct {
+	Source   string `enum:"firmware,sim,all" default:"firmware" help:"Which log: firmware (firmware.log), sim (sil.log) or all (firmware lines first)."`
+	Tail     int    `default:"100" help:"Lines per source (1 to 10000)."`
+	Follow   bool   `help:"After the tail, stream every new line as NDJSON {\"src\",\"line\"} until the instance stops (Ctrl-C ends it too)."`
+	Raw      bool   `help:"Print the bare lines as plain text with the colour sequences kept, instead of JSON."`
+	Instance string `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
 }
 
 // ServeCmd is the hidden `sil serve`.
@@ -442,13 +452,61 @@ func (c *WatchCmd) Run(env *runEnv) error {
 	return relayStream(env.context, client, req.WatchPath(), env.stdout, 1, c.Count, nil)
 }
 
+// Run implements `sil logs`: one JSON value, or with --raw bare lines; with --follow an NDJSON stream.
+func (c *LogsCmd) Run(env *runEnv) error {
+	req := control.LogsRequest{Source: c.Source, Tail: c.Tail, Raw: c.Raw}
+	if err := req.Validate(); err != nil {
+		return err
+	}
+	_, client, err := connect(c.Instance)
+	if err != nil {
+		return err
+	}
+	if c.Follow {
+		env.silent = true
+		var show func([]byte) []byte
+		if c.Raw {
+			show = rawLogLine
+		}
+		return relayStream(env.context, client, req.LogsPath(true), env.stdout, 0, 0, show)
+	}
+	res, err := client.Logs(env.context, req)
+	if err != nil {
+		return err
+	}
+	if !c.Raw {
+		env.result = res
+		return nil
+	}
+	env.silent = true
+	var out bytes.Buffer
+	for _, l := range res.Lines {
+		out.WriteString(l.Line)
+		out.WriteByte('\n')
+	}
+	if _, err := env.stdout.Write(out.Bytes()); err != nil {
+		return apperr.Infra("internal", "cannot write the logs: "+err.Error(), nil)
+	}
+	return nil
+}
+
+// rawLogLine is the bare text of one {"src","line"} stream line; the stopped line prints nothing.
+func rawLogLine(line []byte) []byte {
+	var l control.LogLine
+	if control.IsStoppedLine(line) || json.Unmarshal(line, &l) != nil {
+		return nil
+	}
+	return append([]byte{}, l.Line...)
+}
+
 // streamer opens an NDJSON stream; *control.Client is the real one.
 type streamer interface {
 	Stream(ctx context.Context, path string) (io.ReadCloser, error)
 }
 
 // relayStream copies the NDJSON stream at path to out, one line at a time, as the lines arrive.
-// show, when set, renders a line before it is written (nil writes it as it is). The first skip
+// show, when set, renders a line before it is written (nil writes it as it is; a nil result
+// writes nothing for that line). The first skip
 // lines (the snapshot) do not count towards count; with count > 0 it returns nil after that many
 // lines following them. It returns nil after the stopped line and when ctx ends (Ctrl-C), and
 // control_unreachable when the stream ends without a stopped line.
@@ -469,8 +527,10 @@ func relayStream(ctx context.Context, st streamer, path string, out io.Writer, s
 		if show != nil {
 			text = show(line)
 		}
-		if _, err := out.Write(append(append([]byte(nil), text...), '\n')); err != nil {
-			return apperr.Infra("internal", "cannot write the stream: "+err.Error(), nil)
+		if text != nil {
+			if _, err := out.Write(append(append([]byte(nil), text...), '\n')); err != nil {
+				return apperr.Infra("internal", "cannot write the stream: "+err.Error(), nil)
+			}
 		}
 		if stopped {
 			return nil

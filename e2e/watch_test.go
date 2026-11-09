@@ -453,3 +453,165 @@ func TestWatchStream(t *testing.T) {
 		t.Logf("down plus stopped line took %s with an open stream", sysClock.Now()-start)
 	})
 }
+
+// watchLogLines decodes the lines of a `sil logs` result.
+func watchLogLines(t *testing.T, out map[string]any) []map[string]any {
+	t.Helper()
+	list, _ := out["lines"].([]any)
+	var lines []map[string]any
+	for _, v := range list {
+		m, _ := v.(map[string]any)
+		if m == nil {
+			t.Fatalf("lines entry %v is not an object", v)
+		}
+		lines = append(lines, m)
+	}
+	return lines
+}
+
+// watchCleanLogs requires that no line carries an ESC byte or the instance's API key.
+func watchCleanLogs(t *testing.T, in *r33Inst, lines []map[string]any) {
+	t.Helper()
+	for _, l := range lines {
+		text, _ := l["line"].(string)
+		if strings.ContainsRune(text, 0x1b) {
+			t.Fatalf("line %q holds an ANSI escape byte", text)
+		}
+		if strings.Contains(text, in.key) {
+			t.Fatalf("line %q holds the API key", text)
+		}
+	}
+}
+
+// TestLogs is CLI-04 end to end: tail, sources, bounds, raw, follow across a firmware restart,
+// and the stopped line when the instance goes down.
+func TestLogs(t *testing.T) {
+	in := r33Up(t, "e2e-logs")
+	logs := func(t *testing.T, extra ...string) (map[string]any, int) {
+		t.Helper()
+		out, code, _ := in.env.Sil(t, append([]string{"logs", "-i", in.name}, extra...)...)
+		return out, code
+	}
+
+	t.Run("firmware_tail", func(t *testing.T) {
+		out, code := logs(t, "--tail", "10000")
+		if code != 0 || out["source"] != "firmware" {
+			t.Fatalf("logs: exit %d: %v, want exit 0 and source firmware", code, out)
+		}
+		lines := watchLogLines(t, out)
+		found := false
+		for _, l := range lines {
+			if l["src"] != "firmware" {
+				t.Fatalf("line %v, want only firmware lines", l)
+			}
+			if l["line"] == "=== firmware start 1 ===" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("no `=== firmware start 1 ===` line among %d lines", len(lines))
+		}
+		watchCleanLogs(t, in, lines)
+		// The default tail is 100 lines.
+		def, code := logs(t)
+		if code != 0 || len(watchLogLines(t, def)) > 100 {
+			t.Fatalf("default logs: exit %d with %d lines, want at most 100", code, len(watchLogLines(t, def)))
+		}
+	})
+
+	t.Run("sim_and_all", func(t *testing.T) {
+		sim, code := logs(t, "--source", "sim")
+		simLines := watchLogLines(t, sim)
+		if code != 0 || sim["source"] != "sim" || len(simLines) == 0 {
+			t.Fatalf("logs --source sim: exit %d: %v, want a non-empty list", code, sim)
+		}
+		for _, l := range simLines {
+			if l["src"] != "sim" {
+				t.Fatalf("line %v, want only sim lines", l)
+			}
+		}
+		watchCleanLogs(t, in, simLines)
+		all, code := logs(t, "--source", "all", "--tail", "50")
+		if code != 0 || all["source"] != "all" {
+			t.Fatalf("logs --source all: exit %d: %v", code, all)
+		}
+		lines := watchLogLines(t, all)
+		firstSim, lastFw := -1, -1
+		for i, l := range lines {
+			switch l["src"] {
+			case "sim":
+				if firstSim < 0 {
+					firstSim = i
+				}
+			case "firmware":
+				lastFw = i
+			}
+		}
+		if firstSim < 0 || lastFw < 0 || lastFw > firstSim {
+			t.Fatalf("--source all: firmware lines up to %d, sim lines from %d, want both present and firmware first", lastFw, firstSim)
+		}
+		watchCleanLogs(t, in, lines)
+	})
+
+	t.Run("tail_bounds", func(t *testing.T) {
+		out, code := logs(t, "--source", "all", "--tail", "1")
+		perSrc := map[any]int{}
+		for _, l := range watchLogLines(t, out) {
+			perSrc[l["src"]]++
+		}
+		if code != 0 || perSrc["firmware"] != 1 || perSrc["sim"] != 1 || len(perSrc) != 2 {
+			t.Fatalf("logs --tail 1 --source all: exit %d, lines per source %v, want one each", code, perSrc)
+		}
+		for _, bad := range [][]string{{"--tail", "0"}, {"--tail", "10001"}, {"--source", "nope"}, {"--source", "build"}} {
+			out, code := logs(t, bad...)
+			r33ExpectErr(t, fmt.Sprint("logs ", bad), out, code, "invalid_argument")
+		}
+	})
+
+	t.Run("raw", func(t *testing.T) {
+		so, _, code := in.env.run(t, "logs", "-i", in.name, "--raw", "--tail", "10000")
+		if code != 0 {
+			t.Fatalf("logs --raw: exit %d", code)
+		}
+		var obj map[string]any
+		if json.Unmarshal([]byte(strings.TrimSpace(so)), &obj) == nil {
+			t.Fatalf("logs --raw printed a JSON object: %.200s", so)
+		}
+		if !strings.Contains(so, "=== firmware start 1 ===\n") {
+			t.Fatalf("logs --raw output has no separator line: %.300s", so)
+		}
+		if strings.Contains(so, in.key) {
+			t.Fatal("logs --raw leaked the API key")
+		}
+	})
+
+	t.Run("follow_across_fw_restart", func(t *testing.T) {
+		w := watchStart(t, in.env, "logs", "-i", in.name, "--follow", "--tail", "1")
+		w.next(t, 10*time.Second, "the first tail line")
+		if out, code, _ := in.env.Sil(t, "fw", "restart", in.name); code != 0 {
+			t.Fatalf("fw restart: exit %d: %v", code, out)
+		}
+		line, _ := w.until(t, 10*time.Second, "the second firmware start separator", func(m map[string]any) bool {
+			return m["line"] == "=== firmware start 2 ==="
+		})
+		if line["src"] != "firmware" {
+			t.Fatalf("separator line %v, want src firmware", line)
+		}
+		w.interrupt(t)
+		if code := w.exit(t, 5*time.Second); code != 0 {
+			t.Fatalf("exit %d after SIGINT, want 0", code)
+		}
+	})
+
+	t.Run("follow_stopped_on_down", func(t *testing.T) {
+		w := watchStart(t, in.env, "logs", "-i", in.name, "--follow", "--tail", "1")
+		w.next(t, 10*time.Second, "the first tail line")
+		if out, code, _ := in.env.Sil(t, "down", in.name); code != 0 {
+			t.Fatalf("down: exit %d: %v", code, out)
+		}
+		w.until(t, 5*time.Second, "the stopped line", func(m map[string]any) bool { return m["k"] == "stopped" })
+		if code := w.exit(t, 5*time.Second); code != 0 {
+			t.Fatalf("exit %d after the instance stopped, want 0\nstderr: %s", code, w.stderr.String())
+		}
+	})
+}
