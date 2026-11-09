@@ -54,12 +54,12 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 
 ### Web UI
 
-- [ ] **UI-01**: The simulator serves a local web page (embedded in the binary, no build step, vendored libs, no runtime CDN), updated live over WebSocket
-- [ ] **UI-02**: Per fan port the page shows chosen fan (selectable), duty, RPM and a live duty/RPM plot (bounded buffer)
-- [ ] **UI-03**: The page shows virtual LEDs with their current color/state
-- [ ] **UI-04**: The page offers short and long press for USR1-3 and setting temperature/humidity
-- [ ] **UI-05**: The page shows run info: sim time, time factor, firmware connected, "simulator behind real time" warning
-- [ ] **UI-06**: Everything the page shows or does is reachable via the CLI/API with the same JSON (verified by a parity check)
+- [x] **UI-01**: The simulator serves a local web page (embedded in the binary, no build step, vendored libs, no runtime CDN), updated live over WebSocket
+- [x] **UI-02**: Per fan port the page shows chosen fan (selectable), duty, RPM and a live duty/RPM plot (bounded buffer)
+- [x] **UI-03**: The page shows virtual LEDs with their current color/state
+- [x] **UI-04**: The page offers short and long press for USR1-3 and setting temperature/humidity
+- [x] **UI-05**: The page shows run info: sim time, time factor, firmware connected, "simulator behind real time" warning
+- [x] **UI-06**: Everything the page shows or does is reachable via the CLI/API with the same JSON (verified by a parity check)
 
 ### Home Assistant
 
@@ -150,12 +150,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLI-04 | Phase 2 | Complete |
 | CLI-05 | Phase 1 | Complete |
 | CLI-06 | Phase 1 | Complete |
-| UI-01 | Phase 3 | Pending |
-| UI-02 | Phase 3 | Pending |
-| UI-03 | Phase 3 | Pending |
-| UI-04 | Phase 3 | Pending |
-| UI-05 | Phase 3 | Pending |
-| UI-06 | Phase 3 | Pending |
+| UI-01 | Phase 3 | Complete |
+| UI-02 | Phase 3 | Complete |
+| UI-03 | Phase 3 | Complete |
+| UI-04 | Phase 3 | Complete |
+| UI-05 | Phase 3 | Complete |
+| UI-06 | Phase 3 | Complete |
 | HA-01 | Phase 2 | Complete |
 | HA-02 | Phase 2 | Complete |
 | TEST-01 | Phase 2 | Complete |

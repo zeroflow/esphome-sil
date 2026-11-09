@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Live Web UI
-status: executing
-stopped_at: Completed 03-11-PLAN.md
-last_updated: "2026-11-09T15:10:10.960Z"
+status: verifying
+stopped_at: Completed 03-12-PLAN.md
+last_updated: "2026-11-09T15:30:06.477Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 3 execution started
-state_head: c212af2f18e78c8621931bc00d90b101b4ac2883
+state_head: 247bf894bd2dbd52d606528feff2bcea6a0c5acb
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 33
-  completed_plans: 32
+  completed_plans: 33
   percent: 33
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 
 Phase: 3 (Live Web UI) — EXECUTING
 Plan: 12 of 12
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-11-09 — Phase 3 execution started
 
 Progress: [███░░░░░░░] 33%
@@ -88,6 +88,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 3 P09 | 10 min | 2 tasks | 6 files |
 | Phase 03 P10 | 15 min | 2 tasks | 12 files |
 | Phase 03 P11 | 13min | 2 tasks | 13 files |
+| Phase 03 P12 | 19 min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -167,6 +168,8 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-10: an unknown fan leaves the RPM scale unknown and hides the RPM trace rather than guess; the restart-gap null point at the new sample's own x breaks the line in real Chrome; style-src 'self' suffices for uPlot (no CSP fallback)
 - [Phase 03]: 03-11: a USR up is chained behind the answer to its down; a hold open when the link drops is released best-effort; the stale class applies only after the page has been LIVE once
 - [Phase 03]: 03-11: the page's own releasePointerCapture is tracked per pointer id (ownLoss); Chrome 157 fires no lostpointercapture for it, so the guard is tested with a synthetic event
+- [Phase 3]: 03-12: parity_real compares RPM within 1 rpm only after every RPM has settled (a freshly swapped fan is still ramping)
+- [Phase 3]: 03-12: the LED group is asserted by natural height (108 px) against the strip content box (110 px), not the stretched group box
 
 ### Pending Todos
 
@@ -192,8 +195,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T15:10:10.902Z
-Stopped at: Completed 03-11-PLAN.md
+Last session: 2026-11-09T15:30:02.633Z
+Stopped at: Completed 03-12-PLAN.md
 Resume file: None
 
 ## Needs Human
