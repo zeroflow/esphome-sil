@@ -1,0 +1,18 @@
+# Arctic P12 PWM PST, 120 mm case fan (shipped default fan, D-10).
+name = "Arctic P12 PWM PST"
+
+# Provenance of every number below.
+#   min_rpm 200, max_rpm 1800 and min_duty 0.05 with below_min "stop":
+#     Arctic product page https://arctic.de/it/P12-PWM-PST/ACFAN00120A
+#     ("200-1800 rpm PWM controlled, 0 rpm below 5 % PWM").
+#   start_duty 0.10, tau_up 1.0 s and tau_down 2.5 s are ASSUMED, not measured:
+#     the datasheet lists no value for them. They only shape the transient.
+source = "https://arctic.de/it/P12-PWM-PST/ACFAN00120A (200-1800 rpm, 0 rpm below 5 % PWM); start_duty, tau_up and tau_down are ASSUMED, not measured"
+
+min_duty   = 0.05
+start_duty = 0.10
+below_min  = "stop"
+min_rpm    = 200.0
+max_rpm    = 1800.0
+tau_up     = 1.0
+tau_down   = 2.5
