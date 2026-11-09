@@ -112,7 +112,7 @@ Plans:
   4. The page shows sim time, the time factor (fixed at 1), whether the firmware is connected, and a warning when the simulator falls behind real time.
   5. An automated parity check confirms that every value the page displays and every action it performs is available through the CLI/API with the same JSON.
 
-**Plans:** 9/12 plans executed
+**Plans:** 10/12 plans executed
 **UI hint**: yes
 
 Plans:
@@ -134,7 +134,7 @@ Plans:
 - [x] 03-09-PLAN.md — Vendor uPlot 1.6.32 with recorded and re-checked hashes, served from the binary; UI-SPEC wording aligned with the researched stack (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 03-10-PLAN.md — Scope screens: per-port duty/RPM plots from history + live samples, fixed axes, honest gaps, bounded rings, CSP check (wave 5)
+- [x] 03-10-PLAN.md — Scope screens: per-port duty/RPM plots from history + live samples, fixed axes, honest gaps, bounded rings, CSP check (wave 5)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 03-11-PLAN.md — USR press-and-hold caps, REAL TIME cell, stale overlay and resync (wave 6)
@@ -151,4 +151,4 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Closed-Loop Fan Skeleton | 13/13 | In Progress|  |
 | 2. Full Rev 3.3 Bench | 8/8 | Complete    | 2026-11-09 |
-| 3. Live Web UI | 9/12 | In Progress|  |
+| 3. Live Web UI | 10/12 | In Progress|  |

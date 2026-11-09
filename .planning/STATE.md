@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Live Web UI
 status: executing
-stopped_at: Completed 03-09-PLAN.md
-last_updated: "2026-11-09T14:36:04.390Z"
+stopped_at: Completed 03-10-PLAN.md
+last_updated: "2026-11-09T14:53:31.392Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 3 execution started
-state_head: 7b03d954ae3d6645b9e63a925ddaad01c8468887
+state_head: 6ba40436fdcbc4c407ef33a6f93731d85f4ddb07
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 33
-  completed_plans: 30
+  completed_plans: 31
   percent: 33
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 ## Current Position
 
 Phase: 3 (Live Web UI) — EXECUTING
-Plan: 10 of 12
+Plan: 11 of 12
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 3 execution started
 
@@ -86,6 +86,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 3 P07 | 15 min | 3 tasks | 17 files |
 | Phase 3 P08 | 10 min | 2 tasks | 13 files |
 | Phase 3 P09 | 10 min | 2 tasks | 6 files |
+| Phase 03 P10 | 15 min | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -161,6 +162,8 @@ Recent decisions affecting current work:
 - [Phase 3]: Max-hold auto-release runs inside the tick's inTick region — Release is stamped with the tick time and happens at most one tick (10 ms) after the deadline
 - [Phase 3]: 03-08: non-JSON API errors show the trimmed response body or nothing (plan D-17 supersedes UI-SPEC UIC-29's HTTP status line); a set success shows the server's applied value; dirty or focused env fields ignore WS values and take the server value on blur
 - [Phase 3]: 03-09: LICENSE.uplot is listed in the VENDOR.md hash table, so TestVendorHashes covers the license text; vendor/ is skipped by TestNoExternalRefs and covered by hashes
+- [Phase 03]: 03-10: the history request starts after the snapshot so its seq is at least the snapshot's and no sample falls between history and stream; held samples with seq above the history's are replayed, a reconnect replaces the rings
+- [Phase 03]: 03-10: an unknown fan leaves the RPM scale unknown and hides the RPM trace rather than guess; the restart-gap null point at the new sample's own x breaks the line in real Chrome; style-src 'self' suffices for uPlot (no CSP fallback)
 
 ### Pending Todos
 
@@ -186,8 +189,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T14:36:04.331Z
-Stopped at: Completed 03-09-PLAN.md
+Last session: 2026-11-09T14:53:31.329Z
+Stopped at: Completed 03-10-PLAN.md
 Resume file: None
 
 ## Needs Human
