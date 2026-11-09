@@ -449,3 +449,44 @@ func TestUSRUpSurvivesPageTeardown(t *testing.T) {
 		t.Errorf("no up request among %+v", got)
 	}
 }
+
+// TestUSRRepressWaitsForUp (WR-03): the web listener serves one request per connection, so nothing
+// orders two requests on the wire. A press that comes while the up of the previous hold is still on
+// its way must not send its down before that up has been answered: the bench has to see
+// down, up, down, and the second hold has to stand (lit cap, no button_busy in the message line).
+func TestUSRRepressWaitsForUp(t *testing.T) {
+	b, p := liveWithCaps(t)
+	// Every up request leaves the page 400 ms late, like an up that is slow on the network.
+	evalOn(t, p, `(() => { const f = window.fetch.bind(window);
+	  window.fetch = (url, init) => String(url).endsWith('/up')
+	    ? new Promise((resolve) => setTimeout(() => resolve(f(url, init)), 400))
+	    : f(url, init);
+	  return true; })()`, nil)
+	x, y := holdFresh(t, b, p, "usr1", 1)
+	mouse(t, p, "mouseReleased", x, y)
+	mouse(t, p, "mousePressed", x, y) // within the 400 ms the first up is still delayed
+	b.waitCalls(t, "button.down", 2, 5*time.Second)
+	b.waitCalls(t, "button.up", 1, 5*time.Second)
+	waitPressed(t, p, "usr1", "true", 5*time.Second)
+	settle(t, 600*time.Millisecond)
+
+	var order []string
+	for _, c := range b.Calls() {
+		if strings.HasPrefix(c.Op, "button.") {
+			order = append(order, c.Op)
+		}
+	}
+	if got, want := strings.Join(order, ","), "button.down,button.up,button.down"; got != want {
+		t.Errorf("the bench saw %s, want %s: the second down overtook the first up", got, want)
+	}
+	if got := pressed(t, p, "usr1"); got != "true" {
+		t.Errorf("cap aria-pressed = %q after the second press, want true (the hold must stand)", got)
+	}
+	if msg := textOf(t, p, "#message"); msg != "" {
+		t.Errorf("message line = %q, want it empty", msg)
+	}
+
+	mouse(t, p, "mouseReleased", x, y)
+	b.waitCalls(t, "button.up", 2, 5*time.Second)
+	waitPressed(t, p, "usr1", "false", 5*time.Second)
+}

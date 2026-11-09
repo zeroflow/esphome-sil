@@ -10,8 +10,9 @@ export const MAX_HOLD_MS = 10000;
 
 // caps maps a button id to its cap: the element, `holding` (this page started a hold it has not
 // released), `seenHeld` (the server has reported that hold), `gen` (counts downs, so an answer to an
-// old down cannot touch a newer hold), `downDone` (a promise of the last down's success) and
-// `ownLoss` (pointer ids whose capture this page let go of itself).
+// old down cannot touch a newer hold), `downDone` (a promise of the last down's success), `tail` (a
+// promise that settles when the last request of this cap has been answered) and `ownLoss` (pointer ids
+// whose capture this page let go of itself).
 const caps = new Map();
 
 // listening is true once the window and document listeners are installed.
@@ -24,7 +25,9 @@ function say(err) {
 }
 
 // down starts a hold: one POST button.down with the max hold. A refusal is shown verbatim and the
-// cap is left to the server's report.
+// cap is left to the server's report. The request waits for the cap's earlier requests to be answered
+// (cap.tail): the web listener serves one request per connection, so nothing else orders a quick
+// re-press after the up of the hold before it.
 function down(cap) {
   if (cap.holding || cap.el.disabled) {
     return;
@@ -32,32 +35,34 @@ function down(cap) {
   cap.holding = true;
   cap.seenHeld = false;
   const gen = ++cap.gen;
-  cap.downDone = call("button.down", { params: { id: cap.id }, body: { max_hold_ms: MAX_HOLD_MS } }).then(
-    () => true,
-    (err) => {
-      if (cap.gen === gen) {
-        cap.holding = false;
-      }
-      say(err);
-      return false;
-    },
-  );
+  cap.downDone = cap.tail
+    .then(() => call("button.down", { params: { id: cap.id }, body: { max_hold_ms: MAX_HOLD_MS } }))
+    .then(
+      () => true,
+      (err) => {
+        if (cap.gen === gen) {
+          cap.holding = false;
+        }
+        say(err);
+        return false;
+      },
+    );
+  cap.tail = cap.downDone;
 }
 
 // release ends a hold this page started and has not seen released: one POST button.up, sent after
-// the down it ends has been answered (so the two cannot overtake each other on the wire).
+// the down it ends has been answered (so the two cannot overtake each other on the wire). The next
+// down of the cap is queued behind it through cap.tail.
 function release(cap) {
   if (!cap.holding) {
     return;
   }
   cap.holding = false;
   cap.ownLoss.clear();
-  cap.downDone.then((started) => {
-    if (started) {
-      // keepalive: the up is most often sent while the page is being closed (tab hidden, window blur).
-      call("button.up", { params: { id: cap.id }, keepalive: true }).catch(say);
-    }
-  });
+  // keepalive: the up is most often sent while the page is being closed (tab hidden, window blur).
+  cap.tail = cap.downDone.then((started) =>
+    started ? call("button.up", { params: { id: cap.id }, keepalive: true }).catch(say) : undefined,
+  );
 }
 
 // onPointerDown starts a hold for the primary mouse button, a touch or a pen. The browser captures a
@@ -129,6 +134,7 @@ export function initButtons(root = document) {
       seenHeld: false,
       gen: 0,
       downDone: Promise.resolve(false),
+      tail: Promise.resolve(),
       ownLoss: new Set(),
     };
     caps.set(cap.id, cap);
