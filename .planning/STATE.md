@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
 status: executing
-stopped_at: Completed 01-05-PLAN.md
-last_updated: "2026-11-09T01:19:07.139Z"
+stopped_at: Completed 01-06-PLAN.md
+last_updated: "2026-11-09T01:29:02.178Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: c79e52cb4507cbc32b22ccaa7ce1d9badb8e84a4
+state_head: 4e15e38390acd83a7e1e9edc634453b75be2baeb
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 5
+  completed_plans: 6
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
-Plan: 6 of 13
+Plan: 7 of 13
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 1 execution started
 
@@ -61,6 +61,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P03 | 10min | 2 tasks | 11 files |
 | Phase 1 P04 | 3 min | 2 tasks | 3 files |
 | Phase 01 P05 | 6 min | 2 tasks | 6 files |
+| Phase 01 P06 | 8min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,7 @@ Recent decisions affecting current work:
 - [Phase 1]: 01-04: clock.Manual delivers tick/timer values by blocking unbuffered sends; Timer.Stop is false exactly when Advance already took the timer
 - [Phase 01]: 01-05: start_duty == min_duty accepted as a zero-width hysteresis band; only start_duty < min_duty rejected
 - [Phase 01]: 01-05: missing fan.toml key reports <file>: missing required key <key> (no line); unknown keys report file:line:col; non-finite numbers rejected; NaN duty treated as 0 in model.Step
+- [Phase 01]: 01-06: sim-bus line cap is 4096 bytes including the newline (4095 content); non-printable string bytes are encoded as '?' by both encoders; decode error closes the connection (enforced in 01-07/01-10)
 
 ### Pending Todos
 
@@ -110,8 +112,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T01:19:07.110Z
-Stopped at: Completed 01-05-PLAN.md
+Last session: 2026-11-09T01:29:02.150Z
+Stopped at: Completed 01-06-PLAN.md
 Resume file: None
 
 ## Needs Human
