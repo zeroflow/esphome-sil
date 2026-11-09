@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alecthomas/kong"
+
 	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/clock"
 	"github.com/zeroflow/esphome-sil/internal/control"
@@ -102,6 +104,7 @@ type fakeControl struct {
 	sim             []control.SimRestartRequest
 	press           []control.PressRequest
 	sets            []control.SetRequest
+	fans            control.FansResult
 	edges           []bool
 	status          control.Status
 	err             error
@@ -166,6 +169,10 @@ func (f *fakeControl) Set(_ context.Context, r control.SetRequest) (control.SetR
 		applied[k] = v
 	}
 	return control.SetResult{Applied: applied}, f.record("set")
+}
+
+func (f *fakeControl) Fans(context.Context) (control.FansResult, error) {
+	return f.fans, f.record("fans")
 }
 
 func (f *fakeControl) seen() []string {
@@ -760,5 +767,87 @@ func TestSetServerErrorPassesThrough(t *testing.T) {
 	r := run(t, "set", "humidity=101", "-i", "fan")
 	if r.exit != 1 || r.errCode(t) != "value_out_of_range" || r.detail(t)["key"] != "humidity" {
 		t.Fatalf("exit %d, stdout %s, want exit 1 value_out_of_range naming humidity", r.exit, r.stdout)
+	}
+}
+
+// `sil fans` prints the instance's fan library as one JSON value, in the order the server gave it.
+func TestFansPrintsTheLibrary(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan"), fans: control.FansResult{Fans: []control.FanInfo{
+		{ID: "arctic-p12-pwm-pst", Name: "Arctic P12 PWM PST", MinRPM: 200, MaxRPM: 1800, BelowMin: "stop"},
+		{ID: "noctua-nf-a12x25-pwm", Name: "Noctua NF-A12x25 PWM", MinRPM: 450, MaxRPM: 2000, BelowMin: "hold"},
+	}}}
+	liveInstance(t, "fan", fc)
+	r := run(t, "fans", "-i", "fan")
+	if r.exit != 0 {
+		t.Fatalf("exit %d, stdout %s", r.exit, r.stdout)
+	}
+	if got := fc.seen(); len(got) != 1 || got[0] != "fans" {
+		t.Fatalf("control calls %v, want one fans call", got)
+	}
+	res := r.object(t)
+	list, _ := res["fans"].([]any)
+	if len(res) != 1 || len(list) != 2 {
+		t.Fatalf("result %s, want exactly {fans: [two entries]}", r.stdout)
+	}
+	second, _ := list[1].(map[string]any)
+	for k, want := range map[string]any{"id": "noctua-nf-a12x25-pwm", "name": "Noctua NF-A12x25 PWM", "min_rpm": 450.0, "max_rpm": 2000.0, "below_min": "hold"} {
+		if second[k] != want {
+			t.Errorf("fans[1].%s = %v, want %v", k, second[k], want)
+		}
+	}
+	if len(second) != 5 {
+		t.Errorf("fans[1] = %v, want exactly id, name, min_rpm, max_rpm, below_min", second)
+	}
+}
+
+func TestFansInstanceSelection(t *testing.T) {
+	cliEnv(t)
+	own := &fakeControl{status: readyStatus("fan")}
+	other := &fakeControl{status: readyStatus("other")}
+	liveInstance(t, "fan", own)
+	liveInstance(t, "other", other)
+	if r := run(t, "fans", "-i", "other"); r.exit != 0 {
+		t.Fatalf("-i other: exit %d, %s", r.exit, r.stdout)
+	}
+	if got := other.seen(); len(got) != 1 || len(own.seen()) != 0 {
+		t.Fatalf("calls: other %v, fan %v, want one on other and none on fan", got, own.seen())
+	}
+	if r := run(t, "fans"); r.exit != 1 || r.errCode(t) != "instance_ambiguous" {
+		t.Fatalf("two live instances without -i: exit %d, %s, want instance_ambiguous", r.exit, r.stdout)
+	}
+}
+
+// `sil up --fan ID` reaches lifecycle.UpOptions.Fan; without it the field stays empty (the default fan).
+func TestUpFanFlagReachesUpOptions(t *testing.T) {
+	parse := func(args ...string) UpCmd {
+		t.Helper()
+		var c CLI
+		parser, err := kong.New(&c, kong.Name("sil"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parser.Parse(args); err != nil {
+			t.Fatalf("parse %v: %v", args, err)
+		}
+		return c.Up
+	}
+	env := &runEnv{quiet: true}
+	with := parse("up", "x", "--fan", "noctua-nf-a12x25-pwm")
+	if got := with.options(env); got.Fan != "noctua-nf-a12x25-pwm" || got.Name != "x" {
+		t.Fatalf("options with --fan = %+v, want Fan noctua-nf-a12x25-pwm", got)
+	}
+	without := parse("up", "x")
+	if got := without.options(env); got.Fan != "" {
+		t.Fatalf("options without --fan = %+v, want an empty Fan (the default fan)", got)
+	}
+}
+
+// The up help names --fan and the portN.fan way to change one port later.
+func TestUpHelpMentionsFan(t *testing.T) {
+	var so, se bytes.Buffer
+	_ = Execute([]string{"up", "--help"}, &so, &se)
+	if !strings.Contains(se.String(), "--fan") || !strings.Contains(se.String(), "port") {
+		t.Fatalf("up --help = %q, want --fan documented", se.String())
 	}
 }

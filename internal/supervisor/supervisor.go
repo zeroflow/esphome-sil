@@ -1092,6 +1092,25 @@ func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.Set
 	return control.SetResult{Applied: applied}, nil
 }
 
+// Fans implements control.Control: the fans the instance can plug in, sorted by id. A file that
+// fails to load is fan_toml_invalid naming it.
+func (s *supervisor) Fans(_ context.Context) (control.FansResult, error) {
+	lib := s.library()
+	ids, err := lib.IDs()
+	if err != nil {
+		return control.FansResult{}, apperr.Infra("internal", "cannot list the fan library: "+err.Error(), nil)
+	}
+	res := control.FansResult{Fans: make([]control.FanInfo, 0, len(ids))}
+	for _, id := range ids {
+		p, err := lib.Load(id)
+		if err != nil {
+			return control.FansResult{}, apperr.Failed("fan_toml_invalid", err.Error(), map[string]any{"fan": id, "error": err.Error()})
+		}
+		res.Fans = append(res.Fans, control.FanInfo{ID: id, Name: p.Name, MinRPM: p.MinRPM, MaxRPM: p.MaxRPM, BelowMin: p.BelowMin})
+	}
+	return res, nil
+}
+
 func isDown(ch <-chan struct{}) bool {
 	select {
 	case <-ch:

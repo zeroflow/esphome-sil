@@ -184,6 +184,20 @@ type SetResult struct {
 	Applied map[string]any `json:"applied"`
 }
 
+// FanInfo describes one fan of the instance's fan library.
+type FanInfo struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	MinRPM   float64 `json:"min_rpm"`
+	MaxRPM   float64 `json:"max_rpm"`
+	BelowMin string  `json:"below_min"`
+}
+
+// FansResult is the body of GET /api/v1/fans: the library fans sorted by id.
+type FansResult struct {
+	Fans []FanInfo `json:"fans"`
+}
+
 // Restart budgets of the client: the longest a restart request may take
 // (30 s gap plus resync, or stop grace plus readiness) is well inside it.
 const restartBudget = 60 * time.Second
@@ -205,6 +219,8 @@ type Control interface {
 	SetButton(ctx context.Context, id string, down bool) (PressResult, error)
 	// Set validates all pairs, then applies them together (all or nothing).
 	Set(ctx context.Context, r SetRequest) (SetResult, error)
+	// Fans lists the fans of the instance's fan library, sorted by id.
+	Fans(ctx context.Context) (FansResult, error)
 }
 
 type errorBody struct {
@@ -213,7 +229,7 @@ type errorBody struct {
 
 // NewHandler exposes c as GET /api/v1/status, POST /api/v1/down,
 // POST /api/v1/sim/restart, POST /api/v1/fw/restart and
-// POST /api/v1/buttons/{id}/press|down|up and POST /api/v1/set. An
+// POST /api/v1/buttons/{id}/press|down|up, POST /api/v1/set and GET /api/v1/fans. An
 // *apperr.Error becomes {"error":{...}} with HTTP 4xx (exit class 1) or 5xx
 // (exit class 2).
 func NewHandler(c Control) http.Handler {
@@ -298,6 +314,10 @@ func NewHandler(c Control) http.Handler {
 			return
 		}
 		res, err := c.Set(r.Context(), req)
+		reply(w, res, err)
+	})
+	mux.HandleFunc("GET /api/v1/fans", func(w http.ResponseWriter, r *http.Request) {
+		res, err := c.Fans(r.Context())
 		reply(w, res, err)
 	})
 	return mux
@@ -485,6 +505,15 @@ func (c *Client) Set(ctx context.Context, r SetRequest) (SetResult, error) {
 	var res SetResult
 	if err := c.do(ctx, http.MethodPost, "/api/v1/set", body, &res); err != nil {
 		return SetResult{}, err
+	}
+	return res, nil
+}
+
+// Fans implements Control.
+func (c *Client) Fans(ctx context.Context) (FansResult, error) {
+	var res FansResult
+	if err := c.do(ctx, http.MethodGet, "/api/v1/fans", nil, &res); err != nil {
+		return FansResult{}, err
 	}
 	return res, nil
 }

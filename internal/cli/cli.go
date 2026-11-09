@@ -52,7 +52,8 @@ type CLI struct {
 	Sim    SimCmd    `cmd:"" help:"Operate on the simulator of an instance."`
 	Fw     FwCmd     `cmd:"" help:"Operate on the firmware of an instance."`
 	Press  PressCmd  `cmd:"" help:"Press a button (usr1..usr3): 200 ms by default, --long holds 1500 ms, --hold DUR sets the hold; --down/--up set the level and return."`
-	Set    SetCmd    `cmd:"" help:"Set inputs: key=value pairs (temperature in degrees Celsius, humidity in %RH), validated first and applied together."`
+	Set    SetCmd    `cmd:"" help:"Set inputs: key=value pairs (temperature in degrees Celsius, humidity in %RH, portN.fan=ID to plug a library fan into port N), validated first and applied together."`
+	Fans   FansCmd   `cmd:"" help:"List the fans of the instance's fan library."`
 	Serve  ServeCmd  `cmd:"" hidden:"" help:"Run the detached supervisor (internal)."`
 }
 
@@ -62,6 +63,7 @@ type UpCmd struct {
 	Config  string `help:"Firmware YAML (default: examples/fan-skeleton.yaml of this checkout)."`
 	APIPort int    `name:"api-port" help:"Firmware native API port (default: the stored port, first 6054)."`
 	Rebuild bool   `help:"Discard the previous build output of this instance first."`
+	Fan     string `help:"Library fan plugged into all four ports (default arctic-p12-pwm-pst); change one port later with: sil set portN.fan=ID."`
 }
 
 // StatusCmd is `sil status`.
@@ -110,6 +112,11 @@ type PressCmd struct {
 type SetCmd struct {
 	Pairs    []string `arg:"" name:"key=value" help:"Input to set, e.g. temperature=24.5 humidity=40."`
 	Instance string   `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
+}
+
+// FansCmd is `sil fans`. Like set, the instance is selected with --instance/-i.
+type FansCmd struct {
+	Instance string `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
 }
 
 // ServeCmd is the hidden `sil serve`.
@@ -245,15 +252,20 @@ func fail(stdout, stderr io.Writer, err error) int {
 
 // Run implements `sil up`.
 func (c *UpCmd) Run(env *runEnv) error {
-	res, err := lifecycle.Up(env.context, lifecycle.UpOptions{
-		Name: c.Name, ConfigPath: c.Config, APIPort: c.APIPort,
-		Rebuild: c.Rebuild, Quiet: env.quiet, Progress: env.stderr,
-	})
+	res, err := lifecycle.Up(env.context, c.options(env))
 	if err != nil {
 		return err
 	}
 	env.result = res
 	return nil
+}
+
+// options maps the parsed flags to the lifecycle inputs.
+func (c *UpCmd) options(env *runEnv) lifecycle.UpOptions {
+	return lifecycle.UpOptions{
+		Name: c.Name, ConfigPath: c.Config, APIPort: c.APIPort,
+		Rebuild: c.Rebuild, Fan: c.Fan, Quiet: env.quiet, Progress: env.stderr,
+	}
 }
 
 // Run implements `sil status`: the CLI only reads the control API. A control
@@ -378,6 +390,21 @@ func (c *SetCmd) Run(env *runEnv) error {
 		return err
 	}
 	res, err := client.Set(env.context, control.SetRequest{Values: values})
+	if err != nil {
+		return err
+	}
+	env.result = res
+	return nil
+}
+
+// Run implements `sil fans`: the library of the instance's own supervisor, so SIL_FAN_DIR of that
+// instance decides, not of this process.
+func (c *FansCmd) Run(env *runEnv) error {
+	_, client, err := connect(c.Instance)
+	if err != nil {
+		return err
+	}
+	res, err := client.Fans(env.context)
 	if err != nil {
 		return err
 	}

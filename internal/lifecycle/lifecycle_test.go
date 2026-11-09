@@ -38,3 +38,37 @@ func TestResolveConfigRefusesBroadMount(t *testing.T) {
 		t.Fatalf("yaml in a subdirectory: %q, %q, %v", cfg, root, err)
 	}
 }
+
+// resolveFan: "" is the default; an id outside the library is unknown_fan with the sorted ids and is
+// never handed to a file read; a library file that does not load is fan_toml_invalid.
+func TestResolveFan(t *testing.T) {
+	t.Setenv("SIL_FAN_DIR", "")
+	if got, err := resolveFan(""); err != nil || got != "arctic-p12-pwm-pst" {
+		t.Fatalf("resolveFan(\"\") = %q, %v, want the default fan", got, err)
+	}
+	if got, err := resolveFan("noctua-nf-a12x25-pwm"); err != nil || got != "noctua-nf-a12x25-pwm" {
+		t.Fatalf("resolveFan(noctua) = %q, %v", got, err)
+	}
+	for _, id := range []string{"nope", "../fans/arctic-p12-pwm-pst", "/etc/passwd", "arctic-p12-pwm-pst.toml", " arctic-p12-pwm-pst"} {
+		_, err := resolveFan(id)
+		var ae *apperr.Error
+		if !errors.As(err, &ae) || ae.Code != "unknown_fan" || ae.Exit != apperr.ExitFailed || ae.Detail["fan"] != id {
+			t.Errorf("resolveFan(%q) = %v, want unknown_fan naming it", id, err)
+			continue
+		}
+		if known, _ := ae.Detail["known"].([]string); len(known) < 2 || known[0] != "arctic-p12-pwm-pst" {
+			t.Errorf("resolveFan(%q): detail.known = %v, want the sorted library ids", id, ae.Detail["known"])
+		}
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "broken.toml"), []byte("name = \"x\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SIL_FAN_DIR", dir)
+	_, err := resolveFan("broken")
+	var ae *apperr.Error
+	if !errors.As(err, &ae) || ae.Code != "fan_toml_invalid" {
+		t.Fatalf("resolveFan(broken) = %v, want fan_toml_invalid", err)
+	}
+}

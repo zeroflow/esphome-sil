@@ -171,3 +171,34 @@ func TestButtonDownUpRoutes(t *testing.T) {
 		t.Fatalf("edges %v on %q, want [true false] on usr3", fc.edges, fc.edgeID)
 	}
 }
+
+type fansControl struct {
+	Control
+	res FansResult
+	err error
+}
+
+func (f fansControl) Fans(context.Context) (FansResult, error) { return f.res, f.err }
+
+// GET /api/v1/fans carries exactly the FansResult; POST is not routed; an error keeps its class.
+func TestFansRoute(t *testing.T) {
+	want := FansResult{Fans: []FanInfo{{ID: "a", Name: "A", MinRPM: 1, MaxRPM: 2, BelowMin: "stop"}}}
+	h := NewHandler(fansControl{res: want})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/fans", nil))
+	if rec.Code != 200 {
+		t.Fatalf("GET /api/v1/fans = %d: %s", rec.Code, rec.Body)
+	}
+	if got, w := strings.TrimSpace(rec.Body.String()), `{"fans":[{"id":"a","name":"A","min_rpm":1,"max_rpm":2,"below_min":"stop"}]}`; got != w {
+		t.Fatalf("body %s, want %s", got, w)
+	}
+	if rec := post(h, "/api/v1/fans", ""); rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /api/v1/fans = %d, want 405", rec.Code)
+	}
+	bad := NewHandler(fansControl{err: apperr.Failed("fan_toml_invalid", "bad file", nil)})
+	rec = httptest.NewRecorder()
+	bad.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/fans", nil))
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "fan_toml_invalid") {
+		t.Fatalf("failing Fans = %d %s, want 400 fan_toml_invalid", rec.Code, rec.Body)
+	}
+}

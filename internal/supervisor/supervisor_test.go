@@ -472,3 +472,26 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		_ = rc.Sleep(context.Background(), 5*time.Millisecond)
 	}
 }
+
+// Fans lists every library fan with its summary fields, in the library's (sorted) order, and names a
+// file that fails to load.
+func TestFansListsTheLibrary(t *testing.T) {
+	s := &supervisor{lib: fakeLib}
+	res, err := s.Fans(context.Background())
+	if err != nil || len(res.Fans) != 2 {
+		t.Fatalf("Fans = %+v, %v, want two entries", res, err)
+	}
+	if f := res.Fans[0]; f.ID != "alpha-fan" || f.Name != "fake alpha-fan" || f.MinRPM != 100 || f.MaxRPM != 1000 || f.BelowMin != "stop" {
+		t.Fatalf("Fans[0] = %+v", f)
+	}
+	if res.Fans[1].ID != "beta-fan" {
+		t.Fatalf("Fans[1] = %+v, want beta-fan after alpha-fan", res.Fans[1])
+	}
+
+	s.lib = libFake{ids: []string{"alpha-fan", "broken"}, bad: map[string]error{"broken": errors.New("fans/broken.toml:2: bad")}}
+	_, err = s.Fans(context.Background())
+	var ae *apperr.Error
+	if !errors.As(err, &ae) || ae.Code != "fan_toml_invalid" || ae.Detail["fan"] != "broken" {
+		t.Fatalf("Fans with a broken file: %v, want fan_toml_invalid naming it", err)
+	}
+}

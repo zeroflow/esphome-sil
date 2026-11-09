@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,6 +44,8 @@ type UpOptions struct {
 	Name, ConfigPath string
 	APIPort          int
 	Rebuild, Quiet   bool
+	// Fan is the library fan plugged into all four ports; "" means fanlib.DefaultFan.
+	Fan string
 	// Progress receives human progress lines; nil or Quiet discards them.
 	Progress io.Writer
 }
@@ -139,11 +142,11 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 	if err != nil {
 		return UpResult{}, err
 	}
-	// A rejected fan file must not leave an identity behind, so it is
+	// An unknown or rejected fan must not leave an identity behind, so it is
 	// checked before anything is written.
-	fan := fanlib.DefaultFan
-	if _, err := fanlib.Load(fan); err != nil {
-		return UpResult{}, apperr.Failed("fan_toml_invalid", err.Error(), map[string]any{"fan": fan})
+	fan, err := resolveFan(o.Fan)
+	if err != nil {
+		return UpResult{}, err
 	}
 	if err := instance.EnsureRunParent(p); err != nil {
 		return UpResult{}, err
@@ -220,6 +223,27 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 		RunDir: p.RunDir,
 		Build:  res,
 	}, nil
+}
+
+// resolveFan validates the fan of `sil up --fan`: "" is the default fan; any other id must be in
+// the fan library (so it can never be turned into a path, T-02-12) and its file must load.
+func resolveFan(fan string) (string, error) {
+	if fan == "" {
+		fan = fanlib.DefaultFan
+	} else {
+		ids, err := fanlib.IDs()
+		if err != nil {
+			return "", apperr.Infra("internal", "cannot list the fan library: "+err.Error(), nil)
+		}
+		if !slices.Contains(ids, fan) {
+			return "", apperr.Failed("unknown_fan", fmt.Sprintf("unknown fan %q; known: %s", fan, strings.Join(ids, ", ")),
+				map[string]any{"fan": fan, "known": ids})
+		}
+	}
+	if _, err := fanlib.Load(fan); err != nil {
+		return "", apperr.Failed("fan_toml_invalid", err.Error(), map[string]any{"fan": fan})
+	}
+	return fan, nil
 }
 
 // checkNotRunning is Failed already_running when run.json names a live
