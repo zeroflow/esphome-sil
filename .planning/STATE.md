@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Live Web UI
 status: executing
-stopped_at: Completed 03-07-PLAN.md
-last_updated: "2026-11-09T14:16:39.963Z"
+stopped_at: Completed 03-08-PLAN.md
+last_updated: "2026-11-09T14:32:51.400Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 3 execution started
-state_head: de7066739a9aba52b946f3d4e5eede8003bd4ee1
+state_head: 7477187839b90d178c3161d53863d7f8ae8346a4
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 33
-  completed_plans: 28
+  completed_plans: 29
   percent: 33
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 ## Current Position
 
 Phase: 3 (Live Web UI) — EXECUTING
-Plan: 8 of 12
+Plan: 9 of 12
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 3 execution started
 
@@ -84,6 +84,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 3 P05 | 17 min | 2 tasks | 15 files |
 | Phase 3 P06 | 8 min | 2 tasks | 9 files |
 | Phase 3 P07 | 15 min | 3 tasks | 17 files |
+| Phase 3 P08 | 10 min | 2 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -157,6 +158,7 @@ Recent decisions affecting current work:
 - [Phase 3]: Samples share the broker seq: a default stream's seq is strictly increasing but not consecutive — Keeps history.seq consistent with every stream; e2e TestWatchStream relaxed accordingly
 - [Phase 3]: History window 0 on the Go side means the whole ring; the handler passes 300 on so Control.History sees 0 < W <= 300 — The client omits window_s when 0
 - [Phase 3]: Max-hold auto-release runs inside the tick's inTick region — Release is stamped with the tick time and happens at most one tick (10 ms) after the deadline
+- [Phase 3]: 03-08: non-JSON API errors show the trimmed response body or nothing (plan D-17 supersedes UI-SPEC UIC-29's HTTP status line); a set success shows the server's applied value; dirty or focused env fields ignore WS values and take the server value on blur
 
 ### Pending Todos
 
@@ -182,8 +184,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T14:16:39.905Z
-Stopped at: Completed 03-07-PLAN.md
+Last session: 2026-11-09T14:32:51.312Z
+Stopped at: Completed 03-08-PLAN.md
 Resume file: None
 
 ## Needs Human
