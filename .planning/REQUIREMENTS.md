@@ -12,10 +12,10 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 - [ ] **BUILD-01**: Developer can build the example firmware from the working tree with `sil up`, using the pinned `esphome/esphome:2026.10.1` image (non-root `--user`, own `HOME`, no root-owned files left behind)
 - [ ] **BUILD-02**: The firmware is linked statically (`esphome: build_flags: [-static]`) and runs directly on the host (Debian 12, glibc 2.36)
 - [ ] **BUILD-03**: Build fails early with a clear message when the config uses components that do not work on `host:` (`wifi`, `ledc`, `pulse_counter`, `esp32_rmt_led_strip`, `i2c`, `ota`, `http_request`, `update`, `captive_portal`, `web_server`, `sntp`, `esp32`)
-- [ ] **BUILD-04**: Each run has its own run directory holding sim-bus socket, `ESPHOME_PREFDIR`, logs; runs start fresh by default (no preferences carried over)
+- [x] **BUILD-04**: Each run has its own run directory holding sim-bus socket, `ESPHOME_PREFDIR`, logs; runs start fresh by default (no preferences carried over)
 - [ ] **BUILD-05**: Each run gets its own API port, a stable locally administered MAC and device name derived from the instance name, and a stable per-instance API encryption key; two runs can coexist without colliding
 - [ ] **BUILD-06**: Firmware does not exit without an API client (`reboot_timeout: 0s`); `sil up` reports ready only after a real API handshake, and fails clearly if the port is taken
-- [ ] **BUILD-07**: Developer can stop a run with `sil down`; firmware and simulator processes never outlive the run (no orphans when the simulator dies)
+- [x] **BUILD-07**: Developer can stop a run with `sil down`; firmware and simulator processes never outlive the run (no orphans when the simulator dies)
 
 ### Sim-Bus & IO Components
 
@@ -49,8 +49,8 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 - [ ] **CLI-02**: Developer can set inputs via `sil set` (temperature, humidity, fan per port) and press buttons via `sil press usr1 [--long]`
 - [ ] **CLI-03**: Developer can follow live events as NDJSON with `sil watch`
 - [ ] **CLI-04**: Developer can read firmware and simulator logs of a run with `sil logs`
-- [ ] **CLI-05**: Every command can emit JSON and uses exit codes 0 ok, 1 command failed, 2 infrastructure error
-- [ ] **CLI-06**: CLI and web UI use one HTTP/JSON API with one operation vocabulary; the CLI is a client of it (except `up`/`down`)
+- [x] **CLI-05**: Every command can emit JSON and uses exit codes 0 ok, 1 command failed, 2 infrastructure error
+- [x] **CLI-06**: CLI and web UI use one HTTP/JSON API with one operation vocabulary; the CLI is a client of it (except `up`/`down`)
 
 ### Web UI
 
@@ -123,10 +123,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | BUILD-01 | Phase 1 | Pending |
 | BUILD-02 | Phase 1 | Pending |
 | BUILD-03 | Phase 1 | Pending |
-| BUILD-04 | Phase 1 | Pending |
+| BUILD-04 | Phase 1 | Complete |
 | BUILD-05 | Phase 1 | Pending |
 | BUILD-06 | Phase 1 | Pending |
-| BUILD-07 | Phase 1 | Pending |
+| BUILD-07 | Phase 1 | Complete |
 | BUS-01 | Phase 1 | Pending |
 | BUS-02 | Phase 1 | Pending |
 | BUS-03 | Phase 1 | Pending |
@@ -148,8 +148,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLI-02 | Phase 2 | Pending |
 | CLI-03 | Phase 2 | Pending |
 | CLI-04 | Phase 2 | Pending |
-| CLI-05 | Phase 1 | Pending |
-| CLI-06 | Phase 1 | Pending |
+| CLI-05 | Phase 1 | Complete |
+| CLI-06 | Phase 1 | Complete |
 | UI-01 | Phase 3 | Pending |
 | UI-02 | Phase 3 | Pending |
 | UI-03 | Phase 3 | Pending |

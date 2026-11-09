@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
 status: executing
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-11-09T00:54:43.599Z"
+stopped_at: Completed 01-03-PLAN.md
+last_updated: "2026-11-09T01:06:37.357Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: 09c47ef50720bb81031ad298c686a00128236d4d
+state_head: 5b048e88e96d5a2d32ad82c456f5efc437d5937e
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
-Plan: 3 of 13
+Plan: 4 of 13
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 1 execution started
 
@@ -58,6 +58,7 @@ Progress: [░░░░░░░░░░] 0%
 |------|----------|-------|-------|
 | Phase 1 P01 | 12 min | 2 tasks | 14 files |
 | Phase 01 P02 | 20min | 2 tasks | 12 files |
+| Phase 01 P03 | 10min | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -76,6 +77,8 @@ Recent decisions affecting current work:
 - [Phase 01]: 01-02: bus.Server.Send is queue-based and non-blocking (1024 frames) so a stalled firmware cannot freeze the engine goroutine
 - [Phase 01]: 01-02: Frame.GetNum re-expresses the wire float32 as its shortest decimal so exact duty comparisons hold; GetF32 keeps the raw float32
 - [Phase 01]: 01-02: wall-clock lint bans context timers and stdlib timeout fields too; infrastructure timeouts go through clock.WithTimeout or clock.Deadline
+- [Phase 01]: 01-03 D-02: engine is a goroutine in sil serve with fresh state per engine.New; engine.Run owns bus.Listen and socket unlink; supervisor owns lifecycle of engine slot and firmware process group; a sim restart (01-10) keeps the firmware PID
+- [Phase 01]: 01-03: control API only on <run>/api.sock (0600); run-dir parent must be a real 0700 dir owned by the user (run_dir_unsafe otherwise)
 
 ### Pending Todos
 
@@ -101,8 +104,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T00:54:43.575Z
-Stopped at: Completed 01-02-PLAN.md
+Last session: 2026-11-09T01:06:37.327Z
+Stopped at: Completed 01-03-PLAN.md
 Resume file: None
 
 ## Needs Human
