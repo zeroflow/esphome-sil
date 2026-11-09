@@ -1,10 +1,14 @@
 package control
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -201,4 +205,171 @@ func TestFansRoute(t *testing.T) {
 	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "fan_toml_invalid") {
 		t.Fatalf("failing Fans = %d %s, want 400 fan_toml_invalid", rec.Code, rec.Body)
 	}
+}
+
+// streamControl is a fake whose Watch sends one line and then holds the stream open until the
+// request ends (or release is closed), like a real watch between two events.
+type streamControl struct {
+	Control
+	watchErr error
+	release  chan struct{}
+	gotKinds []string
+}
+
+func (f *streamControl) Watch(ctx context.Context, r WatchRequest, send func(any) error) error {
+	f.gotKinds = r.Kinds
+	if f.watchErr != nil {
+		return f.watchErr
+	}
+	if err := send(SnapshotLine{T: 5, K: "snapshot", Seq: 7, Status: Status{Schema: SchemaVersion, Instance: "x", Phase: PhaseReady}}); err != nil {
+		return err
+	}
+	select {
+	case <-f.release:
+		return send(NewStoppedLine(0))
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func serveStream(t *testing.T, fc Control) *Client {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "silctl-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "api.sock")
+	ln, err := Listen(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ServeListener(ctx, ln, NewHandler(fc)) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	return Dial(sock)
+}
+
+// The first line must reach the client while the handler is still running: the stream is flushed
+// over api.sock, not buffered until the handler returns (Research A5).
+func TestWatchStreamsOverTheSocket(t *testing.T) {
+	fc := &streamControl{release: make(chan struct{})}
+	c := serveStream(t, fc)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rc, err := c.Stream(ctx, WatchRequest{Kinds: []string{"duty", "button"}}.WatchPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	sc := bufio.NewScanner(rc)
+	if !sc.Scan() {
+		t.Fatalf("no first line while the handler runs: %v", sc.Err())
+	}
+	var snap map[string]any
+	if err := json.Unmarshal(sc.Bytes(), &snap); err != nil || snap["k"] != "snapshot" || snap["seq"] != float64(7) || snap["instance"] != "x" {
+		t.Fatalf("first line %q: want the snapshot with the Status fields at the top level (%v)", sc.Text(), err)
+	}
+	if strings.Join(fc.gotKinds, ",") != "duty,button" {
+		t.Fatalf("Watch got kinds %v, want duty,button", fc.gotKinds)
+	}
+	close(fc.release)
+	if !sc.Scan() || !IsStoppedLine(sc.Bytes()) {
+		t.Fatalf("second line %q, want the stopped line", sc.Text())
+	}
+	if sc.Scan() {
+		t.Fatalf("extra line after stopped: %q", sc.Text())
+	}
+}
+
+func TestWatchResponseType(t *testing.T) {
+	fc := &streamControl{release: make(chan struct{})}
+	close(fc.release)
+	rec := httptest.NewRecorder()
+	NewHandler(fc).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/watch", nil))
+	if ct := rec.Header().Get("Content-Type"); ct != "application/x-ndjson" {
+		t.Fatalf("Content-Type %q, want application/x-ndjson", ct)
+	}
+	if lines := strings.Split(strings.TrimSpace(rec.Body.String()), "\n"); len(lines) != 2 {
+		t.Fatalf("%d lines, want snapshot and stopped: %q", len(lines), rec.Body.String())
+	}
+}
+
+func TestWatchErrorBeforeTheFirstLineIsAJSONError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code int
+		exit int
+	}{
+		{"infra", apperr.Infra("too_many_streams", "full", nil), 500, apperr.ExitInfra},
+		{"user", apperr.Failed("stopping", "going down", nil), 400, apperr.ExitFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			NewHandler(&streamControl{watchErr: tc.err}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/watch", nil))
+			if rec.Code != tc.code || rec.Header().Get("Content-Type") != "application/json" {
+				t.Fatalf("status %d type %q, want %d application/json", rec.Code, rec.Header().Get("Content-Type"), tc.code)
+			}
+			c := serveStream(t, &streamControl{watchErr: tc.err})
+			_, err := c.Stream(context.Background(), "/api/v1/watch")
+			var ae *apperr.Error
+			if !errors.As(err, &ae) || ae.Code != apperr.AsError(tc.err).Code || ae.Exit != tc.exit {
+				t.Fatalf("Client.Stream error %v, want %s with exit class %d", err, apperr.AsError(tc.err).Code, tc.exit)
+			}
+		})
+	}
+}
+
+func TestWatchUnknownKindIsInvalidArgument(t *testing.T) {
+	fc := &streamControl{release: make(chan struct{})}
+	rec := httptest.NewRecorder()
+	NewHandler(fc).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/watch?kind=duty,nope", nil))
+	var body struct {
+		Error *apperr.Error `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != 400 || body.Error == nil || body.Error.Code != "invalid_argument" {
+		t.Fatalf("status %d body %s, want 400 invalid_argument", rec.Code, rec.Body.String())
+	}
+	if body.Error.Detail["kind"] != "nope" {
+		t.Fatalf("detail %v, want kind nope", body.Error.Detail)
+	}
+	if fc.gotKinds != nil {
+		t.Fatal("Watch ran for an invalid kind")
+	}
+}
+
+// Client.Watch hands each line over as a raw message and reports a stream that ends without the
+// stopped line as control_unreachable.
+func TestClientWatchRelayAndLostStream(t *testing.T) {
+	fc := &streamControl{release: make(chan struct{})}
+	close(fc.release)
+	c := serveStream(t, fc)
+	var lines []string
+	err := c.Watch(context.Background(), WatchRequest{}, func(v any) error {
+		lines = append(lines, string(v.(json.RawMessage)))
+		return nil
+	})
+	if err != nil || len(lines) != 2 || !IsStoppedLine([]byte(lines[1])) {
+		t.Fatalf("Watch: %v, lines %q, want snapshot and stopped, no error", err, lines)
+	}
+
+	// A fake that returns without a stopped line: the connection simply ends.
+	lost := serveStream(t, &lostControl{})
+	err = lost.Watch(context.Background(), WatchRequest{}, func(any) error { return nil })
+	var ae *apperr.Error
+	if !errors.As(err, &ae) || ae.Code != "control_unreachable" || ae.Exit != apperr.ExitInfra {
+		t.Fatalf("lost stream: %v, want control_unreachable (exit 2)", err)
+	}
+}
+
+type lostControl struct{ Control }
+
+func (lostControl) Watch(_ context.Context, _ WatchRequest, send func(any) error) error {
+	return send(map[string]any{"k": "duty", "seq": 1})
 }

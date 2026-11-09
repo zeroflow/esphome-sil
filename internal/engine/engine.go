@@ -21,6 +21,7 @@ import (
 
 	"github.com/zeroflow/esphome-sil/internal/bus"
 	"github.com/zeroflow/esphome-sil/internal/clock"
+	"github.com/zeroflow/esphome-sil/internal/events"
 	"github.com/zeroflow/esphome-sil/internal/model"
 )
 
@@ -28,6 +29,11 @@ const (
 	tick         = 10 * time.Millisecond
 	rpmFrameStep = 50 * time.Millisecond
 )
+
+// RPMEventStep is how often a port's rpm is sampled for an rpm event, in sim time. The simulator
+// cannot see the instant the firmware publishes the value (Research Pattern 5), so rpm events are
+// a once-per-second sample, and only when the float32 value changed since the last rpm event.
+const RPMEventStep = time.Second
 
 // ButtonIDs are the user buttons of the Rev 3.3 board, in snapshot order. They are also the names
 // of the sim-bus `in` channels that carry the button levels.
@@ -108,6 +114,12 @@ type Config struct {
 	// Env is the initial temperature and humidity of the room.
 	Env Env
 	Log *slog.Logger
+	// Emit receives every change event, on the engine goroutine, and returns the seq it assigned
+	// (the supervisor's events.Broker.Publish). Nil means no events. It must never block.
+	Emit func(events.Event) uint64
+	// Seq returns the seq of the last event published by anyone; SnapshotSync stamps it on its
+	// snapshot. Nil means the last seq this engine emitted.
+	Seq func() uint64
 }
 
 // PortState is the observable state of one port.
@@ -134,6 +146,10 @@ type Snapshot struct {
 	// LEDs is the status LED strip; it keeps the last frame while the bus is down.
 	LEDs     LEDState
 	Warnings []string
+	// Seq is the seq of the last event the engine emitted before this snapshot was taken (0 when
+	// there is no Emit): the state here includes every event up to it. SnapshotSync stamps the
+	// broker's seq instead (Config.Seq).
+	Seq uint64
 }
 
 type eventKind int
@@ -145,6 +161,7 @@ const (
 	evDisconnected
 	evButton
 	evApply
+	evSync
 )
 
 type event struct {
@@ -159,6 +176,8 @@ type event struct {
 	button buttonOp
 	// evApply
 	apply applyOp
+	// evSync
+	sync chan Snapshot
 }
 
 // buttonOp is one SetButton request; the reply channel has capacity 1.
@@ -211,6 +230,10 @@ type Engine struct {
 	ledN     int
 	ledStrip []string
 	ledSegs  map[string][]int
+	// lastSeq is the seq Emit returned last. inTick is set while a clock tick is handled: its
+	// events are stamped with the tick's own time, not with a clock that may have moved on.
+	lastSeq uint64
+	inTick  bool
 }
 
 type portRuntime struct {
@@ -221,6 +244,11 @@ type portRuntime struct {
 	rpmCh    string
 	sent     float32
 	sentOnce bool
+	// Event bookkeeping: the rpm of the last rpm event, when the rpm is sampled next, and the
+	// state of the last state event.
+	evRPM   float32
+	nextRPM time.Duration
+	evState string
 }
 
 // New builds an engine; nothing runs until Run.
@@ -242,6 +270,8 @@ func New(cfg Config) *Engine {
 			dutyCh: fmt.Sprintf("port%d.duty", pc.Port),
 			rpmCh:  fmt.Sprintf("port%d.rpm", pc.Port),
 		})
+		p := &e.ports[len(e.ports)-1]
+		p.evRPM, p.evState = float32(p.state.RPM), stateName(p.state.Running)
 	}
 	e.publish()
 	return e
@@ -253,7 +283,10 @@ func (e *Engine) Ready() <-chan struct{} { return e.ready }
 // Snapshot returns the latest published state; safe from any goroutine.
 func (e *Engine) Snapshot() Snapshot { return *e.snap.Load() }
 
-func (e *Engine) publish() {
+func (e *Engine) publish() { e.snap.Store(e.build()) }
+
+// build is the current state as a new Snapshot.
+func (e *Engine) build() *Snapshot {
 	s := &Snapshot{
 		SimTime:      e.simNow,
 		BusConnected: e.connected,
@@ -264,6 +297,7 @@ func (e *Engine) publish() {
 		Buttons:      make(map[string]bool, len(e.buttons)),
 		LEDs:         LEDState{Strip: append([]string{}, e.ledStrip...), Segments: make(map[string][]int, len(e.ledSegs))},
 		Warnings:     append([]string{}, e.warnings...),
+		Seq:          e.lastSeq,
 	}
 	for label, idx := range e.ledSegs {
 		s.LEDs.Segments[label] = append([]int{}, idx...)
@@ -279,7 +313,52 @@ func (e *Engine) publish() {
 	for id, v := range e.buttons {
 		s.Buttons[id] = v
 	}
-	e.snap.Store(s)
+	return s
+}
+
+func stateName(running bool) string {
+	if running {
+		return "running"
+	}
+	return "stopped"
+}
+
+// emit hands one change event to Config.Emit, stamped with the current sim time. It reads the
+// clock without moving simNow, so an event from a bus frame is exact to the microsecond while
+// the model keeps stepping on ticks only.
+func (e *Engine) emit(ev events.Event) {
+	if e.cfg.Emit == nil {
+		return
+	}
+	now := e.simNow
+	if c := e.cfg.Clock.Now(); c > now && !e.inTick {
+		now = c
+	}
+	ev.T = now.Microseconds()
+	e.lastSeq = e.cfg.Emit(ev)
+}
+
+// emitState emits a state event when port p's running state differs from the last state event.
+func (e *Engine) emitState(p *portRuntime) {
+	if st := stateName(p.state.Running); st != p.evState {
+		p.evState = st
+		e.emit(events.Event{K: "state", Port: p.cfg.Port, V: st})
+	}
+}
+
+// emitRPM samples every port's rpm for an rpm event (once per RPMEventStep, only on a change).
+func (e *Engine) emitRPM() {
+	for i := range e.ports {
+		p := &e.ports[i]
+		if e.simNow < p.nextRPM {
+			continue
+		}
+		p.nextRPM = e.simNow + RPMEventStep
+		if v := float32(p.state.RPM); v != p.evRPM {
+			p.evRPM = v
+			e.emit(events.Event{K: "rpm", Port: p.cfg.Port, V: float64(v)})
+		}
+	}
 }
 
 // handler forwards bus callbacks into the inbox; it never touches model state.
@@ -337,6 +416,13 @@ func (e *Engine) Run(ctx context.Context) error {
 	e.nextRPM = e.simNow
 	e.nextEnv = [2]time.Duration{e.simNow + EnvResend, e.simNow + EnvResend}
 	last := e.simNow
+	// A new engine starts every port from rest; saying so lets a stream that outlives a simulator
+	// restart see the states of the new engine.
+	for i := range e.ports {
+		p := &e.ports[i]
+		p.evState = ""
+		e.emitState(p)
+	}
 	e.publish()
 	ticker := clk.NewTicker(tick)
 	defer ticker.Stop()
@@ -359,10 +445,14 @@ func (e *Engine) Run(ctx context.Context) error {
 			dt := now - last
 			last = now
 			e.simNow = now
+			e.inTick = true
 			for i := range e.ports {
 				p := &e.ports[i]
 				p.state = model.Step(p.cfg.Fan, p.state, p.duty, dt)
+				e.emitState(p)
 			}
+			e.emitRPM()
+			e.inTick = false
 			if e.connected && e.simNow >= e.nextRPM {
 				e.nextRPM = e.simNow + rpmFrameStep
 				e.sendRPM(false)
@@ -381,6 +471,9 @@ func (e *Engine) Run(ctx context.Context) error {
 // stopped publishes the final state of an engine that is shutting down: the
 // bus is gone, so a status read during a simulator restart says so.
 func (e *Engine) stopped() {
+	if e.connected {
+		e.emit(events.Event{K: "firmware", V: false})
+	}
 	e.connected, e.synced, e.proto = false, false, 0
 	e.btnAvail = map[string]bool{}
 	e.publish()
@@ -391,6 +484,7 @@ func (e *Engine) handle(ev event) {
 	switch ev.kind {
 	case evHello:
 		e.connected, e.synced = true, false
+		e.emit(events.Event{K: "firmware", V: true})
 		e.btnAvail = map[string]bool{}
 		e.proto = int(ev.hello.Proto)
 		e.warnings = nil
@@ -400,6 +494,9 @@ func (e *Engine) handle(ev event) {
 		e.synced = true
 		e.checkManifest(ev.chans)
 	case evDisconnected:
+		if e.connected {
+			e.emit(events.Event{K: "firmware", V: false})
+		}
 		e.connected, e.synced = false, false
 		e.btnAvail = map[string]bool{}
 		e.proto = 0
@@ -417,6 +514,12 @@ func (e *Engine) handle(ev event) {
 		e.handleButton(ev.button)
 	case evApply:
 		e.handleApply(ev.apply)
+	case evSync:
+		snap := e.build()
+		if e.cfg.Seq != nil {
+			snap.Seq = e.cfg.Seq()
+		}
+		ev.sync <- *snap
 	}
 }
 
@@ -522,6 +625,7 @@ func (e *Engine) handleApply(op applyOp) {
 	}
 	if v := op.change.Temperature; v != nil {
 		e.env.Temperature = *v
+		e.emit(events.Event{K: "env", ID: ChanTemperature, V: *v})
 		e.nextEnv[0] = e.simNow + EnvResend
 		if e.connected {
 			e.send(e.envFrame(0))
@@ -529,6 +633,7 @@ func (e *Engine) handleApply(op applyOp) {
 	}
 	if v := op.change.Humidity; v != nil {
 		e.env.Humidity = *v
+		e.emit(events.Event{K: "env", ID: ChanHumidity, V: *v})
 		e.nextEnv[1] = e.simNow + EnvResend
 		if e.connected {
 			e.send(e.envFrame(1))
@@ -543,10 +648,46 @@ func (e *Engine) handleApply(op applyOp) {
 			pc.Port = p.cfg.Port
 			p.cfg = pc
 			p.state = model.Initial(pc.Fan)
+			e.emit(events.Event{K: "fan", Port: pc.Port, V: pc.FanID})
+			e.emitState(p)
 		}
 	}
 	e.publish() // before the reply, so a status read after Apply returned already shows the change
 	op.reply <- struct{}{}
+}
+
+// SnapshotSync returns a snapshot taken on the engine goroutine, between two events: its state
+// includes every event the engine emitted up to Seq and nothing after it. A watcher that
+// subscribes to the broker first and then calls this skips the events with a seq up to
+// Snapshot.Seq and forwards the rest, so no change is lost or repeated at the join. An engine
+// whose Run has returned answers ErrStopped at once.
+func (e *Engine) SnapshotSync(ctx context.Context) (Snapshot, error) {
+	select {
+	case <-e.done:
+		return Snapshot{}, ErrStopped
+	default:
+	}
+	reply := make(chan Snapshot, 1)
+	select {
+	case e.inbox <- event{kind: evSync, sync: reply}:
+	case <-e.done:
+		return Snapshot{}, ErrStopped
+	case <-ctx.Done():
+		return Snapshot{}, ctx.Err()
+	}
+	select {
+	case s := <-reply:
+		return s, nil
+	case <-e.done:
+		select {
+		case s := <-reply:
+			return s, nil
+		default:
+			return Snapshot{}, ErrStopped
+		}
+	case <-ctx.Done():
+		return Snapshot{}, ctx.Err()
+	}
 }
 
 // SetButton sets the level of button id (true = held) and returns the sim
@@ -611,6 +752,9 @@ func (e *Engine) handleButton(op buttonOp) {
 	}
 	if now := e.cfg.Clock.Now(); now > e.simNow {
 		e.simNow = now
+	}
+	if e.buttons[op.id] != op.level {
+		e.emit(events.Event{K: "button", ID: op.id, V: op.level})
 	}
 	e.buttons[op.id] = op.level
 	if e.connected {
@@ -698,7 +842,11 @@ func (e *Engine) handleFrame(f bus.Frame) {
 		}
 		matched = true
 		if v, ok := f.GetNum("v"); ok {
-			e.ports[i].duty = math.Min(1, math.Max(0, v))
+			duty := math.Min(1, math.Max(0, v))
+			if duty != e.ports[i].duty {
+				e.emit(events.Event{K: "duty", Port: e.ports[i].cfg.Port, V: duty})
+			}
+			e.ports[i].duty = duty
 		}
 	}
 	if !matched {
@@ -827,4 +975,5 @@ func (e *Engine) handleLEDFrame(f bus.Frame) {
 		strip = append(strip, "#"+strings.ToLower(chunk))
 	}
 	e.ledStrip = strip
+	e.emit(events.Event{K: "leds", Strip: append([]string{}, strip...)})
 }

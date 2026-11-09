@@ -41,6 +41,7 @@ import (
 	"github.com/zeroflow/esphome-sil/internal/clock"
 	"github.com/zeroflow/esphome-sil/internal/control"
 	"github.com/zeroflow/esphome-sil/internal/engine"
+	"github.com/zeroflow/esphome-sil/internal/events"
 	"github.com/zeroflow/esphome-sil/internal/fanlib"
 	"github.com/zeroflow/esphome-sil/internal/instance"
 	"github.com/zeroflow/esphome-sil/internal/model"
@@ -96,6 +97,12 @@ type supervisor struct {
 	clk    clock.Clock
 	log    *slog.Logger
 	engCfg engine.Config
+
+	// broker carries the change events of every engine of this instance to the watch streams. It
+	// outlives engine replacement; stopAll closes it. Nil means no events (some unit tests).
+	broker *events.Broker
+	// streams counts the open watch and logs --follow streams (at most events.MaxSubscribers).
+	streams atomic.Int32
 
 	starter Starter     // launches firmware processes (ExecStarter, a fake in tests)
 	guard   *CrashGuard // counts unrequested firmware exits (D-03)
@@ -175,9 +182,10 @@ func Serve(ctx context.Context, name string) error {
 
 	log := slog.Default().With("instance", name)
 	clk := clock.NewReal()
+	broker := events.NewBroker()
 	s := &supervisor{
-		paths: p, id: id, spec: spec, clk: clk, log: log,
-		engCfg: engine.Config{Clock: clk, BusPath: p.BusSock(), Log: log},
+		paths: p, id: id, spec: spec, clk: clk, log: log, broker: broker,
+		engCfg: engine.Config{Clock: clk, BusPath: p.BusSock(), Log: log, Emit: broker.Publish, Seq: broker.Seq},
 		inputs: engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity},
 		fans:   ports,
 
@@ -420,6 +428,10 @@ func (s *supervisor) stopAll() {
 		s.stopProc(fw)
 		s.stopEngine(sl)
 		s.probeWG.Wait()
+		// Every stream ends here with its stopped line, before the control server stops.
+		if s.broker != nil {
+			s.broker.Close()
+		}
 		close(s.stopped)
 	})
 }
@@ -609,8 +621,19 @@ func (s *supervisor) autoRestart(old *fwProc) {
 
 // Status implements control.Control.
 func (s *supervisor) Status(_ context.Context) (control.Status, error) {
+	return s.statusFrom(nil), nil
+}
+
+// statusFrom builds the Status from the engine snapshot have, or from the current engine's
+// latest one when have is nil. It never takes opMu.
+func (s *supervisor) statusFrom(have *engine.Snapshot) control.Status {
 	s.mu.Lock()
-	snap := s.slot.eng.Snapshot()
+	var snap engine.Snapshot
+	if have != nil {
+		snap = *have
+	} else {
+		snap = s.slot.eng.Snapshot()
+	}
 	pid, running, stopping, restarting := s.fwPID, s.fwRunning, s.stopping, s.restarting
 	lastExit, failure := s.lastExit, s.failure
 	apiReady, apiFailure := s.apiReady, s.apiFailure
@@ -656,7 +679,7 @@ func (s *supervisor) Status(_ context.Context) (control.Status, error) {
 	for label, idx := range snap.LEDs.Segments {
 		st.LEDs.Segments[label] = append([]int{}, idx...)
 	}
-	return st, nil
+	return st
 }
 
 // Down implements control.Control: stop everything, then let the main loop
@@ -766,6 +789,11 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 	}
 	s.mu.Unlock()
 	s.inMu.Unlock()
+	// The streams see the old engine's firmware false, then this, then the new engine's own
+	// events (its firmware true once the firmware has reconnected).
+	if s.broker != nil {
+		s.broker.Publish(events.Event{T: s.clk.Now().Microseconds(), K: "sim", V: "restarted"})
+	}
 
 	err = s.waitUntil(rctx, resyncBudget, func() (bool, error) {
 		snap := sl.eng.Snapshot()

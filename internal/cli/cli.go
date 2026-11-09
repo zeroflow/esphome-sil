@@ -17,6 +17,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -54,6 +55,7 @@ type CLI struct {
 	Press  PressCmd  `cmd:"" help:"Press a button (usr1..usr3): 200 ms by default, --long holds 1500 ms, --hold DUR sets the hold; --down/--up set the level and return."`
 	Set    SetCmd    `cmd:"" help:"Set inputs: key=value pairs (temperature in degrees Celsius, humidity in %RH, portN.fan=ID to plug a library fan into port N), validated first and applied together."`
 	Fans   FansCmd   `cmd:"" help:"List the fans of the instance's fan library."`
+	Watch  WatchCmd  `cmd:"" help:"Follow the instance live as NDJSON: one snapshot line, then one line per change, until it stops (Ctrl-C ends it too)."`
 	Serve  ServeCmd  `cmd:"" hidden:"" help:"Run the detached supervisor (internal)."`
 }
 
@@ -119,6 +121,14 @@ type FansCmd struct {
 	Instance string `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
 }
 
+// WatchCmd is `sil watch`. Like press, the instance is selected with --instance/-i. It is a
+// streaming command: it writes NDJSON lines to stdout as they arrive instead of one JSON value.
+type WatchCmd struct {
+	Kind     []string `sep:"," help:"Only these event kinds, comma separated (duty, rpm, state, fan, button, env, leds, firmware, sim); the snapshot, lagged and stopped lines always come."`
+	Count    int      `help:"Exit 0 after this many event lines following the snapshot (0 = until the instance stops)."`
+	Instance string   `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
+}
+
 // ServeCmd is the hidden `sil serve`.
 type ServeCmd struct {
 	Name string `arg:"" help:"Instance name."`
@@ -126,9 +136,12 @@ type ServeCmd struct {
 
 // runEnv carries what commands hand back to Execute.
 type runEnv struct {
-	result  any
+	result any
+	// silent: the command wrote its own output (streaming commands, serve); Execute prints no
+	// result value after a successful run.
 	silent  bool
 	quiet   bool
+	stdout  io.Writer
 	stderr  io.Writer
 	context context.Context
 }
@@ -141,7 +154,7 @@ func Main(args []string) int { return Execute(args, os.Stdout, os.Stderr) }
 
 // Execute is Main with explicit output streams (the tests capture them).
 func Execute(args []string, stdout, stderr io.Writer) int {
-	env := &runEnv{stderr: stderr}
+	env := &runEnv{stdout: stdout, stderr: stderr}
 
 	var cli CLI
 	// kong writes help to stderr: stdout carries JSON only.
@@ -410,6 +423,67 @@ func (c *FansCmd) Run(env *runEnv) error {
 	}
 	env.result = res
 	return nil
+}
+
+// Run implements `sil watch`: the lines of the stream are copied to stdout as they arrive.
+func (c *WatchCmd) Run(env *runEnv) error {
+	env.silent = true
+	if c.Count < 0 {
+		return apperr.Failed("invalid_argument", "--count must not be negative", map[string]any{"count": c.Count})
+	}
+	req := control.WatchRequest{Kinds: c.Kind}
+	if err := req.Validate(); err != nil {
+		return err
+	}
+	_, client, err := connect(c.Instance)
+	if err != nil {
+		return err
+	}
+	return relayStream(env.context, client, req.WatchPath(), env.stdout, 1, c.Count, nil)
+}
+
+// streamer opens an NDJSON stream; *control.Client is the real one.
+type streamer interface {
+	Stream(ctx context.Context, path string) (io.ReadCloser, error)
+}
+
+// relayStream copies the NDJSON stream at path to out, one line at a time, as the lines arrive.
+// show, when set, renders a line before it is written (nil writes it as it is). The first skip
+// lines (the snapshot) do not count towards count; with count > 0 it returns nil after that many
+// lines following them. It returns nil after the stopped line and when ctx ends (Ctrl-C), and
+// control_unreachable when the stream ends without a stopped line.
+func relayStream(ctx context.Context, st streamer, path string, out io.Writer, skip, count int, show func(line []byte) []byte) error {
+	rc, err := st.Stream(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	sc := bufio.NewScanner(rc)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	sc.Split(control.ScanCompleteLines)
+	seen := 0
+	for sc.Scan() {
+		line := sc.Bytes()
+		stopped := control.IsStoppedLine(line)
+		text := line
+		if show != nil {
+			text = show(line)
+		}
+		if _, err := out.Write(append(append([]byte(nil), text...), '\n')); err != nil {
+			return apperr.Infra("internal", "cannot write the stream: "+err.Error(), nil)
+		}
+		if stopped {
+			return nil
+		}
+		seen++
+		if count > 0 && seen-skip >= count {
+			return nil
+		}
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	return apperr.Infra("control_unreachable", "the stream ended without a stopped line: the connection to the instance was lost", nil)
 }
 
 // Run implements the hidden `sil serve`.

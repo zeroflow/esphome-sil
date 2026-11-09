@@ -69,5 +69,6 @@ var Registry = map[string]int{
 	"spec_unreadable":        ExitInfra,
 	"stop_timeout":           ExitInfra,
 	"supervisor_panic":       ExitInfra,
+	"too_many_streams":       ExitInfra,
 	"unsafe_runtime_dir":     ExitInfra,
 }

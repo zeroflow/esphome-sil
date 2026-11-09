@@ -17,6 +17,7 @@ import (
 
 	"github.com/zeroflow/esphome-sil/internal/bus"
 	"github.com/zeroflow/esphome-sil/internal/clock"
+	"github.com/zeroflow/esphome-sil/internal/events"
 	"github.com/zeroflow/esphome-sil/internal/fanlib"
 	"github.com/zeroflow/esphome-sil/internal/model"
 )
@@ -93,6 +94,39 @@ type harness struct {
 	fw      *firmware
 	busPath string
 	cancel  context.CancelFunc // stops the engine's Run
+	rec     *recorder          // every event the engine emitted
+}
+
+// recorder is an Emit that keeps what it was given and numbers it like a broker.
+type recorder struct {
+	mu  sync.Mutex
+	evs []events.Event
+}
+
+func (r *recorder) emit(ev events.Event) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ev.Seq = uint64(len(r.evs)) + 1
+	r.evs = append(r.evs, ev)
+	return ev.Seq
+}
+
+// all returns a copy of the events so far.
+func (r *recorder) all() []events.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]events.Event(nil), r.evs...)
+}
+
+// of returns the events of kind k.
+func (r *recorder) of(k string) []events.Event {
+	var out []events.Event
+	for _, ev := range r.all() {
+		if ev.K == k {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 // waitUntil polls cond on the real clock; it never touches the engine clock.
@@ -139,7 +173,8 @@ func startEngine(t *testing.T) *harness {
 		ports = append(ports, PortConfig{Port: n, FanID: fanlib.DefaultFan, Fan: fan})
 	}
 	clk := clock.NewManual()
-	eng := New(Config{Clock: clk, BusPath: busPath, Ports: ports})
+	rec := &recorder{}
+	eng := New(Config{Clock: clk, BusPath: busPath, Ports: ports, Emit: rec.emit})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
@@ -167,7 +202,7 @@ func startEngine(t *testing.T) *harness {
 	}
 	tm.Stop()
 	clk.BlockUntil(1) // the engine's tick ticker
-	return &harness{t: t, eng: eng, clk: clk, busPath: busPath, cancel: cancel}
+	return &harness{t: t, eng: eng, clk: clk, busPath: busPath, cancel: cancel, rec: rec}
 }
 
 // dial connects a fake firmware without saying anything yet.
@@ -1397,5 +1432,196 @@ func TestEngineReplugUnknownPortIsIgnored(t *testing.T) {
 		if p.Fan != fanlib.DefaultFan {
 			t.Fatalf("port%d fan %q after a replug of port 9", p.Port, p.Fan)
 		}
+	}
+}
+
+// duty events carry the change from the firmware; a repeated value is not a change.
+func TestEngineEmitsDutyOnChangeOnly(t *testing.T) {
+	h := newHarness(t)
+	h.out("port2.duty", 0.4)
+	h.out("port2.duty", 0.4) // identical
+	h.out("port2.duty", 0)   // back to the initial value is a change from 0.4
+	h.out("port1.duty", 0)   // identical to the initial value
+	h.settle()
+	var got []string
+	for _, ev := range h.rec.of("duty") {
+		if ev.Port == 4 {
+			continue // the settle marker
+		}
+		got = append(got, fmt.Sprintf("%d=%v", ev.Port, ev.V))
+	}
+	if want := "[2=0.4 2=0]"; fmt.Sprint(got) != want {
+		t.Fatalf("duty events %v, want %s", got, want)
+	}
+}
+
+// rpm is sampled once per second of sim time and only when the float32 value changed.
+func TestEngineEmitsRPMOncePerSecondOnChange(t *testing.T) {
+	h := newHarness(t)
+	h.advanceTo(2 * time.Second)
+	if n := len(h.rec.of("rpm")); n != 0 {
+		t.Fatalf("%d rpm events at rest, want none (nothing changed)", n)
+	}
+	h.setDuty(1, 1.0)
+	h.advanceTo(10 * time.Second)
+	evs := h.rec.of("rpm")
+	if len(evs) < 4 || len(evs) > 11 {
+		t.Fatalf("%d rpm events over 10 s of spin-up, want about one per second: %+v", len(evs), evs)
+	}
+	for i, ev := range evs {
+		if ev.Port != 1 {
+			t.Fatalf("rpm event %d on port %d, want only port 1 (the others did not change)", i, ev.Port)
+		}
+		if i > 0 && ev.T-evs[i-1].T < RPMEventStep.Microseconds() {
+			t.Fatalf("rpm events %d and %d are %d us apart, want at least %d", i-1, i, ev.T-evs[i-1].T, RPMEventStep.Microseconds())
+		}
+		if i > 0 && ev.V.(float64) <= evs[i-1].V.(float64) {
+			t.Fatalf("rpm did not rise between events %d and %d: %v then %v", i-1, i, evs[i-1].V, ev.V)
+		}
+	}
+	// At the steady state nothing changes any more, so nothing is emitted.
+	h.advanceTo(30 * time.Second)
+	before := len(h.rec.of("rpm"))
+	h.advanceTo(10 * time.Second)
+	if after := len(h.rec.of("rpm")); after != before {
+		t.Fatalf("%d rpm events at the steady state, want none", after-before)
+	}
+}
+
+// A port starts or stops: state events, and one per port when the engine starts.
+func TestEngineEmitsStateAndStartStates(t *testing.T) {
+	h := newHarness(t)
+	var start []string
+	for _, ev := range h.rec.of("state") {
+		start = append(start, fmt.Sprintf("%d=%v", ev.Port, ev.V))
+	}
+	if want := "[1=stopped 2=stopped 3=stopped 4=stopped]"; fmt.Sprint(start) != want {
+		t.Fatalf("start states %v, want %s (the Arctic stops below its start duty)", start, want)
+	}
+	h.setDuty(3, 1.0)
+	h.advanceTo(time.Second)
+	last := h.rec.of("state")
+	if ev := last[len(last)-1]; ev.Port != 3 || ev.V != "running" {
+		t.Fatalf("last state event %+v, want port 3 running", ev)
+	}
+	// A hold fan is running from the start.
+	replug(t, h, 1, noctuaID)
+	fan := h.rec.of("fan")
+	if len(fan) != 1 || fan[0].Port != 1 || fan[0].V != noctuaID {
+		t.Fatalf("fan events %+v, want one for port 1 = %s", fan, noctuaID)
+	}
+	last = h.rec.of("state")
+	if ev := last[len(last)-1]; ev.Port != 1 || ev.V != "running" {
+		t.Fatalf("last state event %+v, want port 1 running after plugging a hold fan", ev)
+	}
+}
+
+func TestEngineEmitsButtonAndEnv(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.eng.SetButton(context.Background(), "usr2", true, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.eng.SetButton(context.Background(), "usr2", true, false); err != nil { // not a change
+		t.Fatal(err)
+	}
+	if _, err := h.eng.SetButton(context.Background(), "usr2", false, false); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, ev := range h.rec.of("button") {
+		got = append(got, fmt.Sprintf("%s=%v", ev.ID, ev.V))
+	}
+	if want := "[usr2=true usr2=false]"; fmt.Sprint(got) != want {
+		t.Fatalf("button events %v, want %s", got, want)
+	}
+	if err := applyChange(t, h.eng, Change{Temperature: fp(26), Humidity: fp(40)}); err != nil {
+		t.Fatal(err)
+	}
+	got = nil
+	for _, ev := range h.rec.of("env") {
+		got = append(got, fmt.Sprintf("%s=%v", ev.ID, ev.V))
+	}
+	if want := "[temperature=26 humidity=40]"; fmt.Sprint(got) != want {
+		t.Fatalf("env events %v, want %s", got, want)
+	}
+}
+
+// Every pixel frame is an event, an identical replay included (D-08).
+func TestEngineEmitsEveryLEDFrame(t *testing.T) {
+	h := newLEDHarness(t, ledChan(5, "board:0:0"))
+	blue := "0000ff" + strings.Repeat("0", 24)
+	h.fw.send(ledPx(blue))
+	h.fw.send(ledPx(blue))
+	h.fw.send(ledPx("zz0000" + strings.Repeat("0", 24))) // invalid: no event
+	h.fw.send(ledPx(blue))
+	h.settle()
+	evs := h.rec.of("leds")
+	if len(evs) != 3 {
+		t.Fatalf("%d leds events, want 3 (two identical frames and one more, the invalid one is not an event): %+v", len(evs), evs)
+	}
+	for _, ev := range evs {
+		if len(ev.Strip) != 5 || ev.Strip[0] != "#0000ff" {
+			t.Fatalf("leds event strip %v, want 5 LEDs with the first blue", ev.Strip)
+		}
+	}
+}
+
+// firmware true on hello, false on a disconnect and when the engine stops; Snapshot.Seq follows
+// the events.
+func TestEngineEmitsFirmwareAndSnapshotSeq(t *testing.T) {
+	h := newHarness(t)
+	fwEvs := func() string {
+		var got []string
+		for _, ev := range h.rec.of("firmware") {
+			got = append(got, fmt.Sprint(ev.V))
+		}
+		return fmt.Sprint(got)
+	}
+	if got := fwEvs(); got != "[true]" {
+		t.Fatalf("firmware events %s after the hello, want [true]", got)
+	}
+	h.setDuty(1, 0.5)
+	last := h.rec.all()[len(h.rec.all())-1]
+	if s := h.eng.Snapshot(); s.Seq != last.Seq {
+		t.Fatalf("Snapshot.Seq = %d, want the seq %d of the last event (%+v)", s.Seq, last.Seq, last)
+	}
+	_ = h.fw.conn.Close()
+	waitUntil(t, "the disconnect event", func() bool { return fwEvs() == "[true false]" })
+	if s := h.eng.Snapshot(); s.Seq != h.rec.all()[len(h.rec.all())-1].Seq {
+		t.Fatalf("Snapshot.Seq = %d after the disconnect, want the last event's seq", s.Seq)
+	}
+}
+
+func TestEngineStopEmitsFirmwareFalse(t *testing.T) {
+	h := newHarness(t)
+	h.cancel()
+	waitUntil(t, "the engine to stop", func() bool { return !h.eng.Snapshot().BusConnected })
+	waitUntil(t, "the firmware false event", func() bool {
+		evs := h.rec.of("firmware")
+		return len(evs) == 2 && evs[1].V == false
+	})
+}
+
+// SnapshotSync is taken on the engine goroutine and carries Config.Seq when set.
+func TestEngineSnapshotSyncStampsTheBrokerSeq(t *testing.T) {
+	h := newHarness(t)
+	h.eng.cfg.Seq = func() uint64 { return 4242 }
+	h.setDuty(2, 0.3)
+	s, err := h.eng.SnapshotSync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Seq != 4242 || s.Ports[1].Duty != 0.3 {
+		t.Fatalf("SnapshotSync = seq %d duty %v, want seq 4242 and the duty just set", s.Seq, s.Ports[1].Duty)
+	}
+	h.eng.cfg.Seq = nil
+	s, err = h.eng.SnapshotSync(context.Background())
+	if err != nil || s.Seq != h.rec.all()[len(h.rec.all())-1].Seq {
+		t.Fatalf("SnapshotSync without Config.Seq: seq %d err %v, want the last emitted seq", s.Seq, err)
+	}
+	h.cancel()
+	waitUntil(t, "the engine to stop", func() bool { return !h.eng.Snapshot().BusConnected })
+	if _, err := h.eng.SnapshotSync(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("SnapshotSync after stop: %v, want ErrStopped", err)
 	}
 }

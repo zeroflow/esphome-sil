@@ -109,6 +109,9 @@ type fakeControl struct {
 	status          control.Status
 	err             error
 	onDown          func() // runs when a down request arrives (e.g. to end the stand-in supervisor)
+	// watch, when set, is the Watch handler; watchKinds records the kinds each watch asked for.
+	watch      func(ctx context.Context, send func(any) error) error
+	watchKinds [][]string
 }
 
 func (f *fakeControl) record(call string) error {
@@ -173,6 +176,18 @@ func (f *fakeControl) Set(_ context.Context, r control.SetRequest) (control.SetR
 
 func (f *fakeControl) Fans(context.Context) (control.FansResult, error) {
 	return f.fans, f.record("fans")
+}
+
+func (f *fakeControl) Watch(ctx context.Context, r control.WatchRequest, send func(any) error) error {
+	f.mu.Lock()
+	f.watchKinds = append(f.watchKinds, r.Kinds)
+	watch := f.watch
+	f.mu.Unlock()
+	f.record("watch")
+	if watch == nil {
+		return nil
+	}
+	return watch(ctx, send)
 }
 
 func (f *fakeControl) seen() []string {

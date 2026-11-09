@@ -8,6 +8,7 @@
 package control
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,10 +20,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/clock"
+	"github.com/zeroflow/esphome-sil/internal/events"
 )
 
 // SchemaVersion is the Status.Schema value written by this version.
@@ -198,6 +201,50 @@ type FansResult struct {
 	Fans []FanInfo `json:"fans"`
 }
 
+// SnapshotLine is the first line of a watch stream: the full state, with the stream's t (sim
+// microseconds) and the seq it is consistent with. The Status fields sit at its top level, exactly
+// as `sil status` prints them; every event line after it has a higher seq.
+type SnapshotLine struct {
+	T   int64  `json:"t"`
+	K   string `json:"k"` // always "snapshot"
+	Seq uint64 `json:"seq"`
+	Status
+}
+
+// StoppedLine is the last line of every stream: the instance stopped.
+type StoppedLine struct {
+	T int64  `json:"t"`
+	K string `json:"k"` // always "stopped"
+}
+
+// NewStoppedLine is the stopped line at sim time t.
+func NewStoppedLine(t time.Duration) StoppedLine {
+	return StoppedLine{T: t.Microseconds(), K: "stopped"}
+}
+
+// WatchRequest selects the event kinds of a watch stream; empty means all of events.Kinds. The
+// snapshot, lagged and stopped lines always come.
+type WatchRequest struct {
+	Kinds []string
+}
+
+// Validate answers invalid_argument for a kind that is not in events.Kinds.
+func (r WatchRequest) Validate() error {
+	if k := events.UnknownKind(r.Kinds); k != "" {
+		return apperr.Failed("invalid_argument", fmt.Sprintf("unknown event kind %q; known: %s", k, strings.Join(events.Kinds, ", ")),
+			map[string]any{"kind": k, "known": events.Kinds})
+	}
+	return nil
+}
+
+// WatchPath is the request path of a watch stream (for Client.Stream).
+func (r WatchRequest) WatchPath() string {
+	if len(r.Kinds) == 0 {
+		return "/api/v1/watch"
+	}
+	return "/api/v1/watch?kind=" + url.QueryEscape(strings.Join(r.Kinds, ","))
+}
+
 // Restart budgets of the client: the longest a restart request may take
 // (30 s gap plus resync, or stop grace plus readiness) is well inside it.
 const restartBudget = 60 * time.Second
@@ -221,6 +268,10 @@ type Control interface {
 	Set(ctx context.Context, r SetRequest) (SetResult, error)
 	// Fans lists the fans of the instance's fan library, sorted by id.
 	Fans(ctx context.Context) (FansResult, error)
+	// Watch sends the snapshot line, then one value per change event, then the stopped line when
+	// the instance stops. It returns when the instance stops, ctx ends or send fails. An error
+	// before the first send becomes a normal error reply.
+	Watch(ctx context.Context, r WatchRequest, send func(v any) error) error
 }
 
 type errorBody struct {
@@ -320,7 +371,53 @@ func NewHandler(c Control) http.Handler {
 		res, err := c.Fans(r.Context())
 		reply(w, res, err)
 	})
+	mux.HandleFunc("GET /api/v1/watch", func(w http.ResponseWriter, r *http.Request) {
+		var req WatchRequest
+		if k := r.URL.Query().Get("kind"); k != "" {
+			req.Kinds = strings.Split(k, ",")
+		}
+		if err := req.Validate(); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		streamNDJSON(w, func(send func(any) error) error { return c.Watch(r.Context(), req, send) })
+	})
 	return mux
+}
+
+// streamNDJSON answers 200 application/x-ndjson and runs fn, whose send writes one JSON value per
+// line and flushes it at once. An error returned before the first send is replied as a normal
+// JSON error with its status code; after it there is no way left to tell the client, so the
+// stream just ends (the client treats an end without a stopped line as a lost connection).
+func streamNDJSON(w http.ResponseWriter, fn func(send func(any) error) error) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		reply(w, nil, apperr.Infra("internal", "the control connection cannot stream", nil))
+		return
+	}
+	started := false
+	send := func(v any) error {
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(v); err != nil {
+			return err
+		}
+		if !started {
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusOK)
+			started = true
+		}
+		if _, err := w.Write(buf.Bytes()); err != nil {
+			return err
+		}
+		fl.Flush()
+		return nil
+	}
+	if err := fn(send); err != nil && !started {
+		reply(w, nil, err)
+	}
 }
 
 func reply(w http.ResponseWriter, v any, err error) {
@@ -518,6 +615,97 @@ func (c *Client) Fans(ctx context.Context) (FansResult, error) {
 	return res, nil
 }
 
+// Watch implements Control: every line of the stream is handed to send as a json.RawMessage. It
+// returns nil after the stopped line and control_unreachable when the stream ends without one.
+func (c *Client) Watch(ctx context.Context, r WatchRequest, send func(v any) error) error {
+	return c.relay(ctx, r.WatchPath(), send)
+}
+
+// relay reads the NDJSON stream at path line by line into send (see Watch).
+func (c *Client) relay(ctx context.Context, path string, send func(v any) error) error {
+	rc, err := c.Stream(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	sc := bufio.NewScanner(rc)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	sc.Split(ScanCompleteLines)
+	for sc.Scan() {
+		line := append([]byte(nil), sc.Bytes()...)
+		if err := send(json.RawMessage(line)); err != nil {
+			return err
+		}
+		if IsStoppedLine(line) {
+			return nil
+		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return apperr.Infra("control_unreachable", "the stream ended without a stopped line", map[string]any{"socket": c.sock})
+}
+
+// ScanCompleteLines is a bufio.SplitFunc for NDJSON streams: it yields newline-terminated lines
+// only, so a line that the connection cut off in the middle is dropped instead of being passed
+// on as a (broken) value.
+func ScanCompleteLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, bytes.TrimSuffix(data[:i], []byte("\r")), nil
+	}
+	if atEOF {
+		return len(data), nil, nil
+	}
+	return 0, nil, nil
+}
+
+// IsStoppedLine reports whether line is the {"k":"stopped"} line that ends every stream.
+func IsStoppedLine(line []byte) bool {
+	if !bytes.Contains(line, []byte(`"stopped"`)) {
+		return false
+	}
+	var h struct {
+		K string `json:"k"`
+	}
+	return json.Unmarshal(line, &h) == nil && h.K == "stopped"
+}
+
+// Stream opens a GET stream at path (an NDJSON route) and returns its body, to be read line by
+// line until it ends. It has no body cap and no deadline of its own: the caller's ctx ends it. A
+// non-2xx answer is parsed like any other control error.
+func (c *Client) Stream(ctx context.Context, path string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://sil"+path, nil)
+	if err != nil {
+		return nil, apperr.Infra("control_unreachable", "cannot build the control request", map[string]any{"error": err.Error()})
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, apperr.Infra("control_unreachable", "cannot reach the instance control socket", map[string]any{"socket": c.sock, "error": err.Error()})
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, errorFromResponse(resp, raw)
+	}
+	return resp.Body, nil
+}
+
+// errorFromResponse turns a 4xx/5xx control answer into an *apperr.Error.
+func errorFromResponse(resp *http.Response, raw []byte) error {
+	var eb errorBody
+	if json.Unmarshal(raw, &eb) != nil || eb.Error == nil {
+		return apperr.Infra("control_error", fmt.Sprintf("unexpected control response %s", resp.Status), nil)
+	}
+	eb.Error.Exit = apperr.ExitInfra
+	if resp.StatusCode < 500 {
+		eb.Error.Exit = apperr.ExitFailed
+	}
+	return eb.Error
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in []byte, out any) error {
 	var body io.Reader
 	if in != nil {
@@ -546,15 +734,7 @@ func (c *Client) do(ctx context.Context, method, path string, in []byte, out any
 		return apperr.Infra("control_unreachable", "control response was cut off", map[string]any{"socket": c.sock, "error": err.Error()})
 	}
 	if resp.StatusCode >= 400 {
-		var eb errorBody
-		if json.Unmarshal(raw, &eb) != nil || eb.Error == nil {
-			return apperr.Infra("control_error", fmt.Sprintf("unexpected control response %s", resp.Status), nil)
-		}
-		eb.Error.Exit = apperr.ExitInfra
-		if resp.StatusCode < 500 {
-			eb.Error.Exit = apperr.ExitFailed
-		}
-		return eb.Error
+		return errorFromResponse(resp, raw)
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return apperr.Infra("control_error", "control response is not valid JSON", map[string]any{"error": err.Error()})
