@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Full Rev 3.3 Bench
 status: executing
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-11-09T06:22:34.557Z"
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-11-09T06:42:38.216Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 2 execution started
-state_head: 8f9e8a134311391d70b6fd53f268ddeef07df8d8
+state_head: 39cc09809086386b4520feda9e46f649c4f05917
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 21
-  completed_plans: 14
+  completed_plans: 15
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 2 (Full Rev 3.3 Bench) — EXECUTING
-Plan: 2 of 8
+Plan: 3 of 8
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 2 execution started
 
@@ -70,6 +70,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 1 P12 | 25 min | 2 tasks | 5 files |
 | Phase 1 P13 | 15min | 2 tasks | 4 files |
 | Phase 02 P01 | 16 min | 2 tasks | 14 files |
+| Phase 02 P02 | 25 min | 2 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -114,6 +115,8 @@ Recent decisions affecting current work:
 - [Phase 02]: Button edges are stamped with clock.Now() (not the last tick) so t_up_us - t_down_us >= hold_ms*1000 holds exactly
 - [Phase 02]: Press release goes to the engine in the slot at release time with an uncancellable context; ErrStopped counts as released; a sim restart releases a held button (A-02-01)
 - [Phase 02]: ShortPress 200 ms / LongPress 1500 ms / MaxHold 60 s live in internal/control; HTTP API requires explicit hold_ms; --instance/-i is the selector for Phase 2 verbs with positional args
+- [Phase 02]: 02-02: LED state is per bus session (hello clears, disconnect keeps the last frame); px before the manifest accepted then checked against n
+- [Phase 02]: 02-02: segment names come only from the firmware's partition lights (light.py codegen, segment_labels override); final-validate rejects unknown label keys and invalid or duplicate labels
 
 ### Pending Todos
 
@@ -124,7 +127,7 @@ None yet.
 - [Phase 1] Go 1.27.3 is not yet installed on this host (checksum in research/STACK.md)
 - [Phase 1] Spike needed: static build with `api: encryption:` (Noise libs fetched at build time, hermetic build cache), same-path bind mounts for local external components, incremental rebuild timing
 - [Phase 1] Ready check needs a real encrypted API handshake from the Go side (Noise); pick the approach during planning
-- [Phase 2] `partition` + `pulse` effects on the sim addressable light and the resulting LED frame rate are unverified at runtime
+- [Phase 2] RESOLVED in 02-02: `partition` + `pulse` (and `addressable_rainbow`) on the sim addressable light verified at runtime; boot pulse 12 frames/s, rainbow 11 to 15 frames/s, idle 0 frames in 5 s
 - [Phase 2] Live HA behaviour with the stable-MAC scheme is unverified (research read HA source, no live run)
 - [Later] Static linking with real product modules (DNS, `json:`) is unverified; run-in-image fallback stays available
 - [Later] Host `select()` timeout lives in `core/wake/wake_host.cpp::wakeable_delay` in 2026.10.1, not `core/application.cpp` as PROJECT.md says (affects the time-factor milestone)
@@ -140,8 +143,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T06:22:34.514Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-11-09T06:42:37.678Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None
 
 ## Needs Human
