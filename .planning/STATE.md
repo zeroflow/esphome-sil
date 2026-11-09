@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Full Rev 3.3 Bench
 status: executing
-stopped_at: Completed 01-13-PLAN.md
-last_updated: "2026-11-09T06:03:30.394Z"
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-11-09T06:22:34.557Z"
 last_activity: 2026-11-09
-last_activity_desc: Phase 1 execution started
-state_head: 199fc81eaa1eee6cc8e1823b1ee9d72d85c67126
+last_activity_desc: Phase 2 execution started
+state_head: 8f9e8a134311391d70b6fd53f268ddeef07df8d8
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 21
-  completed_plans: 13
+  completed_plans: 14
   percent: 0
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-08)
 
 **Core value:** A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
-**Current focus:** Phase 1 — Closed-Loop Fan Skeleton
+**Current focus:** Phase 2 — Full Rev 3.3 Bench
 
 ## Current Position
 
-Phase: 2 (Full Rev 3.3 Bench) — READY TO EXECUTE
-Plan: 13 of 13
+Phase: 2 (Full Rev 3.3 Bench) — EXECUTING
+Plan: 2 of 8
 Status: Ready to execute
-Last activity: 2026-11-09 — Phase 1 execution started
+Last activity: 2026-11-09 — Phase 2 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -69,6 +69,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P11 | 13 min | 2 tasks | 7 files |
 | Phase 1 P12 | 25 min | 2 tasks | 5 files |
 | Phase 1 P13 | 15min | 2 tasks | 4 files |
+| Phase 02 P01 | 16 min | 2 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -110,6 +111,9 @@ Recent decisions affecting current work:
 - [Phase 01]: 01-11: last_exit.signal uses POSIX names via SignalName; firmware_crash_loop keeps exit class 1 in sil up through lifecycle.userClass
 - [Phase 1]: 01-12: sil status exits 0 whenever the control API answers (phase failed is data); --help goes to stderr; client dials its own run dir api.sock and refuses a non-private runtime base
 - [Phase 1]: apperr.Registry is the single list of 51 error codes with exit class 1 or 2; an AST scan of internal/ and cmd/ fails make check on unregistered, reclassified, dual-class, non-literal or stale codes
+- [Phase 02]: Button edges are stamped with clock.Now() (not the last tick) so t_up_us - t_down_us >= hold_ms*1000 holds exactly
+- [Phase 02]: Press release goes to the engine in the slot at release time with an uncancellable context; ErrStopped counts as released; a sim restart releases a held button (A-02-01)
+- [Phase 02]: ShortPress 200 ms / LongPress 1500 ms / MaxHold 60 s live in internal/control; HTTP API requires explicit hold_ms; --instance/-i is the selector for Phase 2 verbs with positional args
 
 ### Pending Todos
 
@@ -136,8 +140,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T03:28:54.968Z
-Stopped at: Completed 01-13-PLAN.md
+Last session: 2026-11-09T06:22:34.514Z
+Stopped at: Completed 02-01-PLAN.md
 Resume file: None
 
 ## Needs Human

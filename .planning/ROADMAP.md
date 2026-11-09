@@ -74,11 +74,11 @@ Plans:
   4. The user adds a running instance to any Home Assistant using host:port and key from `sil status`, controls fan speed per port, and sees RPM, temperature, humidity and button states follow. Restarting the instance reuses the same HA device with no duplicates, and a second instance appears as a separate device.
   5. One command runs the contract test (builds and runs the example with the simulator; duty to RPM settles, a button press registers, a temperature change arrives) and the aioesphomeapi smoke test (HA-visible entity set, fan command round trip), and both pass.
 
-**Plans:** 8 plans
+**Plans:** 1/8 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 02-01-PLAN.md — Tracer: `sil press` -> sim_bus binary_sensor -> firmware on_click -> fan duty -> `sil status`; examples/rev33.yaml (fans, RPM, USR1-3); full D-01..D-04 press vocabulary (wave 1)
+- [x] 02-01-PLAN.md — Tracer: `sil press` -> sim_bus binary_sensor -> firmware on_click -> fan duty -> `sil status`; examples/rev33.yaml (fans, RPM, USR1-3); full D-01..D-04 press vocabulary (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 02-02-PLAN.md — LED strip: sim_bus addressable light under stock `partition` lights, codegen-derived segments, dedupe + 20 Hz cap + replay, `leds` in `sil status`, D-13 board/fan LED logic (wave 2)
@@ -123,5 +123,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Closed-Loop Fan Skeleton | 13/13 | In Progress|  |
-| 2. Full Rev 3.3 Bench | 0/8 | Planned | - |
+| 2. Full Rev 3.3 Bench | 1/8 | In Progress|  |
 | 3. Live Web UI | 0/TBD | Not started | - |
