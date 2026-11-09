@@ -37,6 +37,14 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+func TestSignalName(t *testing.T) {
+	for sig, want := range map[syscall.Signal]string{syscall.SIGKILL: "SIGKILL", syscall.SIGSEGV: "SIGSEGV", syscall.SIGABRT: "SIGABRT", syscall.Signal(60): "SIG60"} {
+		if got := SignalName(sig); got != want {
+			t.Errorf("SignalName(%d) = %q, want %q", int(sig), got, want)
+		}
+	}
+}
+
 func TestCrashGuard(t *testing.T) {
 	t.Run("five within 30 s trip on the fifth", func(t *testing.T) {
 		clk := clock.NewManual()
@@ -107,7 +115,7 @@ func (p *fakeProc) SignalGroup(sig syscall.Signal) error {
 	end := p.exitOn[sig]
 	p.mu.Unlock()
 	if end {
-		p.finish(ExitInfo{Signal: sig.String()})
+		p.finish(ExitInfo{Signal: SignalName(sig)})
 	}
 	return nil
 }

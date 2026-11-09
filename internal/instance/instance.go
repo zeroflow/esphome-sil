@@ -314,9 +314,23 @@ func WriteRunFile(p Paths, rf RunFile) error {
 	return writeJSON(p.RunJSON(), rf, 0o700)
 }
 
-// ReadRunFile reads run.json; a missing file means the instance is not
-// running (Failed "not_running").
+// ReadRunFile reads run.json of a running instance: a missing file, or one
+// naming a dead or foreign PID (a supervisor that was SIGKILLed leaves its
+// run.json behind), means the instance is not running (Failed "not_running").
 func ReadRunFile(p Paths) (RunFile, error) {
+	rf, err := LoadRunFile(p)
+	if err != nil {
+		return RunFile{}, err
+	}
+	if !ProcessAlive(rf, p.Name) {
+		return RunFile{}, notRunning(p.Name)
+	}
+	return rf, nil
+}
+
+// LoadRunFile reads run.json without checking that its PID is alive; `sil
+// down` uses it to find and clean up what a dead supervisor left behind.
+func LoadRunFile(p Paths) (RunFile, error) {
 	raw, err := os.ReadFile(p.RunJSON())
 	if errors.Is(err, os.ErrNotExist) {
 		return RunFile{}, notRunning(p.Name)

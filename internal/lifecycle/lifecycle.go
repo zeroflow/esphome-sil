@@ -31,8 +31,10 @@ const (
 	readyBudget   = 60 * time.Second
 	statusBudget  = 2 * time.Second
 	pollEvery     = 250 * time.Millisecond
-	downBudget    = 20 * time.Second
+	downBudget    = 5 * time.Second // the control socket must answer a down request within this
 	stopBudget    = 10 * time.Second
+	termGrace     = 5 * time.Second // fallback: SIGTERM to SIGKILL
+	killGrace     = 2 * time.Second
 	tailLines     = 20
 )
 
@@ -332,7 +334,7 @@ func waitReady(ctx context.Context, p instance.Paths, srv *serveProc, key string
 				return nil
 			case control.PhaseFailed:
 				if st.Error != nil {
-					return withLogTail(st.Error, p.FirmwareLog(), key)
+					return withLogTail(userClass(st.Error), p.FirmwareLog(), key)
 				}
 				return withLogTail(apperr.Infra("firmware_failed", "the firmware failed to start", nil), p.FirmwareLog(), key)
 			}
@@ -351,6 +353,19 @@ func waitReady(ctx context.Context, p instance.Paths, srv *serveProc, key string
 				map[string]any{"firmware_log": p.FirmwareLog()}), p.FirmwareLog(), key)
 		}
 	}
+}
+
+// userClass restores the exit class of errors the supervisor reports in a
+// failed Status: the class does not travel over the control API, and a
+// firmware that crash-loops is a problem with the firmware under test (exit
+// 1), not with the bench.
+func userClass(e *apperr.Error) *apperr.Error {
+	if e.Code != "firmware_crash_loop" {
+		return e
+	}
+	out := *e
+	out.Exit = apperr.ExitFailed
+	return &out
 }
 
 // withLogTail adds the last lines of a log file, with the API key redacted,
@@ -387,7 +402,15 @@ func readTail(path string, n int, key string) string {
 }
 
 // Down stops instance name. A missing run.json is not an error: it returns
-// Stopped false.
+// Stopped false, and so does a run.json that names a dead or foreign PID
+// (it is cleaned up).
+//
+// The normal path asks the supervisor over its control socket. When that does
+// not answer within downBudget (a stopped or wedged supervisor, a dead
+// socket), Down falls back to SIGTERM and then SIGKILL of the run.json PID,
+// but only while /proc/<pid>/cmdline still says `sil serve <name>` (T-01-24):
+// the PID in run.json is never trusted alone. The firmware dies with its
+// supervisor (Pdeathsig); the sockets and run.json are removed afterwards.
 func Down(ctx context.Context, name string) (control.DownResult, error) {
 	if err := instance.ValidateName(name); err != nil {
 		return control.DownResult{}, err
@@ -396,7 +419,7 @@ func Down(ctx context.Context, name string) (control.DownResult, error) {
 	if err != nil {
 		return control.DownResult{}, err
 	}
-	rf, err := instance.ReadRunFile(p)
+	rf, err := instance.LoadRunFile(p)
 	if err != nil {
 		var ae *apperr.Error
 		if errors.As(err, &ae) && ae.Code == "not_running" {
@@ -404,24 +427,83 @@ func Down(ctx context.Context, name string) (control.DownResult, error) {
 		}
 		return control.DownResult{}, err
 	}
+	if !instance.ProcessAlive(rf, name) {
+		cleanupRun(p)
+		return control.DownResult{Instance: name, Stopped: false}, nil
+	}
 	clk := clock.NewReal()
 	dctx, cancel := clock.WithTimeout(ctx, clk, downBudget)
 	res, err := control.Dial(rf.APISock).Down(dctx)
+	timedOut := clock.TimedOut(dctx)
 	cancel()
 	if err != nil {
-		return control.DownResult{}, err
+		var ae *apperr.Error
+		unreachable := errors.As(err, &ae) && ae.Code == "control_unreachable"
+		if !unreachable && !timedOut {
+			if ctx.Err() != nil {
+				return control.DownResult{}, ctx.Err()
+			}
+			return control.DownResult{}, err
+		}
+		return forceStop(ctx, clk, p, rf)
 	}
+	// The supervisor answered; give it stopBudget to exit, then force it.
 	sctx, scancel := clock.WithTimeout(ctx, clk, stopBudget)
 	defer scancel()
-	for instance.Alive(rf.PID) {
+	for instance.ProcessAlive(rf, name) {
 		if err := clk.Sleep(sctx, 50*time.Millisecond); err != nil {
 			if ctx.Err() != nil {
 				return control.DownResult{}, ctx.Err()
 			}
-			return control.DownResult{}, apperr.Infra("stop_timeout",
-				fmt.Sprintf("sil serve (pid %d) is still running %s after the stop request", rf.PID, stopBudget),
-				map[string]any{"pid": rf.PID})
+			return forceStop(ctx, clk, p, rf)
 		}
 	}
 	return res, nil
+}
+
+// forceStop is the Down fallback: SIGTERM the supervisor named by rf, wait
+// termGrace, then SIGKILL it. Each signal is sent only after the PID has been
+// confirmed to still be `sil serve <name>`.
+func forceStop(ctx context.Context, clk clock.Clock, p instance.Paths, rf instance.RunFile) (control.DownResult, error) {
+	if instance.ProcessAlive(rf, p.Name) {
+		_ = syscall.Kill(rf.PID, syscall.SIGTERM)
+		if !waitGone(ctx, clk, rf, p.Name, termGrace) {
+			if ctx.Err() != nil {
+				return control.DownResult{}, ctx.Err()
+			}
+			if instance.ProcessAlive(rf, p.Name) { // re-checked: the PID could have been reused meanwhile
+				_ = syscall.Kill(rf.PID, syscall.SIGKILL)
+			}
+			if !waitGone(ctx, clk, rf, p.Name, killGrace) {
+				if ctx.Err() != nil {
+					return control.DownResult{}, ctx.Err()
+				}
+				return control.DownResult{}, apperr.Infra("stop_timeout",
+					fmt.Sprintf("sil serve (pid %d) is still running after SIGTERM and SIGKILL", rf.PID),
+					map[string]any{"pid": rf.PID})
+			}
+		}
+	}
+	cleanupRun(p)
+	return control.DownResult{Instance: p.Name, Stopped: true}, nil
+}
+
+// waitGone polls until rf no longer names a live `sil serve <name>` or d has passed.
+func waitGone(ctx context.Context, clk clock.Clock, rf instance.RunFile, name string, d time.Duration) bool {
+	wctx, cancel := clock.WithTimeout(ctx, clk, d)
+	defer cancel()
+	for instance.ProcessAlive(rf, name) {
+		if err := clk.Sleep(wctx, 50*time.Millisecond); err != nil {
+			return !instance.ProcessAlive(rf, name)
+		}
+	}
+	return true
+}
+
+// cleanupRun removes what a dead supervisor leaves behind: run.json and the
+// two sockets (the run dir itself stays for the logs).
+func cleanupRun(p instance.Paths) {
+	for _, f := range []string{p.RunJSON(), p.APISock(), p.BusSock()} {
+		_ = os.Remove(f)
+	}
 }

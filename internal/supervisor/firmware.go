@@ -100,7 +100,7 @@ func exitInfo(st *os.ProcessState, _ error) ExitInfo {
 	}
 	if ws, ok := st.Sys().(syscall.WaitStatus); ok {
 		if ws.Signaled() {
-			info.Signal = ws.Signal().String()
+			info.Signal = SignalName(ws.Signal())
 		} else {
 			code := ws.ExitStatus()
 			info.Code = &code
@@ -126,4 +126,23 @@ func (p *execProcess) SignalGroup(sig syscall.Signal) error {
 		return err
 	}
 	return nil
+}
+
+// signalNames are the POSIX names; syscall.Signal.String gives prose ("killed").
+var signalNames = map[syscall.Signal]string{
+	syscall.SIGHUP: "SIGHUP", syscall.SIGINT: "SIGINT", syscall.SIGQUIT: "SIGQUIT",
+	syscall.SIGILL: "SIGILL", syscall.SIGTRAP: "SIGTRAP", syscall.SIGABRT: "SIGABRT",
+	syscall.SIGBUS: "SIGBUS", syscall.SIGFPE: "SIGFPE", syscall.SIGKILL: "SIGKILL",
+	syscall.SIGUSR1: "SIGUSR1", syscall.SIGSEGV: "SIGSEGV", syscall.SIGUSR2: "SIGUSR2",
+	syscall.SIGPIPE: "SIGPIPE", syscall.SIGALRM: "SIGALRM", syscall.SIGTERM: "SIGTERM",
+	syscall.SIGXCPU: "SIGXCPU", syscall.SIGXFSZ: "SIGXFSZ", syscall.SIGSYS: "SIGSYS",
+}
+
+// SignalName is the POSIX name of sig (SIGKILL, SIGSEGV, ...), or SIG<n> for
+// one without a well-known name.
+func SignalName(sig syscall.Signal) string {
+	if n, ok := signalNames[sig]; ok {
+		return n
+	}
+	return fmt.Sprintf("SIG%d", int(sig))
 }
