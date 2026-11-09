@@ -28,7 +28,7 @@ import (
 
 const (
 	modulePath    = "github.com/zeroflow/esphome-sil"
-	defaultConfig = "examples/fan-skeleton.yaml"
+	defaultConfig = "examples/rev33.yaml"
 	readyBudget   = 60 * time.Second
 	statusBudget  = 2 * time.Second
 	pollEvery     = 250 * time.Millisecond

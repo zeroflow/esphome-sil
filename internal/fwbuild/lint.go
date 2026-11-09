@@ -40,9 +40,9 @@ func bannedHint(name string) (string, bool) {
 	case "pulse_counter":
 		return "use sensor platform sim_bus; RPM is simulated", true
 	case "esp32_rmt_led_strip":
-		return "use light platform sim_bus (Phase 2)", true
+		return "use light platform sim_bus with partition lights for the segments", true
 	case "i2c":
-		return "remove it; sim sensors replace I2C devices", true
+		return "remove it; use sensor platform sim_bus with mode: latest for temperature/humidity", true
 	case "ota":
 		return "there is no OTA on the host", true
 	case "http_request", "update":

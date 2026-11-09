@@ -30,6 +30,122 @@ with tach/PWM loopback -> HIL with real fans.
 - Go 1.27.3 to build `sil` (a single static binary)
 - [uv](https://docs.astral.sh/uv/) for the contract tests
 
+## Quick start
+
+```bash
+make build                         # bin/sil, a static binary
+bin/sil up dev                     # builds examples/rev33.yaml (first build is slow, later ones are cached)
+bin/sil status dev                 # JSON: phase, api, ports, env, buttons, leds, firmware, sim
+bin/sil set temperature=27 humidity=60 -i dev   # inputs; also port2.fan=noctua-nf-a12x25-pwm
+bin/sil press usr1 -i dev          # 200 ms press; --long holds 1500 ms, --down / --up set the level
+bin/sil watch --kind duty,rpm --count 5 -i dev  # NDJSON: one snapshot, then one line per change
+bin/sil logs --source all --tail 50 -i dev      # firmware and simulator logs, colour removed, key redacted
+bin/sil fans -i dev                # the fan library and what is plugged into each port
+bin/sil sim restart dev            # fresh simulator, the firmware keeps running and resyncs
+bin/sil fw restart dev             # restart the firmware process with the same program and prefs
+bin/sil down dev
+```
+
+`-i NAME` (or `$SIL_INSTANCE`) selects the instance of the verbs that take
+further arguments; with a single live instance it can be omitted. Instance names
+are `a-z`, `0-9` and `-`. Several instances run side by side, each with its own
+run directory, API port, MAC and key. Exit codes: 0 ok, 1 the thing under test
+failed or the request was refused, 2 the bench itself failed.
+
+## The Rev 3.3 example
+
+`examples/rev33.yaml` (the default of `sil up`) mirrors the product's IO surface
+with sim components: four fans on `output` platform `sim_bus` (PWM duty) with
+RPM `sensor`s, temperature and humidity (`sensor` platform `sim_bus`), three
+`binary_sensor` buttons and an addressable `light` strip of five LEDs with
+`partition` lights for the segments. Home Assistant sees 13 entities (Fan 1..4,
+Fan 1..4 Speed, Temperature, Humidity, Button USR1..USR3); the LEDs are internal
+and visible in `sil status` and `sil watch`. The minimal four-fan config stays
+available as `--config examples/fan-skeleton.yaml`.
+
+The example carries a thin, product-like behaviour so the bench can be driven end
+to end (it is not the real product code):
+
+| Trigger | Behaviour |
+|---------|-----------|
+| boot | board LED pulses blue until a real API client connects, then static green (the readiness probe of `sil` itself does not count) |
+| a fan turns (RPM above 0) | its LED segment is green, off when it stops |
+| USR1 press | all fans +10 % |
+| USR3 press | all fans -10 % (0 turns a fan off) |
+| USR2 long press (`sil press usr2 --long`) | all fans 100 % |
+
+Inputs: temperature -40..125 degrees Celsius and humidity 0..100 %RH (HDC1080
+bounds, an assumption).
+
+## Using the components in your firmware
+
+The simulated IO lives in one ESPHome external component, `sim_bus`, with the
+platforms `output`, `sensor`, `binary_sensor` and `light`. The example uses it
+from the checkout:
+
+```yaml
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [sim_bus]
+
+sim_bus:
+  id: bus
+```
+
+A product repo uses the same block pointing at a tagged release once one exists
+(there is no tag yet; until then use the local form against a checkout):
+
+```yaml
+external_components:
+  - source: github://zeroflow/esphome-sil@vX.Y
+    components: [sim_bus]
+```
+
+`sil up` lints the YAML first and names components that cannot run on the host
+platform, with a replacement hint: `ledc` -> `output` platform `sim_bus`,
+`pulse_counter` -> `sensor` platform `sim_bus`, `esp32_rmt_led_strip` -> `light`
+platform `sim_bus` with `partition` lights, `i2c` -> `sensor` platform `sim_bus`
+with `mode: latest` for temperature/humidity. The firmware must keep
+`esphome.build_flags: [-static]` and `api: encryption:`; `sil` injects the name,
+MAC, port (substitutions `sil_name`, `sil_mac`, `sil_port`) and the key (env
+`SIL_API_KEY`).
+
+## Contract tests
+
+`tests/` holds two pytest suites that drive real bench instances through the
+`sil` CLI and `aioesphomeapi`: a closed-loop contract test (the Rev 3.3 chain
+from Home Assistant style fan commands to RPM, buttons, LEDs and inputs) and a
+smoke test that the entities are visible and commandable.
+
+```bash
+make lock-check       # the Python dependencies must match the product HIL lock (tests/uv.lock vs LOCK_REF)
+make test-contract    # builds sil, runs lock-check, then pytest (needs docker, the pinned image and uv)
+```
+
+`make test-contract` depends on `make lock-check`, so dependencies are never
+installed before the hash comparison with `../wifi-fancontroller/hil/uv.lock`
+(override with `LOCK_REF=`). The tests use the reserved instances `ct-main` and
+`ct-second`; do not use these names yourself. Their state lives in
+`~/.cache/sil-contract/state` (override with `SIL_CONTRACT_STATE`). A warm run
+takes about half a minute.
+
+The Go side has its own suites: `make check` (format, vet, unit tests, the
+sim-bus C++ codec test) and `make e2e` (full runs against the pinned image),
+plus `make test-cpp-image` (the codec test with the image's compiler) and
+`make mod-verify`.
+
+## Fan library
+
+`sil fans` lists the plant models in `fans/*.toml`: `arctic-p12-pwm-pst`
+(default) and `noctua-nf-a12x25-pwm`. `sil up --fan ID` plugs one into all four
+ports, `sil set portN.fan=ID` changes a single port at runtime. `SIL_FAN_DIR`
+points at a directory of your own fan files instead of the embedded library.
+Constants marked `ASSUMED` in both files (start duty, time constants, the
+Noctua minimum duty and below-minimum behaviour) are not measured; replace them
+by datasheet or measured values before relying on absolute numbers.
+
 ## Home Assistant
 
 The firmware of every instance is a normal ESPHome device with the native API

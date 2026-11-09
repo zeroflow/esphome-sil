@@ -63,7 +63,7 @@ type CLI struct {
 // UpCmd is `sil up`.
 type UpCmd struct {
 	Name    string `arg:"" help:"Instance name (a-z, 0-9, '-')."`
-	Config  string `help:"Firmware YAML (default: examples/fan-skeleton.yaml of this checkout)."`
+	Config  string `help:"Firmware YAML (default: examples/rev33.yaml of this checkout, the Rev 3.3 bench; examples/fan-skeleton.yaml is the minimal four-fan config)."`
 	APIPort int    `name:"api-port" help:"Firmware native API port (default: the stored port, first 6054)."`
 	Rebuild bool   `help:"Discard the previous build output of this instance first."`
 	Fan     string `help:"Library fan plugged into all four ports (default arctic-p12-pwm-pst); change one port later with: sil set portN.fan=ID."`

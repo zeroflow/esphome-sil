@@ -378,9 +378,9 @@ func TestPressVocabulary(t *testing.T) {
 		in.waitDuties(t, [4]float64{0.1, 0.1, 0.1, 0.1})
 	})
 	t.Run("input_not_available", func(t *testing.T) {
-		// The Phase 1 skeleton firmware has no buttons.
+		// The Phase 1 skeleton firmware has no buttons; the default config is the Rev 3.3 bench now.
 		env := newEnv(t)
-		env.Up(t, "e2e-r33-skel")
+		env.Up(t, "e2e-r33-skel", "--config", filepath.Join(repoRoot(t), "examples", "fan-skeleton.yaml"))
 		out, code, _ := env.Sil(t, "press", "usr1", "-i", "e2e-r33-skel")
 		r33ExpectErr(t, "press on firmware without buttons", out, code, "input_not_available")
 	})
