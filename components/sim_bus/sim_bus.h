@@ -32,8 +32,13 @@ class SimChild {
 
 class SimBus : public Component {
  public:
-  /// A line longer than this without a newline drops the connection (the peer is broken or hostile).
-  static constexpr size_t kMaxLine = 4096;
+  /// The connection is dropped (and re-established with backoff) when this much is queued for a
+  /// simulator that does not read, so a stalled peer can never grow or block the firmware loop.
+  static constexpr size_t kMaxTx = 65536;
+  /// Reconnect delay: starts at kBackoffMin, doubles per attempt that does not reach a welcome,
+  /// capped at kBackoffMax; a welcome resets it.
+  static constexpr uint32_t kBackoffMin = 100;
+  static constexpr uint32_t kBackoffMax = 2000;
 
   void set_path(const std::string &p) { this->path_ = p; }
   void register_child(SimChild *c) { this->children_.push_back(c); }
@@ -51,12 +56,20 @@ class SimBus : public Component {
  protected:
   void try_connect_();
   void close_();
-  void handle_line_(const std::string &line);
+  /// Handles one received line; returns false when the connection was closed because of it.
+  bool handle_line_(const std::string &line);
+  void queue_(const std::string &line) { this->tx_ += line; }
   void send_out_(const std::string &ch, float v);
+  void send_err_(const std::string &msg);
+  void bump_backoff_();
   void flush_();
   std::string path_;
   int fd_{-1};
   uint32_t last_try_{0};
+  uint32_t retry_delay_{0};
+  uint32_t backoff_{kBackoffMin};
+  bool welcomed_{false};
+  bool synced_{false};
   std::string rx_, tx_;
   std::vector<SimChild *> children_;
   /// Latest value per output channel, in the order the channels were first written. While

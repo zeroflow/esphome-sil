@@ -15,7 +15,7 @@ The protocol is internal while the project is `0.x`: it may change, but only tog
 
 - A Unix stream socket at `<run dir>/bus.sock` (mode 0600 in a 0700 directory). The path comes from `SIL_BUS` (firmware) and the instance run directory (simulator). A socket path is at most 107 bytes (`sun_path`).
 - The simulator listens, the firmware connects. The firmware restarts and must not own the rendezvous; it retries with backoff while the socket is absent.
-- A new connection while one is active replaces the older one (the older is closed). That is what a firmware restart looks like from the simulator.
+- A connection becomes the active session when its first frame is a valid `hello`; it then replaces the older session, which receives `bye` and is closed. That is what a firmware restart looks like from the simulator. A connection that never says hello (silent for 2 s, garbage, a debugging `socat`) is closed and does not disturb the active session.
 
 ## Line grammar
 
@@ -52,7 +52,7 @@ Both decoders return the first problem found while scanning left to right, named
 
 Checks run in this order: length, structure and values while scanning, the end of the line (`trailing`), then `missing_k` / `bad_k`.
 
-**A decode error closes the connection.** A side that receives a bad line may first send `err` (below) and then closes; it does not skip the line and read on. (Plan 01-10 implements this for the firmware hub; the Go server counts and logs it.)
+**A decode error closes the connection.** A side that receives a bad line first sends `err` (below) and then closes; it does not skip the line and read on. Both the firmware hub and the Go server do this.
 
 ## Numbers
 
@@ -93,8 +93,19 @@ Session:
 1. The firmware connects and sends `hello`, then `chan` for each of its channels, then an `out` snapshot of the last known value of every out channel, then `sync`.
 2. The simulator checks `proto`, answers `welcome`, then sends an `in` snapshot of every in channel that has a value, then `sync`.
 3. Steady state: `out` frames from the firmware and `in` frames from the simulator, each carrying `t`.
-4. A `proto` mismatch is answered with `err` and a close; status shows `bus.error = "proto_mismatch"`.
-5. A manifest that does not match the model's ports (unknown or missing channels) produces warnings in status, not a failure.
+4. A `proto` mismatch is answered with `err` (`proto mismatch: sim 1, firmware N`) and a close; status shows a warning and `bus_connected` false, and the firmware logs the error and retries with backoff.
+5. A manifest that does not match the model's ports (unknown or missing channels, wrong direction or type) produces warnings in status, not a failure. A firmware with zero channels (`chans` 0) still completes hello, welcome and sync.
+
+Order guarantees:
+
+- Firmware snapshot: `hello`, `chan` in registration order, `out` in first-write order, `sync`. A connection made before any output was written (the very first one, in `setup()`) carries no `out` frames in the snapshot; the first values follow as ordinary `out` frames.
+- Simulator snapshot: `welcome` first, then one `in` per port in port order 1..4, then `sync`. Any steady-state frame the simulator produces while it prepares the snapshot is held back and follows the `sync`.
+- The simulator answers a hello within the 2 s hello deadline (the firmware's first frame must arrive within 2 s of connecting) and accepts at most 1024 `chan` frames per session.
+- The firmware accepts `in` frames at any time after connecting; `welcome` only resets its reconnect backoff.
+
+Reconnect (firmware): after a connection ends or fails it retries after 100 ms, doubling per attempt that did not reach a `welcome` (100, 200, 400, 800, 1600, then 2000 ms), and a `welcome` resets the delay. The hub drops the connection when more than 65536 bytes are queued for a simulator that does not read.
+
+Session end reasons reported to status (`warnings`) by the simulator: `proto_mismatch`, `hello_timeout`, `no_hello`, `bad_hello`, `bad_frame: <class>`, `peer_error: <msg>`, `send_queue_full`; a plain close, `bye` and a replacement by a newer firmware are not warnings.
 
 Timestamps: the `t` of simulator frames is microseconds of **sim time** (the injectable clock, not the wall clock). The `t` of firmware frames is its monotonic microseconds and is recorded for diagnostics only.
 

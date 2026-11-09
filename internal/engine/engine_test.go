@@ -3,10 +3,12 @@ package engine
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"math"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -83,10 +85,11 @@ func (fw *firmware) rpmFrames(ch string) []bus.Frame {
 
 // harness is an engine on a Manual clock with a connected fake firmware.
 type harness struct {
-	t   *testing.T
-	eng *Engine
-	clk *clock.Manual
-	fw  *firmware
+	t       *testing.T
+	eng     *Engine
+	clk     *clock.Manual
+	fw      *firmware
+	busPath string
 }
 
 // waitUntil polls cond on the real clock; it never touches the engine clock.
@@ -102,10 +105,23 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// newHarness starts the engine on a short socket path (never t.TempDir, which
-// can exceed the 107-byte sun_path limit), connects a fake firmware, sends
-// hello and waits for the welcome.
-func newHarness(t *testing.T) *harness {
+// fullManifest is what the skeleton firmware announces: the four duty outputs
+// then the four rpm inputs, in registration order.
+func fullManifest() []bus.Channel {
+	var chs []bus.Channel
+	for n := 1; n <= 4; n++ {
+		chs = append(chs, bus.Channel{Ch: fmt.Sprintf("port%d.duty", n), Dir: "out", Type: "f32"})
+	}
+	for n := 1; n <= 4; n++ {
+		chs = append(chs, bus.Channel{Ch: fmt.Sprintf("port%d.rpm", n), Dir: "in", Type: "f32"})
+	}
+	return chs
+}
+
+// startEngine runs an engine on a Manual clock on a short socket path (never
+// t.TempDir, which can exceed the 107-byte sun_path limit) and waits until it
+// listens. No firmware is connected yet.
+func startEngine(t *testing.T) *harness {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "sil-")
 	if err != nil {
@@ -148,24 +164,65 @@ func newHarness(t *testing.T) *harness {
 	}
 	tm.Stop()
 	clk.BlockUntil(1) // the engine's tick ticker
+	return &harness{t: t, eng: eng, clk: clk, busPath: busPath}
+}
 
-	conn, err := net.Dial("unix", busPath)
+// dial connects a fake firmware without saying anything yet.
+func (h *harness) dial() *firmware {
+	h.t.Helper()
+	conn, err := net.Dial("unix", h.busPath)
 	if err != nil {
-		t.Fatalf("dial %s: %v", busPath, err)
+		h.t.Fatalf("dial %s: %v", h.busPath, err)
 	}
-	t.Cleanup(func() { _ = conn.Close() })
-	fw := &firmware{t: t, conn: conn}
+	h.t.Cleanup(func() { _ = conn.Close() })
+	fw := &firmware{t: h.t, conn: conn}
 	go fw.readLoop()
-	fw.send(bus.NewFrame("hello").Int("proto", bus.Proto).Int("t", 0))
-	h := &harness{t: t, eng: eng, clk: clk, fw: fw}
-	waitUntil(t, "the welcome frame", func() bool {
-		for _, f := range fw.received() {
-			if f.Kind() == "welcome" {
+	return fw
+}
+
+// session sends hello (announcing len(chans) channels), the chan frames and
+// the closing sync, like the firmware hub does on every connect.
+func (fw *firmware) session(chans []bus.Channel) {
+	fw.t.Helper()
+	fw.send(bus.NewFrame("hello").Int("proto", bus.Proto).Str("name", "test-fw").Int("chans", int64(len(chans))).Int("t", 0))
+	for _, c := range chans {
+		fw.send(bus.NewFrame("chan").Str("ch", c.Ch).Str("dir", c.Dir).Str("type", c.Type))
+	}
+	fw.send(bus.NewFrame("sync").Int("t", 0))
+}
+
+// kinds returns the kind of every frame received so far.
+func (fw *firmware) kinds() []string {
+	var ks []string
+	for _, f := range fw.received() {
+		ks = append(ks, f.Kind())
+	}
+	return ks
+}
+
+// waitKinds waits until at least n frames arrived and returns their kinds.
+func (fw *firmware) waitKinds(n int) []string {
+	fw.t.Helper()
+	waitUntil(fw.t, fmt.Sprintf("%d frames from the engine", n), func() bool { return len(fw.received()) >= n })
+	return fw.kinds()
+}
+
+// newHarness starts the engine, connects a fake firmware with the full
+// manifest and waits until the session is synced on both sides.
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	h := startEngine(t)
+	h.fw = h.dial()
+	h.fw.session(fullManifest())
+	waitUntil(t, "the engine's sync", func() bool {
+		for _, f := range h.fw.received() {
+			if f.Kind() == "sync" {
 				return true
 			}
 		}
 		return false
 	})
+	waitUntil(t, "the manifest to be checked", func() bool { return h.eng.Snapshot().Synced })
 	return h
 }
 
@@ -342,5 +399,171 @@ func TestEngineAdvancesModelOnlyOnClockTicks(t *testing.T) {
 	}
 	if first, _ := frames[0].GetInt("t"); first != 0 {
 		t.Fatalf("first port1.rpm frame t = %d, want 0 (the hello snapshot)", first)
+	}
+}
+
+func TestEngineSnapshotOrderAfterHello(t *testing.T) {
+	h := newHarness(t)
+	want := []string{"welcome", "in", "in", "in", "in", "sync"}
+	got := h.fw.waitKinds(len(want))[:len(want)]
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("frame kinds after hello = %v, want %v", h.fw.kinds(), want)
+		}
+	}
+	for i, f := range h.fw.received()[1:5] {
+		if ch, _ := f.GetStr("ch"); ch != fmt.Sprintf("port%d.rpm", i+1) {
+			t.Fatalf("snapshot frame %d is for %q, want port%d.rpm (port order)", i, ch, i+1)
+		}
+		if v, ok := f.GetF32("v"); !ok || v != 0 {
+			t.Fatalf("snapshot frame %s: rpm %v (present %v), want 0 for a fresh engine", f, v, ok)
+		}
+	}
+	if w := h.eng.Snapshot().Warnings; len(w) != 0 {
+		t.Fatalf("full manifest produced warnings %v", w)
+	}
+}
+
+func TestEngineManifestWarnings(t *testing.T) {
+	without := func(ch string) []bus.Channel {
+		var out []bus.Channel
+		for _, c := range fullManifest() {
+			if c.Ch != ch {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name  string
+		chans []bus.Channel
+		want  []string
+	}{
+		{"missing input", without("port3.rpm"), []string{"missing channel port3.rpm (in)"}},
+		{"missing output", without("port2.duty"), []string{"missing channel port2.duty (out)"}},
+		{"unknown channel", append(fullManifest(), bus.Channel{Ch: "foo.bar", Dir: "out", Type: "f32"}),
+			[]string{"unknown channel foo.bar (ignored)"}},
+		{"wrong direction", func() []bus.Channel {
+			chs := fullManifest()
+			chs[0].Dir = "in"
+			return chs
+		}(), []string{`channel port1.duty has direction "in", expected "out"`}},
+		{"wrong type", func() []bus.Channel {
+			chs := fullManifest()
+			chs[7].Type = "i32"
+			return chs
+		}(), []string{`channel port4.rpm has type "i32", expected "f32"`}},
+		{"zero channels", nil, []string{
+			"missing channel port1.duty (out)", "missing channel port1.rpm (in)",
+			"missing channel port2.duty (out)", "missing channel port2.rpm (in)",
+			"missing channel port3.duty (out)", "missing channel port3.rpm (in)",
+			"missing channel port4.duty (out)", "missing channel port4.rpm (in)",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := startEngine(t)
+			fw := h.dial()
+			fw.session(tc.chans)
+			// The session completes whatever the manifest says.
+			got := fw.waitKinds(6)
+			if got[0] != "welcome" || got[5] != "sync" {
+				t.Fatalf("frame kinds = %v, want welcome, four in frames, sync", got)
+			}
+			waitUntil(t, "the manifest to be checked", func() bool { return h.eng.Snapshot().Synced })
+			s := h.eng.Snapshot()
+			if !s.BusConnected {
+				t.Fatalf("a manifest mismatch must not drop the connection")
+			}
+			if fmt.Sprint(s.Warnings) != fmt.Sprint(tc.want) {
+				t.Fatalf("warnings = %q, want %q", s.Warnings, tc.want)
+			}
+		})
+	}
+}
+
+func TestEngineUnknownOutChannelWarnsOnce(t *testing.T) {
+	h := newHarness(t)
+	h.out("foo.bar", 1)
+	h.out("foo.bar", 2)
+	h.settle()
+	w := h.eng.Snapshot().Warnings
+	if len(w) != 1 || w[0] != "unknown channel foo.bar (ignored)" {
+		t.Fatalf("warnings = %q, want one unknown-channel warning", w)
+	}
+}
+
+func TestEngineProtoMismatch(t *testing.T) {
+	h := startEngine(t)
+	fw := h.dial()
+	fw.send(bus.NewFrame("hello").Int("proto", 2).Str("name", "old-fw").Int("chans", 0).Int("t", 0))
+	waitUntil(t, "the engine to record the mismatch", func() bool {
+		return len(h.eng.Snapshot().Warnings) == 1
+	})
+	s := h.eng.Snapshot()
+	if s.BusConnected || s.BusProto != 0 {
+		t.Fatalf("bus_connected %v proto %d after a mismatching hello, want false and 0", s.BusConnected, s.BusProto)
+	}
+	if !strings.Contains(s.Warnings[0], "protocol mismatch") {
+		t.Fatalf("warning %q does not name the protocol mismatch", s.Warnings[0])
+	}
+	waitUntil(t, "the err frame", func() bool { return len(fw.received()) == 1 })
+	f := fw.received()[0]
+	if msg, _ := f.GetStr("msg"); f.Kind() != "err" || !strings.Contains(msg, "proto mismatch") {
+		t.Fatalf("first reply = %s, want err with a proto mismatch message", f)
+	}
+	// The engine closed the connection after the err.
+	_ = fw.conn.SetReadDeadline(clock.NewReal().Deadline(guard))
+	if _, err := fw.conn.Read(make([]byte, 1)); err == nil {
+		t.Fatalf("read after the err frame returned data, want EOF")
+	}
+}
+
+func TestEngineSnapshotCarriesCurrentRPM(t *testing.T) {
+	h := newHarness(t)
+	h.out("port1.duty", 0.4)
+	h.settle()
+	h.clk.Advance(time.Second)
+	waitUntil(t, "SimTime == 1 s", func() bool { return h.eng.Snapshot().SimTime == time.Second })
+	rpm := h.eng.Snapshot().Ports[0].RPM
+	if rpm <= 0 {
+		t.Fatalf("port1 rpm %v after 1 s at duty 0.4; the test would prove nothing", rpm)
+	}
+
+	// A restarted firmware connects: the newer connection replaces the older and
+	// its hello is answered with the rpm the fan has right now.
+	fw2 := h.dial()
+	fw2.session(fullManifest())
+	got := fw2.waitKinds(6)
+	if got[0] != "welcome" || got[5] != "sync" {
+		t.Fatalf("frame kinds on the new connection = %v", got)
+	}
+	f := fw2.received()[1]
+	if ch, _ := f.GetStr("ch"); ch != "port1.rpm" {
+		t.Fatalf("first snapshot frame is %s, want port1.rpm", f)
+	}
+	if v, _ := f.GetF32("v"); v != float32(rpm) {
+		t.Fatalf("snapshot port1.rpm = %v, want the current %v", v, float32(rpm))
+	}
+	waitUntil(t, "the old connection to receive bye", func() bool {
+		ks := h.fw.kinds()
+		return len(ks) > 0 && ks[len(ks)-1] == "bye"
+	})
+	if s := h.eng.Snapshot(); !s.BusConnected || !s.Synced {
+		t.Fatalf("after the replacement bus_connected %v synced %v, want true and true", s.BusConnected, s.Synced)
+	}
+	// Late frames of the replaced connection no longer reach the model.
+	_, _ = h.fw.conn.Write(bus.Encode(bus.NewFrame("out").Str("ch", "port2.duty").Num("v", 0.9).Int("t", 0))) // the write may fail: the peer is closed
+	_ = clock.NewReal().Sleep(context.Background(), 100*time.Millisecond)
+	if d := h.eng.Snapshot().Ports[1].Duty; d != 0 {
+		t.Fatalf("port2 duty = %v from the replaced connection, want 0", d)
+	}
+}
+
+func TestEngineDisconnectClearsSession(t *testing.T) {
+	h := newHarness(t)
+	_ = h.fw.conn.Close()
+	waitUntil(t, "bus_connected to drop", func() bool { return !h.eng.Snapshot().BusConnected })
+	if s := h.eng.Snapshot(); s.Synced || s.BusProto != 0 || len(s.Warnings) != 0 {
+		t.Fatalf("after a plain close: synced %v proto %d warnings %q, want false 0 none", s.Synced, s.BusProto, s.Warnings)
 	}
 }

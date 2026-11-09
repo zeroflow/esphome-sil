@@ -27,6 +27,7 @@ import (
 type ioFrame struct {
 	Conn int
 	M    map[string]any
+	At   time.Duration // sysClock time of arrival
 }
 
 // ioPeer plays the simulator side of the sim-bus and, unlike the shared
@@ -36,6 +37,8 @@ type ioFrame struct {
 type ioPeer struct {
 	t    testing.TB
 	path string
+	// manual switches off the automatic welcome and sync answer to a hello.
+	manual bool
 
 	mu     sync.Mutex
 	ln     net.Listener
@@ -44,9 +47,12 @@ type ioPeer struct {
 	frames []ioFrame
 }
 
-func ioListen(t testing.TB, path string) *ioPeer {
+func ioListen(t testing.TB, path string) *ioPeer { return ioListenMode(t, path, false) }
+
+// ioListenMode starts a peer; with manual true it never answers a hello by itself.
+func ioListenMode(t testing.TB, path string, manual bool) *ioPeer {
 	t.Helper()
-	p := &ioPeer{t: t, path: path}
+	p := &ioPeer{t: t, path: path, manual: manual}
 	p.Up()
 	t.Cleanup(p.Down)
 	return p
@@ -105,8 +111,13 @@ func (p *ioPeer) read(c net.Conn, n int) {
 			continue
 		}
 		p.mu.Lock()
-		p.frames = append(p.frames, ioFrame{Conn: n, M: m})
+		p.frames = append(p.frames, ioFrame{Conn: n, M: m, At: sysClock.Now()})
 		p.mu.Unlock()
+		if m["k"] == "hello" && !p.manual {
+			// Speak the session (BUS-02): welcome and an empty in snapshot. The hub's
+			// reconnect backoff only resets on a welcome.
+			_, _ = c.Write([]byte(`{"k":"welcome","proto":1,"t":0}` + "\n" + `{"k":"sync","t":0}` + "\n"))
+		}
 	}
 }
 
@@ -443,9 +454,11 @@ func TestFakePeer(t *testing.T) {
 		t.Fatalf("Fan 1 Speed published %d times in 3 s without a peer, want only the held state: %v", len(held), held)
 	}
 
-	// Reconnect: within 2 s, one snapshot, and fresh means only from new values.
+	// Reconnect: within the 2 s backoff cap, one snapshot, and fresh means only from new values.
 	peer.Up()
-	peer.Wait(2*time.Second, "reconnect hello", ioKind("hello", 2))
+	// The hub backs off from 100 ms to 2 s while the socket is missing, so the first
+	// attempt after the listener is back comes within 2 s plus a loop pass.
+	peer.Wait(4*time.Second, "reconnect hello", ioKind("hello", 2))
 	if err := sysClock.Sleep(t.Context(), time.Second); err != nil {
 		t.Fatalf("sleep: %v", err)
 	}
@@ -486,4 +499,124 @@ func TestFakePeer(t *testing.T) {
 		t.Fatalf("send oversized line: %v", err)
 	}
 	peer.Wait(3*time.Second, "reconnect after a 5000-byte line (hello on connection 4)", ioKind("hello", 4))
+}
+
+// ioConnFrames returns the frames received on connection conn, in order.
+func ioConnFrames(p *ioPeer, conn int) []ioFrame {
+	var out []ioFrame
+	for _, f := range p.Frames() {
+		if f.Conn == conn {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// TestHubSession checks the firmware half of the session (BUS-02, BUS-03):
+// the hello snapshot, the answers to welcome, err and bad lines, and the
+// reconnect backoff with its reset.
+func TestHubSession(t *testing.T) {
+	id := newFWIdentity(t, "e2e-hub")
+	program := buildFirmware(t, id)
+	dir := shortTempDir(t)
+	busPath := filepath.Join(dir, "bus.sock")
+	peer := ioListenMode(t, busPath, true)
+	proc := startFirmware(t, program, busPath, filepath.Join(dir, "prefs"))
+
+	// Connection 1 is made in setup(), before any output was written: hello, the 8 chan
+	// frames and sync, then the four boot duties as ordinary out frames.
+	peer.Wait(10*time.Second, "the boot duties on connection 1", func(f ioFrame) bool {
+		return f.Conn == 1 && f.M["k"] == "out" && f.M["ch"] == "port4.duty"
+	})
+	fs := ioConnFrames(peer, 1)
+	kindsOf := func(fs []ioFrame) string {
+		var ks []string
+		for _, f := range fs {
+			ks = append(ks, fmt.Sprint(f.M["k"]))
+		}
+		return strings.Join(ks, " ")
+	}
+	chanKinds := "hello" + strings.Repeat(" chan", 8)
+	if got, want := kindsOf(fs), chanKinds+" sync out out out out"; got != want {
+		t.Fatalf("connection 1 kinds = %s\nwant                 %s", got, want)
+	}
+	hello := fs[0].M
+	if hello["proto"] != float64(1) || hello["chans"] != float64(8) || hello["name"] != "sil-"+id.Name {
+		t.Errorf("hello = %v, want proto 1, chans 8, name sil-%s", hello, id.Name)
+	}
+	if _, ok := hello["t"].(float64); !ok {
+		t.Errorf("hello has no integer t: %v", hello)
+	}
+	var chans []string
+	for _, f := range fs[1:9] {
+		chans = append(chans, fmt.Sprintf("%v/%v/%v", f.M["ch"], f.M["dir"], f.M["type"]))
+	}
+	wantChans := []string{
+		"port1.duty/out/f32", "port2.duty/out/f32", "port3.duty/out/f32", "port4.duty/out/f32",
+		"port1.rpm/in/f32", "port2.rpm/in/f32", "port3.rpm/in/f32", "port4.rpm/in/f32",
+	}
+	if strings.Join(chans, " ") != strings.Join(wantChans, " ") {
+		t.Errorf("manifest = %v\nwant       %v", chans, wantChans)
+	}
+	for i, f := range fs[10:14] {
+		if f.M["ch"] != fmt.Sprintf("port%d.duty", i+1) || f.M["v"] != float64(0) {
+			t.Errorf("boot out frame %d = %v, want port%d.duty 0", i, f.M, i+1)
+		}
+	}
+
+	// A welcome of another protocol version drops the connection; the hub then
+	// reconnects with a growing delay (100, 200, 400, 800 ms, ...).
+	send := func(conn int, line string) {
+		t.Helper()
+		if err := peer.Send(line); err != nil {
+			t.Fatalf("send on connection %d: %v", conn, err)
+		}
+	}
+	var hellos []time.Duration
+	note := func(conn int) {
+		f := peer.Wait(5*time.Second, fmt.Sprintf("hello on connection %d", conn), ioKind("hello", conn))
+		hellos = append(hellos, f.At)
+	}
+	hellos = append(hellos, fs[0].At)
+	for conn := 1; conn <= 5; conn++ {
+		send(conn, `{"k":"welcome","proto":2,"t":0}`)
+		note(conn + 1)
+	}
+	for i := 1; i < len(hellos); i++ {
+		gap := hellos[i] - hellos[i-1]
+		want := 100 * time.Millisecond << (i - 1) // 100, 200, 400, 800, 1600
+		t.Logf("reconnect gap %d: %s (backoff %s)", i, gap.Round(time.Millisecond), want)
+		if gap < want*8/10 || gap > want+500*time.Millisecond {
+			t.Errorf("reconnect gap %d = %s, want about %s", i, gap, want)
+		}
+	}
+
+	// A bad line makes the hub answer err and drop the connection.
+	send(6, `not json`)
+	peer.Wait(3*time.Second, "err frame on connection 6", func(f ioFrame) bool { return f.Conn == 6 && f.M["k"] == "err" })
+	note(7)
+	// An err frame from the simulator drops it too.
+	send(7, `{"k":"err","msg":"test"}`)
+	note(8)
+	// A good welcome resets the backoff: after a bye the reconnect takes about 100 ms.
+	send(8, `{"k":"welcome","proto":1,"t":0}`)
+	send(8, `{"k":"sync","t":0}`)
+	send(8, `{"k":"bye"}`)
+	start := sysClock.Now()
+	f := peer.Wait(3*time.Second, "hello on connection 9", ioKind("hello", 9))
+	if gap := f.At - start; gap > 700*time.Millisecond {
+		t.Errorf("reconnect after a welcome took %s, want about 100 ms (backoff reset)", gap)
+	}
+	// A reconnect replays the last value of every output before sync.
+	peer.Wait(3*time.Second, "sync on connection 9", func(f ioFrame) bool { return f.Conn == 9 && f.M["k"] == "sync" })
+	if got, want := kindsOf(ioConnFrames(peer, 9)[:14]), chanKinds+" out out out out sync"; got != want {
+		t.Errorf("connection 9 kinds = %s\nwant                 %s", got, want)
+	}
+	if !proc.alive() {
+		t.Fatalf("firmware exited during the session tests")
+	}
+	// The firmware API stayed responsive through all of it.
+	if out, code := runAPIClient(t, id.Port, id.Key, "info"); code != 0 {
+		t.Fatalf("info exit %d: %v", code, out)
+	}
 }
