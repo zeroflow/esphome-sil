@@ -1,6 +1,6 @@
 ---
 phase: 01-closed-loop-fan-skeleton
-reviewed: 2026-11-09T03:57:28Z
+reviewed: 2026-11-09T06:30:00Z
 depth: standard
 files_reviewed: 83
 files_reviewed_list:
@@ -89,143 +89,64 @@ files_reviewed_list:
   - tests/cpp/test_protocol.cpp
 findings:
   critical: 0
-  warning: 6
-  info: 6
-  total: 12
+  warning: 1
+  info: 1
+  total: 2
 status: issues_found
 ---
 
-# Phase 1: Code Review Report
+# Phase 1: Code Review Report (iteration 3)
 
-**Reviewed:** 2026-11-09T03:57:28Z
+**Reviewed:** 2026-11-09T06:30:00Z
 **Depth:** standard
 **Files Reviewed:** 83
 **Status:** issues_found
 
 ## Summary
 
-Reviewed the Go simulator (supervisor, bus server and codec, engine, model, control API, instance and lifecycle, fwbuild, fanlib, apiclient, clock, CLI), the C++ `sim_bus` component and its header-only codec, the ESPHome Python glue, the protocol document and the e2e harness. `go vet` and `go test -race ./...` pass on the current tree.
+Re-reviewed the tree after the iteration-2 fixes (commits 73314f5, 5fbe66f, 1c8519a). `gofmt -l` is empty, `go vet ./...` is clean, and `go test -race -count=1 ./internal/fwbuild/ ./internal/supervisor/` passes. The e2e suite (needs Docker and the pinned image) was not re-run.
 
-Beyond reading, I ran a differential check of the Go codec (`internal/bus/codec.go`) against the C++ parser (`components/sim_bus/sim_protocol.h`) on about 8,800 mutated lines (number-grammar edge cases, escapes, control bytes, nesting, duplicate keys). Both returned the same verdict and the same decoded fields every time, so the parser-differential risk (T-01-10) looks well controlled at the `Decode` level. The one divergence is one layer up, in the Go server's line framing (WR-04).
+Status of the iteration-2 warnings:
 
-No critical defects found. The main concerns are lifecycle edge cases: a failed simulator restart leaves the supervisor reporting a stale engine, and a cancelled build can leave the Docker container running against a shared build directory. The remaining items are a protocol-framing mismatch, dead synchronisation and unused code. Security items already covered by 01-SECURITY.md are not repeated.
+| ID | Result |
+|----|--------|
+| WR-01 (container name collision) | Resolved. `containerName` appends the first 4 bytes of sha256(CacheDir). The instance name is restricted to `[a-z0-9-]` (`ValidateName`), so the result is a valid Docker name. Both the pre-run `docker rm -f` and the cancellation hook use the same scoped name. Builds into one cache dir are serialised by the instance lock. |
+| WR-02 (`compile_failed` by exit code alone) | Resolved. `classifyCompileFailure` is a pure function that requires exit 1, no download marker, and a positively matched compiler diagnostic. `compile` is called once per build and the log is opened with `O_TRUNC`, so no stale text from an earlier attempt can drive the decision. The regex is only checked against representative logs, as the fix report states (see IN-02 for that residual risk). |
+| WR-03 (SimRestart overwrites an existing failure) | Resolved for the stated case: a crash-loop failure survives a failed and a later successful `SimRestart`. A related path that still drops `engine_failed` is described in WR-01 below. |
+
+No critical defects were found.
 
 ## Warnings
 
-### WR-01: A failed `SimRestart` leaves the stopped engine in the slot and status never reports the failure
+### WR-01: `FwRestart` clears an `engine_failed` failure while the engine is still dead
 
-**File:** `internal/supervisor/supervisor.go:680-700`
-**Issue:** `SimRestart` cancels the old engine (`stopEngine(old)`, line 683) and then calls `startEngine()`. If that returns an error (for example `bus.Listen` fails because the run directory vanished), the function returns without touching `s.slot`, which still points at the engine that was just stopped. `engine.stopped()` published `BusConnected=false`, so from then on `Status()` computes `phase = "starting"` with no `error` and no warning, forever. `engine_restarts` has also already been incremented (line 681). `waitReady`-style callers and `sil status` therefore see an instance that is neither ready nor failed. A second `sil sim restart` does recover (stopping the already-done slot is a no-op), but nothing tells the user that is needed.
-**Fix:** Record the failure when the replacement engine does not start, and only count the restart once it did:
+**File:** `internal/supervisor/supervisor.go:820` (`cycleFirmware`), related to `:704-726` (`SimRestart`)
+**Issue:** After a `SimRestart` whose engine start fails, `s.slot` still holds the stopped engine, and `s.failure` is the only thing that makes `Status()` report `failed` (`engine_failed`). `cycleFirmware`, which backs `FwRestart`, unconditionally runs `s.apiReady, s.apiFailure, s.failure = false, nil, nil`. A `sil fw restart` after the failed sim restart therefore erases the engine failure although nothing has restarted the engine. The firmware is started, cannot connect to a bus that nobody listens on, `FwRestart` returns `ready_timeout`, and from then on `Status()` has no failure and no way to tell the user the simulator engine is down. That is the "starting forever" symptom the iteration-1 `SimRestart` fix was meant to remove. The clear in `cycleFirmware` exists to drop firmware-level failures (`firmware_crash_loop`, a failed auto-restart), not an engine failure.
+**Fix:** Clear only firmware-scoped failures in `cycleFirmware`, mirroring the check in `SimRestart`:
 ```go
-sl, err := s.startEngine()
-if err != nil {
-    s.mu.Lock()
-    s.failure = apperr.AsError(err) // phase becomes failed with the engine_failed error
-    s.mu.Unlock()
-    return control.Status{}, err
+s.apiReady, s.apiFailure = false, nil
+if s.failure != nil && s.failure.Code != "engine_failed" {
+    s.failure = nil
 }
-s.mu.Lock()
-s.engRestarts++
-s.failure = nil
-...
 ```
-Alternatively keep the old engine running until the new one is known to listen (not possible on the same socket path, so the failure marker is the practical fix).
-
-### WR-02: Cancelling a build kills the `docker` client but not the container; a later build can race the orphan on the same build directory
-
-**File:** `internal/fwbuild/fwbuild.go:309-315` (also `:225`, `:233`)
-**Issue:** `b.docker` uses `exec.CommandContext(ctx, "docker", "run", ...)`. On cancellation Go sends SIGKILL to the `docker` CLI process. The CLI proxies signals to the container, but SIGKILL cannot be proxied, and the container belongs to dockerd, so it keeps compiling. It writes into `<CacheDir>/build` and `<CacheDir>/cache`, which are bind-mounted and reused by the next `sil up` of the same name. Triggers are a SIGTERM to `sil up` (CI job timeout, `kill`) or the 25-minute e2e context timeouts. `signal.NotifyContext` in `cli.Execute` turns SIGTERM into exactly this cancellation. A following build then runs concurrently with the stale compile in the same ninja/PlatformIO tree; the second run can record a `BuildRecord` for a torn program (only `AssertStatic` guards it).
-**Fix:** Give the container a name and stop it on cancellation, or at least deliver SIGTERM (which the CLI proxies) instead of SIGKILL:
-```go
-cmd := exec.CommandContext(ctx, "docker", args...)
-cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-```
-`cmd.WaitDelay` is banned by the wall-clock lint, so pair this with a `--name sil-build-<instance>` and a `docker rm -f <name>` on the cancellation path (which also prevents two concurrent builds of one instance).
-
-### WR-03: `probeCancel` is never called on shutdown and `probeWG` is never waited; the probe goroutine outlives `stopAll`
-
-**File:** `internal/supervisor/supervisor.go:129-130, 374-384, 394-405`
-**Issue:** `startProbe` creates a cancellable context and adds to `probeWG`, but `stopAll`/`shutdown` neither cancel the last probe nor wait for it. After shutdown the mainLoop has stopped consuming `fwExits`, so `s.fwRunning` stays `true` and `probeLoop` keeps retrying `apiclient.Probe` against the dead API port for up to `probeBudget` (20 s), logging a `ready_timeout` error through `setAPI` after the instance has "stopped". The process normally exits first, but the code claims an orderly shutdown ("stops the firmware group before run.json and the sockets go away") and the dead `WaitGroup` suggests the wait was intended. In tests with a fake `Starter` the goroutine leaks across test cases.
-**Fix:** In `stopAll` after setting `stopping`:
-```go
-s.mu.Lock()
-s.stopping = true
-cancel := s.probeCancel
-fw, sl := s.fw, s.slot
-s.mu.Unlock()
-if cancel != nil { cancel() }
-...
-s.probeWG.Wait() // after stopProc/stopEngine
-```
-or delete `probeWG` if no wait is wanted.
-
-### WR-04: The Go server accepts CRLF-terminated lines that the protocol and the C++ side reject
-
-**File:** `internal/bus/server.go:243-248` (framing); contract in `protocol/PROTOCOL.md` "Line grammar"
-**Issue:** `read` frames with `bufio.NewScanner`, whose default `ScanLines` strips a trailing `\r` before `Decode` sees the line. PROTOCOL.md says carriage returns are errors (`bad_char`/`not_object`), and the C++ `proto::parse` rejects `\r`. I verified the Scanner behaviour: `{"k":"bye"}\r\n` yields `{"k":"bye"}`. So a CRLF-speaking peer works against the simulator and fails against the firmware, and the shared `frames.tsv` vectors cannot catch it because they exercise `Decode`, not the framing. It also hides a "line ends in `\r`" case from `Decode`'s length check (a 4095-byte payload plus `\r` passes).
-**Fix:** Use a split function that splits on `\n` only (`bufio.ScanLines` minus the CR drop), for example:
-```go
-sc.Split(func(data []byte, atEOF bool) (int, []byte, error) {
-    if i := bytes.IndexByte(data, '\n'); i >= 0 { return i + 1, data[:i], nil }
-    if atEOF && len(data) > 0 { return len(data), data, nil }
-    return 0, nil, nil
-})
-```
-and add a CRLF row to the server tests.
-
-### WR-05: A compile failure in the firmware under test is reported as a bench infrastructure error (`build_failed` is always exit 2)
-
-**File:** `internal/fwbuild/fwbuild.go:270-287`
-**Issue:** `esphome config` and `--only-generate` failures are classified by `stageFailure` (ESPHome exit means user-fixable `config_invalid`, exit 1), but a real `compile` failure is always `apperr.Infra("build_failed")` (exit 2), including a C++ error in the user's own firmware or lambda, which is exactly what the product repo is testing. `apperr` documents exit 1 as "user-fixable" and consumers branch on it, so the product repo's pytest cannot tell "my firmware does not compile" from "docker/toolcache is broken" without parsing the log tail. The offline-toolcache hints are the only case that is truly infrastructure.
-**Fix:** Classify by cause: keep `build_failed` (exit 2) when the log shows `Failed to download`/`HTTPClientError` or docker itself failed (exit 125-127), and return a user-class error (for example a registered `compile_failed`, exit 1, carrying `output_tail`) when the container ran and the compiler reported errors. Register the new code in `apperr/codes.go` so `TestRegistryMatchesCallSites` stays green.
-
-### WR-06: `sil up` leaves an unmanaged supervisor if it dies between `startServe` and `run.json`
-
-**File:** `internal/lifecycle/lifecycle.go:282-322, 325-350`; `internal/supervisor/supervisor.go:206`
-**Issue:** The supervisor is started with `Setsid` and `run.json` is written only after the engine, firmware and control socket are up (`supervisor.go:206`). `Up` handles SIGINT/SIGTERM through its context (and `abort()`), but SIGHUP (closed terminal) and SIGKILL of `sil up` in that window leave a running supervisor and firmware with no `run.json`. Afterwards `sil down` answers `stopped:false` (no run.json), `checkNotRunning` treats the instance as not running, and the next `sil up` wipes the run directory under the live orphan (`ResetRunDir`) and then fails with `port_in_use` for the orphan's API port. The user has to find and kill the process by hand.
-**Fix:** Have `Up` register SIGHUP in its `signal.NotifyContext` list (`internal/cli/cli.go:146`) so it takes the `abort()` path, and let the supervisor write a provisional `run.json` (or pid file) before `startFirmware` so the lifecycle commands can see and stop it.
+Add a supervisor test: failing `SimRestart` (engine cannot start), then `FwRestart`, then assert `Status().Error.Code == "engine_failed"`.
 
 ## Info
 
-### IN-01: Unused constant `maxRestartGap` duplicates `control.MaxRestartGap`
+### IN-01: Handling SIGHUP in every command defeats `nohup` for long builds (carried forward)
 
-**File:** `internal/supervisor/supervisor.go:58`
-**Issue:** `maxRestartGap = 30 * time.Second` is never referenced; the real limit lives in `control.MaxRestartGap`. Two sources for one limit invite drift.
-**Fix:** Delete the constant.
+**File:** `internal/cli/cli.go:146`
+**Issue:** `signal.NotifyContext` with SIGHUP installs a handler even when the process was started with SIGHUP ignored (Go documents that `Notify` re-enables an ignored SIGHUP). `nohup sil up ... &` therefore no longer survives a closing terminal during the build (up to the 25-minute build window): the build is cancelled and the container removed. This is probably the intended trade for the earlier WR-06, but it applies to all subcommands, not only `up`.
+**Fix:** Check once at start whether SIGHUP is ignored (`signal.Ignored(syscall.SIGHUP)`) and add it to the notify list only when it is not.
 
-### IN-02: Dead or unused exports
+### IN-02: The compile-failure classifier is only verified against hand-written logs
 
-**File:** `internal/fanlib/fanlib.go:106` (`IDs`), `internal/bus/codec.go:152` (`Frame.Keys`), `internal/instance/instance.go:162-163` (`FriendlyName`)
-**Issue:** No production caller (only tests or none). `FriendlyName` is also not what the firmware uses: `examples/fan-skeleton.yaml:16` hand-writes `friendly_name: SiL ${sil_name}`, so the Go helper and the YAML can drift.
-**Fix:** Remove them, or inject `friendly_name` as a substitution from `FriendlyName()` and lint it like the name.
-
-### IN-03: Default socket path `/tmp/sil.sock` is a predictable world-creatable location
-
-**File:** `components/sim_bus/__init__.py:47`
-**Issue:** Hand-run firmware without `SIL_BUS` connects to a fixed `/tmp` path another local user can pre-create and then feed fake RPM or read duty frames. This is already listed as an unregistered flag in 01-SECURITY.md; noting that the fix is one line.
-**Fix:** Make `path:` required (drop the default) or default to `${XDG_RUNTIME_DIR}`-relative at runtime in `SimBus::setup` and refuse a path whose parent is not owned by the user.
-
-### IN-04: Redundant liveness check in `checkNotRunning`
-
-**File:** `internal/lifecycle/lifecycle.go:230-231`
-**Issue:** `instance.ReadRunFile` already returns `not_running` when `ProcessAlive` is false, so the second `!instance.ProcessAlive(...)` can never be true and re-reads `/proc` for nothing.
-**Fix:** `rf, err := instance.ReadRunFile(p); if err != nil { return nil }`.
-
-### IN-05: Docker `-v` is built by string concatenation of user-controlled paths
-
-**File:** `internal/fwbuild/fwbuild.go:393-401` (`dockerArgs`)
-**Issue:** `"-v", mount + ":" + mount + ":ro"` breaks for a repo or config path containing `:` (docker splits the spec at the wrong place and fails with a confusing message); a `,` is fine here but would not be with `--mount`. Not exploitable (read-only, caller's uid, own path), just a robustness gap.
-**Fix:** Reject `:` in the mount root with a clear `config_invalid`, or use `--mount type=bind,source=...,target=...,readonly` (and reject `,`).
-
-### IN-06: `.claude/CLAUDE.md` still says the architecture, conventions and skills are unmapped, and that Go is not installed
-
-**File:** `.claude/CLAUDE.md` ("Conventions not yet established", "Architecture not yet mapped", "Go is not installed on this machine")
-**Issue:** The repo now has a documented package layout, a build/test workflow (`make check`, `make e2e`), a wall-clock lint rule (only `internal/clock` may read wall time) and Go 1.27.3 installed under `~/.local/bin`. Agents reading this file get stale and partly wrong guidance (for example, nothing warns that `time.Now`, `context.WithTimeout` and `http.Server` timeouts fail `internal/lint`).
-**Fix:** Replace the placeholder sections with the actual package map, the `clock.Clock` rule and the `make` targets.
+**File:** `internal/fwbuild/fwbuild.go:304-327`, `internal/fwbuild/fwbuild_test.go` (`TestClassifyCompileFailure`)
+**Issue:** The `compilerDiagnostic` regex includes the bare ninja marker `^FAILED: `. Ninja prints it for any failed build edge, so a non-compiler failure that happens inside a ninja edge (for example a full disk while the compiler writes its output, if the log also carries a `FAILED:` line) is classified as the user's firmware. The fix report notes that no e2e test compiles a deliberately broken firmware, so the regex has never run against real 2026.10.1 output.
+**Fix:** Add one e2e (or a captured golden log from a real broken `host:` compile under `internal/fwbuild/testdata/`) and assert `compile_failed`; consider requiring the `file:line:col: error:` form or `undefined reference to` and treating `FAILED:` only as a supporting marker.
 
 ---
 
-_Reviewed: 2026-11-09T03:57:28Z_
+_Reviewed: 2026-11-09T06:30:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
