@@ -229,7 +229,10 @@ func TestPrefixNames(t *testing.T) {
 }
 
 // TestPortInUse: a taken port exits 2 port_in_use naming the port and the
-// holder, never moves silently, and nothing is built or started.
+// holder, never moves silently, and nothing is built or started. A busy
+// explicit --api-port is refused without being persisted (it would otherwise
+// become the sticky port of every later plain `sil up`); a busy port that is
+// already the stored one still fails, with no silent move.
 func TestPortInUse(t *testing.T) {
 	env := newEnv(t)
 	port := freePort(t)
@@ -238,6 +241,9 @@ func TestPortInUse(t *testing.T) {
 		t.Fatalf("hold port %d: %v", port, err)
 	}
 	defer ln.Close()
+
+	identity := filepath.Join(env.State, "sil", "e2e-iso-c", "identity.json")
+	runJSON := filepath.Join(env.Runtime, "sil", "e2e-iso-c", "run.json")
 
 	out := isoExpectError(t, env, 2, "port_in_use", "up", "e2e-iso-c", "--api-port", fmt.Sprint(port))
 	if got, _ := jget(out, "error", "detail", "port").(float64); int(got) != port {
@@ -249,12 +255,41 @@ func TestPortInUse(t *testing.T) {
 	if msg, _ := jget(out, "error", "message").(string); !strings.Contains(msg, fmt.Sprint(port)) {
 		t.Errorf("message does not name the port: %q", msg)
 	}
-	// The stored (sticky) port is taken: still port_in_use, no silent move.
-	out = isoExpectError(t, env, 2, "port_in_use", "up", "e2e-iso-c")
-	if got, _ := jget(out, "error", "detail", "port").(float64); int(got) != port {
-		t.Errorf("sticky port moved: detail.port = %v, want %d", jget(out, "error", "detail", "port"), port)
+	// The refused override is not stored: no identity exists, so nothing pins the busy port.
+	if _, err := os.Stat(identity); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a busy --api-port was persisted to %s (stat: %v)", identity, err)
 	}
-	if _, err := os.Stat(filepath.Join(env.Runtime, "sil", "e2e-iso-c", "run.json")); err == nil {
+	if _, err := os.Stat(runJSON); err == nil {
+		t.Errorf("a run.json exists although up failed")
+	}
+
+	// A stored (sticky) port that is taken still fails port_in_use and does not move. The identity
+	// is seeded directly, on a port that is then held, so no firmware build is needed.
+	sticky := freePort(t)
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	seed, err := json.Marshal(map[string]any{"schema": 1, "name": "e2e-iso-c", "api_port": sticky, "key": base64.StdEncoding.EncodeToString(key)})
+	if err != nil {
+		t.Fatalf("identity: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(identity), 0o700); err != nil {
+		t.Fatalf("state dir: %v", err)
+	}
+	if err := os.WriteFile(identity, seed, 0o600); err != nil {
+		t.Fatalf("seed identity: %v", err)
+	}
+	ln2, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", sticky))
+	if err != nil {
+		t.Fatalf("hold port %d: %v", sticky, err)
+	}
+	defer ln2.Close()
+	out = isoExpectError(t, env, 2, "port_in_use", "up", "e2e-iso-c")
+	if got, _ := jget(out, "error", "detail", "port").(float64); int(got) != sticky {
+		t.Errorf("sticky port moved: detail.port = %v, want %d", jget(out, "error", "detail", "port"), sticky)
+	}
+	if _, err := os.Stat(runJSON); err == nil {
 		t.Errorf("a run.json exists although up failed")
 	}
 }
