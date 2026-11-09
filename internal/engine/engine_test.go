@@ -709,9 +709,15 @@ func (fw *firmware) buttonFrames(id string) []bus.Frame { return fw.rpmFrames(id
 
 func setButton(t *testing.T, e *Engine, id string, level, strict bool) (time.Duration, error) {
 	t.Helper()
+	return setButtonHold(t, e, id, level, strict, 0)
+}
+
+// setButtonHold is setButton with a max hold: the engine releases the button by itself after it.
+func setButtonHold(t *testing.T, e *Engine, id string, level, strict bool, maxHold time.Duration) (time.Duration, error) {
+	t.Helper()
 	ctx, cancel := clock.WithTimeout(context.Background(), clock.NewReal(), guard)
 	defer cancel()
-	return e.SetButton(ctx, id, level, strict)
+	return e.SetButton(ctx, id, level, strict, maxHold)
 }
 
 func TestEngineButtonsStartReleased(t *testing.T) {
@@ -852,7 +858,7 @@ func TestEngineSetButtonAfterStopAnswersAtOnce(t *testing.T) {
 	waitUntil(t, "the engine to stop", func() bool { return !h.eng.Snapshot().BusConnected })
 	done := make(chan error, 1)
 	go func() {
-		_, err := h.eng.SetButton(context.Background(), "usr1", false, false)
+		_, err := h.eng.SetButton(context.Background(), "usr1", false, false, 0)
 		done <- err
 	}()
 	tm := clock.NewReal().NewTimer(guard)
@@ -1563,13 +1569,13 @@ func TestEngineEmitsStateAndStartStates(t *testing.T) {
 
 func TestEngineEmitsButtonAndEnv(t *testing.T) {
 	h := newHarness(t)
-	if _, err := h.eng.SetButton(context.Background(), "usr2", true, false); err != nil {
+	if _, err := h.eng.SetButton(context.Background(), "usr2", true, false, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.eng.SetButton(context.Background(), "usr2", true, false); err != nil { // not a change
+	if _, err := h.eng.SetButton(context.Background(), "usr2", true, false, 0); err != nil { // not a change
 		t.Fatal(err)
 	}
-	if _, err := h.eng.SetButton(context.Background(), "usr2", false, false); err != nil {
+	if _, err := h.eng.SetButton(context.Background(), "usr2", false, false, 0); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
@@ -1979,4 +1985,112 @@ func TestBehindRealTimeManualClockStaysInSync(t *testing.T) {
 	if got := h.rec.of("sim"); len(got) != 0 {
 		t.Fatalf("sim events %+v on a Manual clock, want none", got)
 	}
+}
+
+// buttonEvents renders the button events as "id=level[:reason]".
+func buttonEvents(rec *recorder) string {
+	var out []string
+	for _, ev := range rec.of("button") {
+		x := fmt.Sprintf("%s=%v", ev.ID, ev.V)
+		if ev.Reason != "" {
+			x += ":" + ev.Reason
+		}
+		out = append(out, x)
+	}
+	return fmt.Sprint(out)
+}
+
+// D-15: a button held with a max hold is released by the engine on the first tick at or after the
+// deadline, in sim time, even when nobody asks for it.
+func TestMaxHold(t *testing.T) {
+	t.Run("auto release", func(t *testing.T) {
+		h := newButtonHarness(t)
+		before := len(h.fw.buttonFrames("usr1"))
+		if _, err := setButtonHold(t, h.eng, "usr1", true, true, 500*time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+		waitUntil(t, "the down frame", func() bool { return len(h.fw.buttonFrames("usr1")) == before+1 })
+		h.advanceTo(490 * time.Millisecond)
+		if !h.eng.Snapshot().Buttons["usr1"] {
+			t.Fatal("released at 490 ms, before the 500 ms max hold")
+		}
+		h.advanceTo(10 * time.Millisecond)
+		if h.eng.Snapshot().Buttons["usr1"] {
+			t.Fatal("still held at 500 ms: the engine did not release it")
+		}
+		if got := buttonEvents(h.rec); got != "[usr1=true usr1=false:max_hold]" {
+			t.Fatalf("button events %s, want the down and one max_hold release", got)
+		}
+		if rel := h.rec.of("button")[1]; rel.T != 500_000 {
+			t.Fatalf("release stamped t=%d, want the tick time 500000", rel.T)
+		}
+		waitUntil(t, "the release frame", func() bool { return len(h.fw.buttonFrames("usr1")) == before+2 })
+		fr := h.fw.buttonFrames("usr1")
+		if v, _ := fr[len(fr)-1].GetF32("v"); v != 0 {
+			t.Fatalf("release frame %s, want v 0", fr[len(fr)-1])
+		}
+		if _, err := setButton(t, h.eng, "usr1", false, true); !errors.Is(err, ErrButtonNotHeld) {
+			t.Fatalf("release after the auto-release: %v, want ErrButtonNotHeld", err)
+		}
+		h.advanceTo(2 * time.Second)
+		if n := len(h.rec.of("button")); n != 2 {
+			t.Fatalf("%d button events after more ticks, want the release to happen once", n)
+		}
+	})
+
+	t.Run("an explicit release cancels the deadline", func(t *testing.T) {
+		h := newButtonHarness(t)
+		if _, err := setButtonHold(t, h.eng, "usr1", true, true, 500*time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+		h.advanceTo(200 * time.Millisecond)
+		if _, err := setButton(t, h.eng, "usr1", false, true); err != nil {
+			t.Fatal(err)
+		}
+		// A new hold without a max hold must not inherit the old deadline either.
+		if _, err := setButton(t, h.eng, "usr1", true, true); err != nil {
+			t.Fatal(err)
+		}
+		h.advanceTo(2 * time.Second)
+		if !h.eng.Snapshot().Buttons["usr1"] {
+			t.Fatal("the cancelled deadline released the second hold")
+		}
+		if got := buttonEvents(h.rec); got != "[usr1=true usr1=false usr1=true]" {
+			t.Fatalf("button events %s, want no max_hold release", got)
+		}
+	})
+
+	t.Run("zero never releases", func(t *testing.T) {
+		h := newButtonHarness(t)
+		if _, err := setButtonHold(t, h.eng, "usr3", true, true, 0); err != nil {
+			t.Fatal(err)
+		}
+		h.advanceTo(30 * time.Second)
+		if !h.eng.Snapshot().Buttons["usr3"] {
+			t.Fatal("a hold without a max hold was released")
+		}
+	})
+
+	t.Run("deadlines are per button and a new engine has none", func(t *testing.T) {
+		h := newButtonHarness(t)
+		if _, err := setButtonHold(t, h.eng, "usr1", true, true, 300*time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := setButtonHold(t, h.eng, "usr2", true, true, 800*time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+		h.advanceTo(300 * time.Millisecond)
+		snap := h.eng.Snapshot().Buttons
+		if snap["usr1"] || !snap["usr2"] {
+			t.Fatalf("buttons %v at 300 ms, want usr1 released and usr2 held", snap)
+		}
+		h.advanceTo(500 * time.Millisecond)
+		if h.eng.Snapshot().Buttons["usr2"] {
+			t.Fatal("usr2 still held at 800 ms")
+		}
+		fresh := newButtonHarness(t)
+		if len(fresh.eng.holdUntil) != 0 {
+			t.Fatalf("a new engine starts with deadlines %v", fresh.eng.holdUntil)
+		}
+	})
 }

@@ -42,7 +42,7 @@ func (c *recControl) Press(context.Context, string, control.PressRequest) (contr
 	return control.PressResult{}, nil
 }
 
-func (c *recControl) SetButton(context.Context, string, bool) (control.PressResult, error) {
+func (c *recControl) SetButton(context.Context, string, bool, control.DownRequest) (control.PressResult, error) {
 	c.changes.Add(1)
 	return control.PressResult{}, nil
 }

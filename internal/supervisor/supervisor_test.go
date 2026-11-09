@@ -98,7 +98,7 @@ func TestButtonOperationErrors(t *testing.T) {
 		t.Fatalf("press without a firmware: %v, want firmware_not_connected", err)
 	}
 	for _, down := range []bool{true, false} {
-		if _, err := s.SetButton(ctx, "usr1", down); errCode(err) != "firmware_not_connected" {
+		if _, err := s.SetButton(ctx, "usr1", down, control.DownRequest{}); errCode(err) != "firmware_not_connected" {
 			t.Fatalf("SetButton(down=%v) without a firmware: %v, want firmware_not_connected", down, err)
 		}
 	}
@@ -112,11 +112,22 @@ func TestButtonOperationErrors(t *testing.T) {
 	if known, _ := ae.Detail["known"].([]string); len(known) != 3 {
 		t.Fatalf("detail.known = %v, want usr1..usr3", ae.Detail["known"])
 	}
-	if _, err := s.SetButton(ctx, "usr4", true); errCode(err) != "invalid_argument" {
+	if _, err := s.SetButton(ctx, "usr4", true, control.DownRequest{}); errCode(err) != "invalid_argument" {
 		t.Fatalf("SetButton on usr4: %v, want invalid_argument", err)
 	}
 	if _, err := s.Press(ctx, "usr1", control.PressRequest{HoldMS: 60001}); errCode(err) != "invalid_argument" {
 		t.Fatalf("hold above the cap: %v, want invalid_argument", err)
+	}
+	// A max hold only applies to down, and is range-checked, before the bus is asked.
+	one, over := int64(1000), int64(60001)
+	if _, err := s.SetButton(ctx, "usr1", false, control.DownRequest{MaxHoldMS: &one}); errCode(err) != "invalid_argument" {
+		t.Fatalf("up with a max hold: %v, want invalid_argument", err)
+	}
+	if _, err := s.SetButton(ctx, "usr1", true, control.DownRequest{MaxHoldMS: &over}); errCode(err) != "invalid_argument" {
+		t.Fatalf("max hold above the cap: %v, want invalid_argument", err)
+	}
+	if _, err := s.SetButton(ctx, "usr1", true, control.DownRequest{MaxHoldMS: &one}); errCode(err) != "firmware_not_connected" {
+		t.Fatalf("a valid max hold without a firmware: %v, want firmware_not_connected", err)
 	}
 }
 

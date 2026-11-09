@@ -25,6 +25,7 @@ type fakeControl struct {
 	pressID  string
 	edges    []bool // SetButton calls: true = down
 	edgeID   string
+	downReqs []DownRequest // the DownRequest of each SetButton call
 	pressErr error
 }
 
@@ -47,9 +48,10 @@ func (f *fakeControl) Press(_ context.Context, id string, r PressRequest) (Press
 	return PressResult{Button: id, Action: "press", HoldMS: r.HoldMS, TDownUS: 1000, TUpUS: 1000 + r.HoldMS*1000}, f.pressErr
 }
 
-func (f *fakeControl) SetButton(_ context.Context, id string, down bool) (PressResult, error) {
+func (f *fakeControl) SetButton(_ context.Context, id string, down bool, r DownRequest) (PressResult, error) {
 	f.edgeID = id
 	f.edges = append(f.edges, down)
+	f.downReqs = append(f.downReqs, r)
 	action := "up"
 	if down {
 		action = "down"
@@ -488,7 +490,7 @@ func (f *tableFake) Press(context.Context, string, PressRequest) (PressResult, e
 	f.calls++
 	return PressResult{}, nil
 }
-func (f *tableFake) SetButton(context.Context, string, bool) (PressResult, error) {
+func (f *tableFake) SetButton(context.Context, string, bool, DownRequest) (PressResult, error) {
 	f.calls++
 	return PressResult{}, nil
 }
@@ -752,5 +754,97 @@ func TestClientHistory(t *testing.T) {
 	}
 	if _, err := c.History(context.Background(), HistoryRequest{}); err != nil || fc.got[1].WindowS != 300 {
 		t.Fatalf("Client.History with no window = %v, control got %v, want the default 300", err, fc.got)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// POST .../down takes an optional {"max_hold_ms": N}; up takes no body at all.
+func TestDownBody(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		wantCode   int
+		wantMS     *int64
+	}{
+		{"empty body", "", 200, nil},
+		{"empty object", "{}", 200, nil},
+		{"max hold", `{"max_hold_ms":1500}`, 200, ptr(int64(1500))},
+		{"lower bound", `{"max_hold_ms":1}`, 200, ptr(int64(1))},
+		{"upper bound", `{"max_hold_ms":60000}`, 200, ptr(int64(60000))},
+		{"zero", `{"max_hold_ms":0}`, 400, nil},
+		{"too long", `{"max_hold_ms":60001}`, 400, nil},
+		{"negative", `{"max_hold_ms":-5}`, 400, nil},
+		{"not a number", `{"max_hold_ms":"abc"}`, 400, nil},
+		{"fraction", `{"max_hold_ms":1.5}`, 400, nil},
+		{"unknown field", `{"hold_ms":1500}`, 400, nil},
+		{"not json", `max`, 400, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := &fakeControl{}
+			rec := post(NewHandler(fc), "/api/v1/buttons/usr2/down", tc.body)
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status %d, want %d; body %s", rec.Code, tc.wantCode, rec.Body)
+			}
+			if tc.wantCode != 200 {
+				var eb struct{ Error *apperr.Error }
+				if err := json.Unmarshal(rec.Body.Bytes(), &eb); err != nil || eb.Error == nil || eb.Error.Code != "invalid_argument" {
+					t.Fatalf("body %s, want invalid_argument", rec.Body)
+				}
+				if len(fc.edges) != 0 {
+					t.Fatalf("an invalid body reached the control: %v", fc.edges)
+				}
+				return
+			}
+			if len(fc.downReqs) != 1 || !fc.edges[0] {
+				t.Fatalf("control calls %v / %v, want one down", fc.edges, fc.downReqs)
+			}
+			got := fc.downReqs[0].MaxHoldMS
+			if (got == nil) != (tc.wantMS == nil) || (got != nil && *got != *tc.wantMS) {
+				t.Fatalf("forwarded max_hold_ms %v, want %v", got, tc.wantMS)
+			}
+		})
+	}
+
+	t.Run("up refuses a body", func(t *testing.T) {
+		fc := &fakeControl{}
+		for _, body := range []string{`{"max_hold_ms":1500}`, `{}`, `x`} {
+			rec := post(NewHandler(fc), "/api/v1/buttons/usr2/up", body)
+			var eb struct{ Error *apperr.Error }
+			if rec.Code != 400 || json.Unmarshal(rec.Body.Bytes(), &eb) != nil || eb.Error == nil || eb.Error.Code != "invalid_argument" {
+				t.Fatalf("up with body %q: %d %s, want 400 invalid_argument", body, rec.Code, rec.Body)
+			}
+		}
+		if rec := post(NewHandler(fc), "/api/v1/buttons/usr2/up", ""); rec.Code != 200 || len(fc.edges) != 1 || fc.edges[0] {
+			t.Fatalf("up without a body: %d %s, edges %v", rec.Code, rec.Body, fc.edges)
+		}
+	})
+
+	t.Run("the result carries max_hold_ms", func(t *testing.T) {
+		res := PressResult{Button: "usr1", Action: "down", Level: true, MaxHoldMS: 1500}
+		raw, _ := json.Marshal(res)
+		if !strings.Contains(string(raw), `"max_hold_ms":1500`) {
+			t.Fatalf("PressResult marshals as %s", raw)
+		}
+		raw, _ = json.Marshal(PressResult{Button: "usr1", Action: "down"})
+		if strings.Contains(string(raw), "max_hold_ms") {
+			t.Fatalf("PressResult without a max hold marshals as %s, want the member omitted", raw)
+		}
+	})
+}
+
+func TestClientSetButtonBody(t *testing.T) {
+	fc := &fakeControl{}
+	c := serveStream(t, fc)
+	if _, err := c.SetButton(context.Background(), "usr1", true, DownRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SetButton(context.Background(), "usr1", true, DownRequest{MaxHoldMS: ptr(int64(1500))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.SetButton(context.Background(), "usr1", false, DownRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fc.downReqs) != 3 || fc.downReqs[0].MaxHoldMS != nil || fc.downReqs[1].MaxHoldMS == nil || *fc.downReqs[1].MaxHoldMS != 1500 || fc.downReqs[2].MaxHoldMS != nil {
+		t.Fatalf("server saw %+v, want no max hold, 1500, none", fc.downReqs)
 	}
 }

@@ -108,6 +108,7 @@ type fakeControl struct {
 	fans            control.FansResult
 	history         []control.HistoryRequest
 	edges           []bool
+	downReqs        []control.DownRequest
 	status          control.Status
 	err             error
 	onDown          func() // runs when a down request arrives (e.g. to end the stand-in supervisor)
@@ -156,15 +157,20 @@ func (f *fakeControl) Press(_ context.Context, id string, r control.PressRequest
 	return control.PressResult{Button: id, Action: "press", HoldMS: r.HoldMS, TDownUS: 5, TUpUS: 5 + r.HoldMS*1000}, f.record("press." + id)
 }
 
-func (f *fakeControl) SetButton(_ context.Context, id string, down bool) (control.PressResult, error) {
+func (f *fakeControl) SetButton(_ context.Context, id string, down bool, r control.DownRequest) (control.PressResult, error) {
 	f.mu.Lock()
 	f.edges = append(f.edges, down)
+	f.downReqs = append(f.downReqs, r)
 	f.mu.Unlock()
 	action := "up"
 	if down {
 		action = "down"
 	}
-	return control.PressResult{Button: id, Action: action, Level: down}, f.record(action + "." + id)
+	res := control.PressResult{Button: id, Action: action, Level: down}
+	if r.MaxHoldMS != nil {
+		res.MaxHoldMS = *r.MaxHoldMS
+	}
+	return res, f.record(action + "." + id)
 }
 
 func (f *fakeControl) Set(_ context.Context, r control.SetRequest) (control.SetResult, error) {
@@ -950,4 +956,45 @@ func TestWatchHelpListsSample(t *testing.T) {
 		}
 	}
 	t.Fatal("no watch command")
+}
+
+func TestPressDownMaxHold(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan")}
+	liveInstance(t, "fan", fc)
+
+	r := run(t, "press", "usr1", "--down", "--max-hold", "10s", "-i", "fan")
+	if r.exit != 0 || r.object(t)["action"] != "down" || r.object(t)["max_hold_ms"] != float64(10000) {
+		t.Fatalf("--down --max-hold 10s: exit %d, %s, want action down and max_hold_ms 10000", r.exit, r.stdout)
+	}
+	if r := run(t, "press", "usr1", "--down", "-i", "fan"); r.exit != 0 || strings.Contains(r.stdout, "max_hold_ms") {
+		t.Fatalf("--down: exit %d, %s, want no max_hold_ms", r.exit, r.stdout)
+	}
+	if len(fc.downReqs) != 2 || fc.downReqs[0].MaxHoldMS == nil || *fc.downReqs[0].MaxHoldMS != 10000 || fc.downReqs[1].MaxHoldMS != nil {
+		t.Fatalf("down requests %+v, want max_hold_ms 10000 and then none", fc.downReqs)
+	}
+}
+
+func TestPressMaxHoldNeedsDown(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan")}
+	liveInstance(t, "fan", fc)
+	for _, args := range [][]string{
+		{"press", "usr1", "--max-hold", "1s", "-i", "fan"},
+		{"press", "usr1", "--up", "--max-hold", "1s", "-i", "fan"},
+		{"press", "usr1", "--long", "--max-hold", "1s", "-i", "fan"},
+	} {
+		r := run(t, args...)
+		if r.exit != 1 || r.errCode(t) != "invalid_argument" {
+			t.Fatalf("sil %v: exit %d, stdout %s, want exit 1 invalid_argument", args, r.exit, r.stdout)
+		}
+	}
+	if len(fc.seen()) != 0 {
+		t.Fatalf("a misuse reached the control API: %v", fc.seen())
+	}
+	// --max-hold 0s reaches the server and fails there, like --hold 0s.
+	r := run(t, "press", "usr1", "--down", "--max-hold", "0s", "-i", "fan")
+	if r.exit != 1 || r.errCode(t) != "invalid_argument" || len(fc.downReqs) != 0 {
+		t.Fatalf("--max-hold 0s: exit %d, stdout %s, requests %v, want the server's invalid_argument", r.exit, r.stdout, fc.downReqs)
+	}
 }

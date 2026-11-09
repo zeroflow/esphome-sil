@@ -238,3 +238,57 @@ func TestBehindField(t *testing.T) {
 	w.exit(t, 10*time.Second)
 	t.Logf("behind_real_time flips during the idle watch: %d (snapshot value at the end: %v)", flips, cur)
 }
+
+// TestMaxHold is D-15 end to end: a button held with a max hold is released by the engine in sim
+// time, the firmware reacts as to a long press, and the guard is reachable from the CLI.
+func TestMaxHold(t *testing.T) {
+	in := r33Up(t, signalsInstance)
+	w := watchStart(t, in.env, "watch", "-i", in.name, "--kind", "button")
+	w.next(t, 10*time.Second, "the snapshot")
+
+	start := sysClock.Now()
+	out, code := in.press(t, "usr2", "--down", "--max-hold", "1500ms")
+	if code != 0 || out["action"] != "down" || out["max_hold_ms"] != float64(1500) || out["level"] != true {
+		t.Fatalf("press usr2 --down --max-hold 1500ms: exit %d, %v, want action down and max_hold_ms 1500", code, out)
+	}
+	if took := sysClock.Now() - start; took > 1200*time.Millisecond {
+		t.Errorf("--down --max-hold took %s, want it to return at once", took)
+	}
+
+	in.env.WaitStatus(t, in.name, 5*time.Second, func(st map[string]any) bool {
+		level, present := r33Buttons(st, "usr2")
+		return present && !level
+	})
+	in.waitDuties(t, [4]float64{1, 1, 1, 1}) // the firmware saw a long press
+	rel, _ := w.until(t, 5*time.Second, "the max_hold release", func(m map[string]any) bool {
+		return m["k"] == "button" && m["id"] == "usr2" && m["v"] == false && m["reason"] == "max_hold"
+	})
+	t.Logf("auto-release event: %v", rel)
+
+	out, code = in.press(t, "usr2", "--up")
+	if code != 1 || r33ErrCode(out) != "button_not_held" {
+		t.Fatalf("press usr2 --up after the auto-release: exit %d, %v, want exit 1 button_not_held", code, out)
+	}
+
+	// An explicit up before the deadline cancels it.
+	if out, code = in.press(t, "usr2", "--down", "--max-hold", "2s"); code != 0 {
+		t.Fatalf("press usr2 --down --max-hold 2s: exit %d, %v", code, out)
+	}
+	sysClock.Sleep(t.Context(), 500*time.Millisecond)
+	if out, code = in.press(t, "usr2", "--up"); code != 0 {
+		t.Fatalf("press usr2 --up: exit %d, %v", code, out)
+	}
+	deadline := sysClock.Now() + 2500*time.Millisecond
+	for left := deadline - sysClock.Now(); left > 0; left = deadline - sysClock.Now() {
+		m, ok := w.nextOrTimeout(t, left)
+		if ok && m["reason"] == "max_hold" {
+			t.Fatalf("a cancelled max hold released the button anyway: %v", m)
+		}
+	}
+
+	for _, args := range [][]string{{"usr1", "--max-hold", "1s"}, {"usr1", "--down", "--max-hold", "0s"}} {
+		if out, code = in.press(t, args...); code != 1 || r33ErrCode(out) != "invalid_argument" {
+			t.Fatalf("press %v: exit %d, %v, want exit 1 invalid_argument", args, code, out)
+		}
+	}
+}
