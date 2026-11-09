@@ -188,7 +188,8 @@ func EqualMAC(a, b string) bool {
 // allocation lock so two instances created at the same time never receive the
 // same port. apiPort > 0 overrides and stores the port (invalid_argument
 // outside 1024-65535, port_claimed when another instance's identity holds
-// it); 0 keeps the stored port, else the lowest free port from 6054. A
+// it, port_in_use when it cannot be bound, in which case nothing is
+// stored); 0 keeps the stored port, else the lowest free port from 6054. A
 // stored identity that is malformed is identity_corrupt and is never
 // regenerated silently.
 func LoadOrCreate(p Paths, apiPort int) (Identity, error) {
@@ -212,6 +213,14 @@ func LoadOrCreate(p Paths, apiPort int) (Identity, error) {
 	}
 	if exists && port == id.APIPort {
 		return id, nil
+	}
+	// An explicit --api-port is the user's choice, but it becomes sticky once stored: a busy port
+	// must fail here (port_in_use) without being persisted, or every later plain `sil up` would
+	// re-use it and fail the same way. A port that is already the stored one changes nothing.
+	if apiPort != 0 {
+		if err := TestBind(port); err != nil {
+			return Identity{}, err
+		}
 	}
 	if !exists {
 		key := make([]byte, keyBytes)

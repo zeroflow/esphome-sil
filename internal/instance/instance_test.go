@@ -198,12 +198,13 @@ func TestLoadOrCreate(t *testing.T) {
 		t.Fatalf("second load = %+v %v, want %+v", again, err, id)
 	}
 
-	moved, err := LoadOrCreate(p, 7000)
-	if err != nil || moved.APIPort != 7000 || moved.Key != id.Key {
+	free := freePort(t)
+	moved, err := LoadOrCreate(p, free)
+	if err != nil || moved.APIPort != free || moved.Key != id.Key {
 		t.Fatalf("--api-port override = %+v %v", moved, err)
 	}
 	kept, _ := LoadOrCreate(p, 0)
-	if kept.APIPort != 7000 {
+	if kept.APIPort != free {
 		t.Fatalf("override is not sticky: %+v", kept)
 	}
 	if _, err := LoadOrCreate(p, 80); code(err) != "invalid_argument" {
@@ -212,12 +213,55 @@ func TestLoadOrCreate(t *testing.T) {
 
 	// Another instance cannot take the stored port.
 	other, _ := PathsFor("other")
-	if _, err := LoadOrCreate(other, 7000); code(err) != "port_claimed" || !strings.Contains(err.Error(), "dev") {
+	if _, err := LoadOrCreate(other, free); code(err) != "port_claimed" || !strings.Contains(err.Error(), "dev") {
 		t.Errorf("claimed port: %v", err)
 	}
 	oid, err := LoadOrCreate(other, 0)
-	if err != nil || oid.APIPort == 7000 {
+	if err != nil || oid.APIPort == free {
 		t.Errorf("other instance got %+v, %v", oid, err)
+	}
+}
+
+// freePort returns a port nothing listens on right now.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// WR-05: a busy --api-port fails with port_in_use before it is stored, so neither a new identity
+// nor the previous sticky port is changed by a typo or a transient conflict.
+func TestLoadOrCreateBusyOverrideIsNotPersisted(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	busy, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	busyPort := busy.Addr().(*net.TCPAddr).Port
+
+	fresh, _ := PathsFor("fresh")
+	if _, err := LoadOrCreate(fresh, busyPort); code(err) != "port_in_use" {
+		t.Fatalf("busy override on first use: %v, want port_in_use", err)
+	}
+	if _, statErr := os.Stat(fresh.IdentityJSON()); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("identity.json exists after a failed first use: %v", statErr)
+	}
+
+	p, _ := PathsFor("dev")
+	id, err := LoadOrCreate(p, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOrCreate(p, busyPort); code(err) != "port_in_use" {
+		t.Fatalf("busy override on an existing identity: %v, want port_in_use", err)
+	}
+	if kept, err := LoadOrCreate(p, 0); err != nil || kept != id {
+		t.Fatalf("identity after a rejected override = %+v %v, want unchanged %+v", kept, err, id)
 	}
 }
 
