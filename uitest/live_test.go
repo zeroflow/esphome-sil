@@ -27,12 +27,15 @@ func TestOfflineLoadAndLive(t *testing.T) {
 		`[data-src="sim.time_factor"]`:        "x1",
 		`[data-src="firmware.bus_connected"]`: "CONNECTED",
 		`[data-src="ports.0.port"]`:           "P1",
-		`[data-src="ports.0.fan"]`:            "arctic-p12-pwm-pst",
 		`[data-src="ports.0.rpm"]`:            "1100",
 		`[data-src="ports.0.duty"]`:           "40.0",
 		`[data-src="ports.3.rpm"]`:            "1400",
 	} {
 		waitText(t, p, sel, want, 5*time.Second)
+	}
+	// The fan is a select: its value, not its text, is the fan id.
+	if err := p.WaitFor(within(t, 5*time.Second), `document.querySelector('[data-src="ports.0.fan"]').value === "arctic-p12-pwm-pst"`); err != nil {
+		t.Fatalf("the fan select of port 1 never showed arctic-p12-pwm-pst: %v", err)
 	}
 	var panels int
 	if err := p.Eval(within(t, 5*time.Second), `document.querySelectorAll('#ports .port').length`, &panels); err != nil || panels != 4 {

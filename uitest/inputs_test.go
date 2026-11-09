@@ -246,6 +246,22 @@ func waitField(t *testing.T, p *cdptest.Page, id, value string, d time.Duration)
 	}
 }
 
+// waitStore waits until the page store holds want (a number) at the dotted path.
+func waitStore(t *testing.T, p *cdptest.Page, path string, want float64) {
+	t.Helper()
+	poll := fmt.Sprintf(`(async () => { const store = await import('/js/store.js');
+	  for (let i = 0; i < 100; i++) {
+	    const v = %q.split('.').reduce((o, k) => (o == null ? o : o[k]), store.getState());
+	    if (v === %v) { return true; }
+	    await new Promise((r) => setTimeout(r, 50));
+	  }
+	  return false; })()`, path, want)
+	var ok bool
+	if err := p.Eval(within(t, 10*time.Second), poll, &ok); err != nil || !ok {
+		t.Fatalf("the page store never held %v at %s: %v", want, path, err)
+	}
+}
+
 // typeInto focuses the input id, selects its text and types text key by key, like a user.
 func typeInto(t *testing.T, p *cdptest.Page, id, text string) {
 	t.Helper()
@@ -383,13 +399,7 @@ func TestEnvDirty(t *testing.T) {
 	b, p := liveEnv(t)
 	typeInto(t, p, "temperature", "1")
 	b.Emit(events.Event{K: "env", ID: "temperature", V: 30.0}, func(st *control.Status) { st.Env.Temperature = 30 })
-	var stored float64
-	if err := p.WaitFor(within(t, 5*time.Second), `(await import('/js/store.js')).getState().env.temperature === 30`); err != nil {
-		t.Fatalf("the store never took the event: %v", err)
-	}
-	if err := p.Eval(within(t, 5*time.Second), `(await import('/js/store.js')).getState().env.temperature`, &stored); err != nil || stored != 30 {
-		t.Fatalf("store temperature = %v (%v), want 30", stored, err)
-	}
+	waitStore(t, p, "env.temperature", 30)
 	if err := sysClock.Sleep(within(t, 5*time.Second), 300*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
@@ -407,9 +417,7 @@ func TestEnvDirty(t *testing.T) {
 		t.Fatalf("focusing humidity: %v", err)
 	}
 	b.Emit(events.Event{K: "env", ID: "humidity", V: 55.0}, func(st *control.Status) { st.Env.Humidity = 55 })
-	if err := p.WaitFor(within(t, 5*time.Second), `(await import('/js/store.js')).getState().env.humidity === 55`); err != nil {
-		t.Fatal(err)
-	}
+	waitStore(t, p, "env.humidity", 55)
 	if err := sysClock.Sleep(within(t, 5*time.Second), 300*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}

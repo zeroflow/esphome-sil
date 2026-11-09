@@ -1,7 +1,7 @@
 // Wiring of the page: the WebSocket link to the instance and its reconnect loop. Frames are
 // `sil watch` lines; store.js folds them into the status mirror.
 import { ApiError, call } from "./api.js";
-import { onFans } from "./inputs.js";
+import { initEnv, onFans } from "./inputs.js";
 import { showError } from "./message.js";
 import { apply, getState } from "./store.js";
 import { render } from "./view.js";
@@ -92,5 +92,6 @@ function connect() {
   ws.onerror = () => lost(ws);
 }
 
+initEnv();
 refresh();
 connect();

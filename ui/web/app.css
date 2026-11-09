@@ -59,6 +59,10 @@ input {
   border-radius: 2px;
 }
 
+button {
+  font-weight: 600;
+}
+
 button,
 select {
   background: var(--softkey);
@@ -262,6 +266,48 @@ select.fan {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The environment group: two labelled number fields and one softkey, 8 px apart. */
+#env-group {
+  flex: none;
+}
+
+.fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+}
+
+.control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+input {
+  min-width: 96px;
+  width: 96px;
+  padding: 0 8px;
+  text-align: right;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 600;
+}
+
+input.dirty {
+  border-bottom: 2px solid var(--text-dim);
+}
+
+button {
+  min-width: 72px;
+  padding: 0 16px;
 }
 
 select.error,

@@ -24,6 +24,20 @@
     <span class="label">LEDS</span>
     <div id="leds"></div>
   </section>
+  <section class="group" id="env-group">
+    <span class="label">ENVIRONMENT</span>
+    <div class="fields">
+      <div class="field">
+        <span class="label">TEMPERATURE</span>
+        <span class="control"><input id="temperature" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" value="--" data-src="env.temperature" data-fmt="num" aria-label="Temperature in degrees Celsius" disabled><span class="unit">&deg;C</span></span>
+      </div>
+      <div class="field">
+        <span class="label">HUMIDITY</span>
+        <span class="control"><input id="humidity" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" value="--" data-src="env.humidity" data-fmt="num" aria-label="Relative humidity in percent" disabled><span class="unit">%RH</span></span>
+      </div>
+      <button id="apply" type="button" disabled>APPLY VALUES</button>
+    </div>
+  </section>
 </footer>
 <template id="port-panel">
   <section class="port">
