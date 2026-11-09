@@ -218,6 +218,22 @@ func TestFollowDropsAnOverlongLine(t *testing.T) {
 	}
 }
 
+// A follow that starts in the middle of a line it could not see the beginning of (the tail read
+// found no newline in 8 MiB) drops the rest of that line: its end could be the end of the key.
+func TestFollowStartingMidLineDropsTheRestOfIt(t *testing.T) {
+	s, clk := logSup(t)
+	path := s.paths.FirmwareLog()
+	writeFile(t, path, strings.Repeat("k", logScanMax+logBlock))
+	if r, err := readTail(path, 5); err != nil || !r.midLine || len(r.lines) != 0 {
+		t.Fatalf("readTail of a file without a newline: midLine %v, %d lines, %v, want midLine and no lines", r.midLine, len(r.lines), err)
+	}
+	f, _ := startFollow(t, s, control.LogsRequest{Source: "firmware", Tail: 5})
+	clk.BlockUntil(1)
+	appendFile(t, path, testKey[10:]+"\nfresh\n")
+	tick(clk)
+	f.waitTexts(t, "firmware:fresh")
+}
+
 func TestLogsMissingFileAndBadRequests(t *testing.T) {
 	s, _ := logSup(t)
 	res, err := s.Logs(context.Background(), control.LogsRequest{Source: "all", Tail: 10})

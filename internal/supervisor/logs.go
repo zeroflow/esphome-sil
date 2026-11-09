@@ -44,6 +44,9 @@ type tailResult struct {
 	// next is the offset a follower continues from: the file size, or the start of the partial
 	// last line.
 	next int64
+	// midLine: next is not at the start of a line (the 8 MiB read held no newline at all), so a
+	// follower must drop the rest of that line instead of serving its end.
+	midLine bool
 }
 
 // tailLines returns the last n lines of the file at path, with and without a trailing newline.
@@ -99,7 +102,7 @@ func readTail(path string, n int) (tailResult, error) {
 		if i := bytes.LastIndexByte(buf, '\n'); i >= 0 {
 			res.next = pos + int64(i) + 1
 		} else {
-			res.next = pos
+			res.next, res.midLine = pos, pos > 0
 		}
 	}
 	parts := bytes.Split(text, []byte{'\n'})
@@ -272,7 +275,7 @@ func (s *supervisor) FollowLogs(ctx context.Context, r control.LogsRequest, send
 				return err
 			}
 		}
-		fols = append(fols, &follower{logSource: src, off: t.next})
+		fols = append(fols, &follower{logSource: src, off: t.next, skip: t.midLine})
 	}
 
 	// The wait ends when the instance stops: the final poll then catches what the firmware wrote
