@@ -190,6 +190,14 @@ function paint(state, linkState) {
   if (n !== panelCount) {
     buildPanels(n);
   }
+  document.querySelectorAll("#ports .port").forEach((panel, i) => {
+    // The channel colour is the port's own: ports 1..4 are yellow, green, blue, pink (D-03).
+    const port = state.ports[i].port;
+    const ch = Number.isInteger(port) && port >= 1 ? ((port - 1) % 4) + 1 : 0;
+    for (let c = 1; c <= 4; c++) {
+      panel.classList.toggle("ch" + c, c === ch);
+    }
+  });
   const leds = ledCount(state);
   if (leds !== lensCount) {
     buildLeds(leds);
@@ -203,6 +211,11 @@ function paint(state, linkState) {
   const link = document.getElementById("link");
   link.textContent = LINK_TEXT[linkState] || LINK_TEXT.connecting;
   link.dataset.state = linkState;
+  // Presentation only: disconnected states read red (UI-SPEC semantic rules), never green for good.
+  link.closest(".cell").classList.toggle("bad", linkState === "retrying");
+  const fw = document.querySelector('[data-src="firmware.bus_connected"]');
+  const connected = state !== null && state.firmware ? state.firmware.bus_connected : undefined;
+  fw.classList.toggle("bad", connected === false);
 }
 
 let pending = null;
