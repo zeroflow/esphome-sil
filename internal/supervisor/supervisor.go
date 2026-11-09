@@ -10,16 +10,21 @@ package supervisor
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/zeroflow/esphome-sil/internal/apiclient"
 	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/clock"
 	"github.com/zeroflow/esphome-sil/internal/control"
@@ -30,6 +35,14 @@ import (
 
 // stopGrace is how long the firmware gets after SIGTERM before SIGKILL.
 const stopGrace = 3 * time.Second
+
+// Readiness probe policy (RESEARCH Pattern 4): after every firmware start the
+// native API is probed every probeEvery for up to probeBudget; each attempt
+// has its own deadline inside apiclient.Probe.
+const (
+	probeEvery  = 250 * time.Millisecond
+	probeBudget = 20 * time.Second
+)
 
 type fwExit struct {
 	state *os.ProcessState
@@ -59,6 +72,15 @@ type supervisor struct {
 	stopping  bool
 	lastExit  *control.Exit
 	failure   *apperr.Error
+
+	// Native-API readiness (guarded by mu): apiReady is set by a probe that
+	// completed a Noise handshake with this instance's key and matched its
+	// name and MAC; apiFailure is the probe's verdict when it never will.
+	apiReady    bool
+	apiFailure  *apperr.Error
+	probeGen    int
+	probeCancel context.CancelFunc
+	probeWG     sync.WaitGroup
 }
 
 // Serve runs the supervisor for instance name until `sil down` or a
@@ -121,6 +143,7 @@ func (s *supervisor) run(sigCtx context.Context) error {
 	if err := s.startFirmware(); err != nil {
 		return err
 	}
+	s.startProbe()
 
 	ln, err := control.Listen(s.paths.APISock())
 	if err != nil {
@@ -247,6 +270,117 @@ func (s *supervisor) stopAll() {
 	})
 }
 
+// startProbe (re)starts the readiness probe for the firmware that was just
+// started: the previous probe, if any, is cancelled and api.ready is reset.
+func (s *supervisor) startProbe() {
+	s.mu.Lock()
+	if s.stopping {
+		s.mu.Unlock()
+		return
+	}
+	if s.probeCancel != nil {
+		s.probeCancel()
+	}
+	s.probeGen++
+	gen := s.probeGen
+	s.apiReady, s.apiFailure = false, nil
+	ctx, cancel := context.WithCancel(context.Background())
+	s.probeCancel = cancel
+	s.probeWG.Add(1)
+	s.mu.Unlock()
+	go func() {
+		defer s.probeWG.Done()
+		s.probeLoop(ctx, gen)
+	}()
+}
+
+// setAPI records the verdict of probe generation gen unless a newer probe
+// has started since.
+func (s *supervisor) setAPI(gen int, ready bool, failure *apperr.Error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if gen != s.probeGen {
+		return
+	}
+	s.apiReady, s.apiFailure = ready, failure
+	if failure != nil {
+		s.log.Error("native API readiness failed", "code", failure.Code, "message", failure.Message)
+	} else if ready {
+		s.log.Info("native API ready", "port", s.id.APIPort)
+	}
+}
+
+// probeLoop probes 127.0.0.1:<api port> until the instance's own firmware
+// answers (ready), something else answers (failed), or probeBudget elapses
+// (ready_timeout). A TCP connect alone never counts.
+func (s *supervisor) probeLoop(ctx context.Context, gen int) {
+	key, err := base64.StdEncoding.DecodeString(s.id.Key)
+	if err != nil {
+		s.setAPI(gen, false, apperr.Infra("identity_corrupt", "the instance key is not valid base64", nil))
+		return
+	}
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(s.id.APIPort))
+	budget, cancel := clock.WithTimeout(ctx, s.clk, probeBudget)
+	defer cancel()
+	var last error
+	for {
+		h, err := apiclient.Probe(budget, addr, key, s.clk)
+		if err == nil {
+			if bad := mismatch(h, s.id); bad != nil {
+				s.setAPI(gen, false, bad)
+			} else {
+				s.setAPI(gen, true, nil)
+			}
+			return
+		}
+		if ctx.Err() != nil {
+			return // shutting down or superseded by a newer probe
+		}
+		var pe *apiclient.ProbeError
+		if errors.As(err, &pe) {
+			if pe.Kind == apiclient.KindPlaintextAPI || pe.Kind == apiclient.KindHandshakeRejected {
+				s.setAPI(gen, false, apperr.Infra(pe.Kind, pe.Msg, map[string]any{"port": s.id.APIPort}))
+				return
+			}
+			last = err
+		}
+		s.mu.Lock()
+		running := s.fwRunning
+		s.mu.Unlock()
+		if !running {
+			return // the exit is reported through the firmware status
+		}
+		if err := s.clk.Sleep(budget, probeEvery); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			detail := map[string]any{"port": s.id.APIPort}
+			if last != nil {
+				detail["last_error"] = last.Error()
+			}
+			s.setAPI(gen, false, apperr.Infra("ready_timeout",
+				fmt.Sprintf("the firmware's native API did not complete an encrypted handshake within %s", probeBudget), detail))
+			return
+		}
+	}
+}
+
+// mismatch is nil when the hello names this instance's own device and MAC.
+func mismatch(h apiclient.Hello, id instance.Identity) *apperr.Error {
+	wantName, wantMAC := id.DeviceName(), instance.MAC(id.Name)
+	if h.ServerName == wantName && h.Name == wantName && instance.EqualMAC(h.MAC, wantMAC) {
+		return nil
+	}
+	return apperr.Infra("api_identity_mismatch",
+		fmt.Sprintf("the process answering on API port %d is not this instance's firmware (expected %s %s, got %s %s)",
+			id.APIPort, wantName, wantMAC, h.ServerName, h.MAC),
+		map[string]any{
+			"port":     id.APIPort,
+			"expected": map[string]any{"name": wantName, "mac": wantMAC},
+			"got":      map[string]any{"server_name": h.ServerName, "name": h.Name, "mac": h.MAC},
+		})
+}
+
 // recordExit classifies a firmware exit. An exit while not stopping is
 // unexpected: phase failed (01-11 adds auto-restart here).
 func (s *supervisor) recordExit(ex fwExit) {
@@ -285,7 +419,11 @@ func (s *supervisor) Status(_ context.Context) (control.Status, error) {
 	snap := s.eng.Snapshot()
 	s.mu.Lock()
 	pid, running, stopping, lastExit, failure := s.fwPID, s.fwRunning, s.stopping, s.lastExit, s.failure
+	apiReady, apiFailure := s.apiReady, s.apiFailure
 	s.mu.Unlock()
+	if failure == nil && apiFailure != nil {
+		failure = apiFailure
+	}
 
 	phase := control.PhaseStarting
 	switch {
@@ -293,7 +431,7 @@ func (s *supervisor) Status(_ context.Context) (control.Status, error) {
 		phase = control.PhaseStopping
 	case failure != nil || !running:
 		phase = control.PhaseFailed
-	case snap.BusConnected:
+	case apiReady && snap.BusConnected:
 		phase = control.PhaseReady
 	}
 	st := control.Status{
@@ -303,7 +441,7 @@ func (s *supervisor) Status(_ context.Context) (control.Status, error) {
 		API: control.APIStatus{
 			DeviceName: s.id.DeviceName(), MAC: instance.MAC(s.id.Name),
 			Host: "127.0.0.1", Port: s.id.APIPort, Key: s.id.Key,
-			Ready: snap.BusConnected, // 01-09 switches this to the Noise probe
+			Ready: apiReady, // Noise handshake with the instance key and name/MAC match
 		},
 		Firmware: control.FirmwareStatus{PID: pid, Running: running, BusConnected: snap.BusConnected, LastExit: lastExit},
 		Sim:      control.SimStatus{TimeS: snap.SimTime.Seconds(), TimeFactor: 1, BusProto: snap.BusProto},

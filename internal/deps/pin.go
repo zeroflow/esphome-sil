@@ -6,6 +6,4 @@
 // this file. The sil_pin tag keeps it out of every normal build.
 package deps
 
-import (
-	_ "github.com/flynn/noise"
-)
+// Nothing is pinned this way any more: flynn/noise became a real import in 01-09.
