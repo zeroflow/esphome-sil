@@ -27,6 +27,7 @@ import (
 	"os/signal"
 	"regexp"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,7 @@ import (
 	"github.com/zeroflow/esphome-sil/internal/engine"
 	"github.com/zeroflow/esphome-sil/internal/fanlib"
 	"github.com/zeroflow/esphome-sil/internal/instance"
+	"github.com/zeroflow/esphome-sil/internal/model"
 )
 
 // stopGrace is how long the firmware gets after SIGTERM before SIGKILL.
@@ -118,6 +120,12 @@ type supervisor struct {
 	// engine they were applied to change together under it (T-02-09). Lock order: opMu, inMu, mu.
 	inMu   sync.Mutex
 	inputs engine.Env
+	// fans is the fan plugged into each port (index n-1 is port n), params cached when it was
+	// chosen. It is the single source of every engine's Config.Ports. Its length never changes
+	// after Serve, only its elements, under inMu.
+	fans []engine.PortConfig
+	// lib is the fan library Set and Fans read; nil means the real one (fanlib).
+	lib FanLibrary
 
 	mu          sync.Mutex
 	slot        *engineSlot
@@ -169,8 +177,9 @@ func Serve(ctx context.Context, name string) error {
 	clk := clock.NewReal()
 	s := &supervisor{
 		paths: p, id: id, spec: spec, clk: clk, log: log,
-		engCfg: engine.Config{Clock: clk, BusPath: p.BusSock(), Ports: ports, Log: log},
+		engCfg: engine.Config{Clock: clk, BusPath: p.BusSock(), Log: log},
 		inputs: engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity},
+		fans:   ports,
 
 		starter:  ExecStarter{},
 		guard:    NewCrashGuard(clk),
@@ -275,12 +284,13 @@ func (s *supervisor) mainLoop(sigCtx context.Context) (err error) {
 	}
 }
 
-// startEngine builds a fresh engine (a new World, D-02) seeded with the held inputs, runs it and
+// startEngine builds a fresh engine (a new World, D-02) seeded with the held inputs and fans, runs it and
 // waits until it listens on the bus socket. The caller holds inMu from before this call until the
 // engine is in the slot, so a concurrent Set cannot fall between the two.
 func (s *supervisor) startEngine() (*engineSlot, error) {
 	cfg := s.engCfg
 	cfg.Env = s.inputs
+	cfg.Ports = append([]engine.PortConfig(nil), s.fans...)
 	eng := engine.New(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	sl := &engineSlot{eng: eng, cancel: cancel, done: make(chan struct{})}
@@ -899,8 +909,43 @@ const (
 	maxHumidity        = 100.0
 )
 
-// envKeys are the keys `set` knows, sorted.
+// envKeys are the environment keys `set` knows, sorted.
 var envKeys = []string{"humidity", "temperature"}
+
+// FanLibrary is the fan library as parseSet and Fans see it; fanlib is the real one and tests
+// bring a fake.
+type FanLibrary interface {
+	IDs() ([]string, error)
+	Load(id string) (model.Params, error)
+}
+
+// realLibrary is the fan library of the instance: the embedded one, or SIL_FAN_DIR.
+type realLibrary struct{}
+
+func (realLibrary) IDs() ([]string, error)               { return fanlib.IDs() }
+func (realLibrary) Load(id string) (model.Params, error) { return fanlib.Load(id) }
+
+var portFanRE = regexp.MustCompile(`^port([1-9][0-9]*)\.fan$`)
+
+// portFanKey reports the port number of a `portN.fan` key.
+func portFanKey(k string) (int, bool) {
+	m := portFanRE.FindStringSubmatch(k)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	return n, err == nil
+}
+
+// knownKeys are all keys `set` knows for an instance with the given number of ports, sorted.
+func knownKeys(ports int) []string {
+	keys := append([]string{}, envKeys...)
+	for n := 1; n <= ports; n++ {
+		keys = append(keys, fmt.Sprintf("port%d.fan", n))
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // decimalRE is a plain decimal number: no hex floats, no digit separators, no NaN or Inf words.
 var decimalRE = regexp.MustCompile(`^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$`)
@@ -931,10 +976,12 @@ func parseNumber(raw json.RawMessage) (float64, bool) {
 }
 
 // parseSet validates every pair of a set request and builds the engine Change and the echo, or
-// returns the first error (keys are checked in sorted order). It has no side effects.
-func parseSet(values map[string]json.RawMessage) (engine.Change, map[string]any, error) {
+// returns the first error (keys are checked in sorted order). It has no side effects. A
+// `portN.fan` key (N = 1..ports) names a library fan: it must be a member of lib.IDs() before
+// lib.Load reads anything, so an id is never turned into a path (T-02-12).
+func parseSet(values map[string]json.RawMessage, ports int, lib FanLibrary) (engine.Change, map[string]any, error) {
 	if len(values) == 0 {
-		return engine.Change{}, nil, apperr.Failed("invalid_argument", "set needs at least one key=value pair", map[string]any{"known": envKeys})
+		return engine.Change{}, nil, apperr.Failed("invalid_argument", "set needs at least one key=value pair", map[string]any{"known": knownKeys(ports)})
 	}
 	keys := make([]string, 0, len(values))
 	for k := range values {
@@ -944,6 +991,18 @@ func parseSet(values map[string]json.RawMessage) (engine.Change, map[string]any,
 	var c engine.Change
 	applied := make(map[string]any, len(keys))
 	for _, k := range keys {
+		if n, ok := portFanKey(k); ok && n <= ports {
+			id, pc, err := parseFan(k, n, values[k], lib)
+			if err != nil {
+				return engine.Change{}, nil, err
+			}
+			if c.Fans == nil {
+				c.Fans = map[int]engine.PortConfig{}
+			}
+			c.Fans[n] = pc
+			applied[k] = id
+			continue
+		}
 		var lo, hi float64
 		switch k {
 		case "temperature":
@@ -951,8 +1010,9 @@ func parseSet(values map[string]json.RawMessage) (engine.Change, map[string]any,
 		case "humidity":
 			lo, hi = minHumidity, maxHumidity
 		default:
-			return engine.Change{}, nil, apperr.Failed("unknown_key", fmt.Sprintf("unknown key %q; known: %s", k, strings.Join(envKeys, ", ")),
-				map[string]any{"key": k, "known": envKeys})
+			known := knownKeys(ports)
+			return engine.Change{}, nil, apperr.Failed("unknown_key", fmt.Sprintf("unknown key %q; known: %s", k, strings.Join(known, ", ")),
+				map[string]any{"key": k, "known": known})
 		}
 		v, ok := parseNumber(values[k])
 		if !ok {
@@ -973,12 +1033,42 @@ func parseSet(values map[string]json.RawMessage) (engine.Change, map[string]any,
 	return c, applied, nil
 }
 
+// parseFan validates the value of a `portN.fan` key and loads the fan.
+func parseFan(key string, port int, raw json.RawMessage, lib FanLibrary) (string, engine.PortConfig, error) {
+	var id string
+	if raw = bytes.TrimSpace(raw); len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &id) != nil {
+		return "", engine.PortConfig{}, apperr.Failed("invalid_argument", fmt.Sprintf("%s needs a fan id (a string), got %s", key, string(raw)),
+			map[string]any{"key": key, "value": string(raw)})
+	}
+	ids, err := lib.IDs()
+	if err != nil {
+		return "", engine.PortConfig{}, apperr.Infra("internal", "cannot list the fan library: "+err.Error(), map[string]any{"key": key})
+	}
+	if !slices.Contains(ids, id) {
+		return "", engine.PortConfig{}, apperr.Failed("unknown_fan", fmt.Sprintf("unknown fan %q for %s; known: %s", id, key, strings.Join(ids, ", ")),
+			map[string]any{"key": key, "fan": id, "known": ids})
+	}
+	params, err := lib.Load(id)
+	if err != nil {
+		return "", engine.PortConfig{}, apperr.Failed("fan_toml_invalid", err.Error(), map[string]any{"key": key, "fan": id, "error": err.Error()})
+	}
+	return id, engine.PortConfig{Port: port, FanID: id, Fan: params}, nil
+}
+
+func (s *supervisor) library() FanLibrary {
+	if s.lib != nil {
+		return s.lib
+	}
+	return realLibrary{}
+}
+
 // Set implements control.Control (D-09): every pair is validated before anything is applied, then
-// the held inputs are recorded and one engine operation applies them together. It does not take
-// opMu, so it never waits for a restart; a value set while the bus is down reaches the firmware
-// with the next snapshot, and a replaced engine is seeded from the recorded inputs.
+// the held inputs and fans are recorded and one engine operation applies them together. It does not
+// take opMu, so it never waits for a restart; a value set while the bus is down reaches the
+// firmware with the next snapshot, and a replaced engine is seeded from the recorded inputs and
+// fans.
 func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.SetResult, error) {
-	change, applied, err := parseSet(r.Values)
+	change, applied, err := parseSet(r.Values, len(s.fans), s.library())
 	if err != nil {
 		return control.SetResult{}, err
 	}
@@ -992,6 +1082,9 @@ func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.Set
 	}
 	if change.Humidity != nil {
 		s.inputs.Humidity = *change.Humidity
+	}
+	for n, pc := range change.Fans {
+		s.fans[n-1] = pc
 	}
 	if err := s.currentEngine().Apply(ctx, change); err != nil && !errors.Is(err, engine.ErrStopped) {
 		return control.SetResult{}, err

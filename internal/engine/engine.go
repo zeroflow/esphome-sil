@@ -55,6 +55,11 @@ type Env struct {
 // Change is a set of input changes applied together by Apply; a nil field is left alone.
 type Change struct {
 	Temperature, Humidity *float64
+	// Fans replugs ports: the key is a port number (PortConfig.Port), the value the fan to plug in.
+	// A replug is an instant unplug and plug: the port's fan state starts over from rest at the
+	// current duty, whether or not the fan model changes. A port number the engine does not have
+	// is ignored (the supervisor validates before it applies).
+	Fans map[int]PortConfig
 }
 
 const (
@@ -529,6 +534,18 @@ func (e *Engine) handleApply(op applyOp) {
 			e.send(e.envFrame(1))
 		}
 	}
+	// A replug resets the fan to rest (rpm 0) in this same event, so the snapshot published right
+	// after it shows the new fan at 0 rpm; the normal rpm change rule sends the 0 and the next tick
+	// steps the new model from rest at the current duty, so the new fan's own start rule decides.
+	for i := range e.ports {
+		p := &e.ports[i]
+		if pc, ok := op.change.Fans[p.cfg.Port]; ok {
+			pc.Port = p.cfg.Port
+			p.cfg = pc
+			p.state = model.Initial(pc.Fan)
+		}
+	}
+	e.publish() // before the reply, so a status read after Apply returned already shows the change
 	op.reply <- struct{}{}
 }
 

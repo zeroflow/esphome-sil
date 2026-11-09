@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1198,5 +1199,203 @@ func TestEngineEnvManifestWarnings(t *testing.T) {
 	waitUntil(t, "the manifest to be checked", func() bool { return h2.eng.Snapshot().Synced })
 	if w := h2.eng.Snapshot().Warnings; len(w) != 0 {
 		t.Fatalf("a correct env manifest produced warnings %q", w)
+	}
+}
+
+const noctuaID = "noctua-nf-a12x25-pwm"
+
+// fanConfig loads library fan id as the replacement for a port.
+func fanConfig(t *testing.T, id string) PortConfig {
+	t.Helper()
+	p, err := fanlib.Load(id)
+	if err != nil {
+		t.Fatalf("load fan %s: %v", id, err)
+	}
+	return PortConfig{FanID: id, Fan: p}
+}
+
+// advanceTo moves the Manual clock by d and waits until the engine has processed the last tick.
+func (h *harness) advanceTo(d time.Duration) {
+	h.t.Helper()
+	target := h.eng.Snapshot().SimTime + d
+	h.clk.Advance(d)
+	waitUntil(h.t, fmt.Sprintf("SimTime == %v", target), func() bool { return h.eng.Snapshot().SimTime == target })
+}
+
+// setDuty drives port n's duty from the firmware and waits until the engine has it.
+func (h *harness) setDuty(n int, duty float64) {
+	h.t.Helper()
+	h.out(fmt.Sprintf("port%d.duty", n), duty)
+	waitUntil(h.t, fmt.Sprintf("port%d duty %v", n, duty), func() bool { return h.eng.Snapshot().Ports[n-1].Duty == duty })
+}
+
+func replug(t *testing.T, h *harness, port int, id string) {
+	t.Helper()
+	if err := applyChange(t, h.eng, Change{Fans: map[int]PortConfig{port: fanConfig(t, id)}}); err != nil {
+		t.Fatalf("replug port %d to %s: %v", port, id, err)
+	}
+}
+
+// A swap is an instant unplug and replug: rpm 0 and the new fan id in the very next snapshot, then
+// the new fan follows its own file from rest (MODEL-03, D-10).
+func TestEngineReplugSwapsFanAndResetsToRest(t *testing.T) {
+	h := newHarness(t)
+	h.setDuty(1, 1.0)
+	h.setDuty(2, 1.0)
+	h.advanceTo(8 * time.Second)
+	if s := h.eng.Snapshot(); s.Ports[0].RPM < 1700 || s.Ports[0].Fan != fanlib.DefaultFan {
+		t.Fatalf("before the swap port1 = %+v, want a running Arctic", s.Ports[0])
+	}
+
+	replug(t, h, 1, noctuaID)
+	s := h.eng.Snapshot()
+	if s.Ports[0].Fan != noctuaID || s.Ports[0].RPM != 0 {
+		t.Fatalf("right after the swap port1 = %+v, want the Noctua at rpm 0", s.Ports[0])
+	}
+	if s.Ports[0].Duty != 1.0 || s.Ports[0].Port != 1 {
+		t.Fatalf("port1 = %+v: the duty and the port number must survive a replug", s.Ports[0])
+	}
+	if s.Ports[1].Fan != fanlib.DefaultFan || s.Ports[1].RPM < 1700 {
+		t.Fatalf("port2 = %+v changed by a replug of port1", s.Ports[1])
+	}
+	h.advanceTo(8 * time.Second)
+	if got := h.eng.Snapshot().Ports[0].RPM; got < 1900 || got > 2000 {
+		t.Fatalf("port1 rpm 8 s after the swap = %v, want toward the Noctua's 2000", got)
+	}
+	// The firmware is told about the drop to 0 by the normal change rule: a frame below 300 after
+	// the frames that showed the old fan running.
+	var ran, dropped bool
+	for _, f := range h.fw.rpmFrames("port1.rpm") {
+		v, _ := f.GetF32("v")
+		if v > 1500 {
+			ran = true
+		} else if ran && v < 300 {
+			dropped = true
+		}
+	}
+	if !dropped {
+		t.Fatalf("no port1.rpm frame below 300 followed the running old fan: %v", h.fw.envValues("port1.rpm"))
+	}
+}
+
+// A hold fan never stops: replugged at duty 0.10 it restarts from 0 and climbs back to its min_rpm,
+// also when the same fan is plugged again.
+func TestEngineReplugHoldFanClimbsToMinRPM(t *testing.T) {
+	h := newHarness(t)
+	h.setDuty(1, 0.10)
+	replug(t, h, 1, noctuaID)
+	h.advanceTo(15 * time.Second)
+	if got := h.eng.Snapshot().Ports[0].RPM; got < 430 || got > 470 {
+		t.Fatalf("Noctua at duty 0.10 holds %v rpm, want 430..470", got)
+	}
+	replug(t, h, 1, noctuaID) // same-fan replug
+	if s := h.eng.Snapshot().Ports[0]; s.RPM != 0 || s.State != "running" || s.Fan != noctuaID {
+		t.Fatalf("same-fan replug: port1 = %+v, want rpm 0 and still a running hold fan", s)
+	}
+	h.advanceTo(10 * time.Second)
+	if got := h.eng.Snapshot().Ports[0].RPM; got < 430 || got > 470 {
+		t.Fatalf("Noctua 10 s after a same-fan replug = %v rpm, want 430..470 (it never stays at 0)", got)
+	}
+}
+
+// A stop fan plugged in below its start_duty stays at rest, over a running Arctic in its dead band
+// (same-fan replug) and over a Noctua alike.
+func TestEngineReplugStopFanBelowStartDutyStaysStopped(t *testing.T) {
+	h := newHarness(t)
+
+	// Port 1: a running Arctic in its dead band (duty 0.08 is between min_duty 0.05 and start_duty 0.10).
+	h.setDuty(1, 1.0)
+	h.advanceTo(5 * time.Second)
+	h.setDuty(1, 0.08)
+	h.advanceTo(10 * time.Second)
+	if s := h.eng.Snapshot().Ports[0]; s.State != "running" || s.RPM < 150 {
+		t.Fatalf("port1 = %+v, want an Arctic still running in its dead band", s)
+	}
+	replug(t, h, 1, fanlib.DefaultFan)
+	if s := h.eng.Snapshot().Ports[0]; s.RPM != 0 || s.State != "stopped" {
+		t.Fatalf("same-fan replug: port1 = %+v, want rpm 0 and stopped", s)
+	}
+
+	// Port 2: a Noctua holding about 450 rpm at duty 0.08, then an Arctic plugged in.
+	replug(t, h, 2, noctuaID)
+	h.setDuty(2, 0.08)
+	h.advanceTo(15 * time.Second)
+	if got := h.eng.Snapshot().Ports[1].RPM; got < 430 || got > 470 {
+		t.Fatalf("Noctua at duty 0.08 holds %v rpm, want 430..470", got)
+	}
+	replug(t, h, 2, fanlib.DefaultFan)
+	if s := h.eng.Snapshot().Ports[1]; s.Fan != fanlib.DefaultFan || s.RPM != 0 || s.State != "stopped" {
+		t.Fatalf("Arctic over the Noctua: port2 = %+v, want rpm 0 and stopped", s)
+	}
+
+	h.advanceTo(5 * time.Second)
+	for i := 0; i < 2; i++ {
+		if s := h.eng.Snapshot().Ports[i]; s.RPM != 0 || s.State != "stopped" {
+			t.Fatalf("5 s later port%d = %+v, want exactly 0 and stopped (duty 0.08 is below start_duty 0.10)", i+1, s)
+		}
+	}
+	// And it starts once the duty reaches start_duty.
+	h.setDuty(1, 0.5)
+	h.advanceTo(5 * time.Second)
+	if s := h.eng.Snapshot().Ports[0]; s.RPM < 500 || s.State != "running" {
+		t.Fatalf("port1 = %+v at duty 0.5, want a running fan", s)
+	}
+}
+
+// Env and fan fields of one Change land in one event: no snapshot shows one without the other.
+func TestEngineApplyEnvAndFansInOneEvent(t *testing.T) {
+	h := newHarness(t)
+	noctua := fanConfig(t, noctuaID)
+	stop := make(chan struct{})
+	var bad atomic.Value
+	var readers sync.WaitGroup
+	readers.Add(1)
+	go func() {
+		defer readers.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			s := h.eng.Snapshot()
+			if (s.Env.Temperature == 31) != (s.Ports[0].Fan == noctuaID) {
+				bad.Store(fmt.Sprintf("half a change: temperature %v with port1 fan %q", s.Env.Temperature, s.Ports[0].Fan))
+				return
+			}
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		if err := applyChange(t, h.eng, Change{Temperature: fp(31), Fans: map[int]PortConfig{1: noctua}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := applyChange(t, h.eng, Change{Temperature: fp(5), Fans: map[int]PortConfig{1: fanConfig(t, fanlib.DefaultFan)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	readers.Wait()
+	if v := bad.Load(); v != nil {
+		t.Fatal(v)
+	}
+	if s := h.eng.Snapshot(); s.Env.Temperature != 5 || s.Ports[0].Fan != fanlib.DefaultFan {
+		t.Fatalf("final snapshot %+v / %+v, want temperature 5 and the Arctic", s.Env, s.Ports[0])
+	}
+}
+
+// A port the engine does not have is ignored; the other fields of the Change still apply.
+func TestEngineReplugUnknownPortIsIgnored(t *testing.T) {
+	h := newHarness(t)
+	if err := applyChange(t, h.eng, Change{Temperature: fp(26), Fans: map[int]PortConfig{9: fanConfig(t, noctuaID)}}); err != nil {
+		t.Fatal(err)
+	}
+	s := h.eng.Snapshot()
+	if s.Env.Temperature != 26 || len(s.Ports) != 4 {
+		t.Fatalf("snapshot %+v, want temperature 26 and four ports", s)
+	}
+	for _, p := range s.Ports {
+		if p.Fan != fanlib.DefaultFan {
+			t.Fatalf("port%d fan %q after a replug of port 9", p.Port, p.Fan)
+		}
 	}
 }

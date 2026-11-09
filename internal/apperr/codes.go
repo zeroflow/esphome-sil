@@ -28,6 +28,7 @@ var Registry = map[string]int{
 	"not_running":            ExitFailed,
 	"port_claimed":           ExitFailed,
 	"stopping":               ExitFailed,
+	"unknown_fan":            ExitFailed,
 	"unknown_key":            ExitFailed,
 	"value_out_of_range":     ExitFailed,
 
