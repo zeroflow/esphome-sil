@@ -817,7 +817,13 @@ func (s *supervisor) cycleFirmware() error {
 	s.mu.Lock()
 	old := s.fw
 	s.restarting = true
-	s.apiReady, s.apiFailure, s.failure = false, nil, nil
+	s.apiReady, s.apiFailure = false, nil
+	// Only firmware-scoped failures (a crash loop, a failed auto-restart) are
+	// dropped: an engine_failed failure stays until the engine is restarted,
+	// since restarting the firmware does not bring the engine back.
+	if s.failure != nil && s.failure.Code != "engine_failed" {
+		s.failure = nil
+	}
 	if old != nil {
 		old.requested = true
 	}

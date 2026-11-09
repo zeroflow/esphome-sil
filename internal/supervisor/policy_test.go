@@ -536,3 +536,41 @@ func TestSimRestartKeepsAnExistingFailure(t *testing.T) {
 		t.Fatalf("after a successful SimRestart status error = %q, want firmware_crash_loop", got)
 	}
 }
+
+// A firmware restart drops firmware-scoped failures only: after a SimRestart
+// whose engine cannot start, FwRestart must not erase engine_failed while the
+// engine is still down.
+func TestFwRestartKeepsEngineFailed(t *testing.T) {
+	st := &fakeStarter{behave: func(_ int, p *fakeProc) { polite(p) }}
+	s, clk, _ := newFake(t, st)
+
+	good := filepath.Join(t.TempDir(), "bus.sock")
+	bad := filepath.Join(t.TempDir(), "missing", "bus.sock")
+	s.engCfg = engine.Config{Clock: clk, BusPath: good, Log: s.log}
+	sl, err := s.startEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.slot = sl
+	s.mu.Unlock()
+
+	s.engCfg.BusPath = bad
+	if _, err := s.SimRestart(context.Background(), control.SimRestartRequest{}); apperr.AsError(err).Code != "engine_failed" {
+		t.Fatalf("failing SimRestart = %v, want engine_failed", err)
+	}
+
+	if _, err := s.FwRestart(context.Background()); apperr.AsError(err).Code != "engine_failed" {
+		t.Fatalf("FwRestart after a failed SimRestart = %v, want engine_failed", err)
+	}
+	status, err := s.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Error == nil || status.Error.Code != "engine_failed" {
+		t.Fatalf("status error after FwRestart = %+v, want engine_failed", status.Error)
+	}
+	if status.Phase != control.PhaseFailed {
+		t.Fatalf("phase = %q, want failed", status.Phase)
+	}
+}
