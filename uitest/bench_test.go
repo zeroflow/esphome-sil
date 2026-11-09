@@ -270,9 +270,10 @@ func (b *bench) ReleaseSnapshot() {
 }
 
 // History implements control.Control: the sample events of the broker within the window, as the
-// instance serves them. The answer is computed when the request arrives and sent when
+// instance serves them. The broker's answer is computed when the request arrives and sent when
 // ReleaseHistory lets it go (at once when it is not held), so a held answer is stale by the samples
-// that arrive meanwhile, like a slow response on a real instance. SetHistory replaces the answer.
+// that arrive meanwhile, like a slow response on a real instance. When SetHistory gave a function,
+// the answer is that function's result, computed when the answer is sent.
 func (b *bench) History(ctx context.Context, r control.HistoryRequest) (control.HistoryResult, error) {
 	if err := b.enter("History", r.WindowS); err != nil {
 		return control.HistoryResult{}, err
@@ -280,15 +281,10 @@ func (b *bench) History(ctx context.Context, r control.HistoryRequest) (control.
 	b.mu.Lock()
 	hold, fn := b.histHold, b.histFn
 	b.mu.Unlock()
-	var res control.HistoryResult
-	if fn != nil {
-		res = fn(r)
-	} else {
-		seq, samples := b.broker.History(time.Duration(r.WindowS * float64(time.Second)))
-		res = control.HistoryResult{Seq: seq, WindowS: r.WindowS, Samples: samples}
-		if n := len(samples); n > 0 {
-			res.T = samples[n-1].T
-		}
+	seq, samples := b.broker.History(time.Duration(r.WindowS * float64(time.Second)))
+	res := control.HistoryResult{Seq: seq, WindowS: r.WindowS, Samples: samples}
+	if n := len(samples); n > 0 {
+		res.T = samples[n-1].T
 	}
 	if hold != nil {
 		select {
@@ -296,6 +292,9 @@ func (b *bench) History(ctx context.Context, r control.HistoryRequest) (control.
 		case <-ctx.Done():
 			return control.HistoryResult{}, ctx.Err()
 		}
+	}
+	if fn != nil {
+		return fn(r), nil
 	}
 	return res, nil
 }
@@ -319,7 +318,8 @@ func (b *bench) ReleaseHistory() {
 	}
 }
 
-// SetHistory makes History answer with fn(request) instead of the broker's samples.
+// SetHistory makes History answer with fn(request), computed when the answer is sent, instead of the
+// broker's samples.
 func (b *bench) SetHistory(fn func(control.HistoryRequest) control.HistoryResult) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
