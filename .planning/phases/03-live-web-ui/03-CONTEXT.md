@@ -23,7 +23,7 @@ Not in this phase: fault switches, plug/unplug faults (P2); fan photos, drag & d
 - LEDs = final strip colors + named segments from the HELLO manifest, ≤ 20 Hz (02 D-05..D-08).
 - `set key=value`, all-or-nothing, fan swap = instant unplug/replug, defaults 22 °C / 45 %RH (02 D-09..D-11).
 - `watch` = snapshot first, then typed events (02 D-12). The WS should carry the same shapes.
-- Stack from research: vendored uPlot 1.6.32 (+ Alpine 3.17.5 or vanilla JS, planner's call), system font stack, `--ui-dir` dev flag, charts and typed arrays kept outside any reactive proxy.
+- Stack from research: vendored uPlot 1.6.32 (+ Alpine 3.17.5 or vanilla JS, planner's call), system font stack, `--ui-dir` dev flag, charts and their plot series kept outside any reactive proxy. The series are plain arrays with `null` gaps, not typed arrays: uPlot 1.6.32 draws across `NaN` in a `Float64Array` (03-RESEARCH Pitfall 4; the UI-SPEC is amended by 03-09).
 
 ### Visual language
 - **D-01:** The character is a **modern Keysight (InfiniiVision-style) bench oscilloscope**, classic HP/Keysight instrument, explicitly **not** modern/neon "cyberpunk". Dark grey bezel frame. Black screen areas with a faint graticule grid. Crisp sans-serif labels with **tabular numerals** for readouts. Grey, softkey-like buttons. Sober and professional. This is a style reference only: no vendor names, logos or trademarks on the page.
@@ -53,6 +53,7 @@ Not in this phase: fault switches, plug/unplug faults (P2); fan photos, drag & d
 ### Added after research (2026-11-09, user decisions during plan-phase)
 - **D-18:** **`api.key` is redacted on the TCP/web listener.** The firmware's Noise key is returned only over the 0600 `api.sock` (CLI). Over TCP, `status`, `watch`/`/ws` and every other response carry it as redacted, and the page does not show it. This keeps Phase 2 AR-02-04 true. UI-06 parity treats the key as the single documented difference between the socket JSON and the TCP JSON.
 - **D-19:** **Lifecycle operations stay socket-only.** Over the LAN listener: status, watch/`/ws`, history, fans, set and press (incl. down/up/max-hold) are reachable. `down`, `sim restart` and `fw restart` are refused on TCP and only work on `api.sock`. The UI-06 parity check covers the UI-visible operations.
+- **D-20 (2026-11-09, user decision during plan revision):** **`logs` (tail and follow) is socket-only over the LAN listener.** Like the lifecycle operations of D-19, `GET /api/v1/logs` is refused on TCP with `operation_not_allowed`; `sil logs` (including `--follow`) works only on `api.sock`. The page does not use it. This turns the former planner assumption A-03-02 into a recorded decision.
 
 ### Claude's Discretion
 - **Parity check mechanism (UI-06):** not discussed. Leaning: the UI reads only `/api/v1/*` + `/ws`, the WS frames reuse the exact Go types of `status`/`watch`, and an automated test asserts both (e.g. a Go test that diffs the WS snapshot against `GET /api/v1/status`, plus a check that every endpoint the JS calls is in the operation list). A headless browser test (Playwright, Python side under `tests/`) is allowed if the planner finds it worth the dependency. It must also verify "works with the network blocked" (no `http(s)://` in the served assets).

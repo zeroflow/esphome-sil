@@ -112,8 +112,35 @@ Plans:
   4. The page shows sim time, the time factor (fixed at 1), whether the firmware is connected, and a warning when the simulator falls behind real time.
   5. An automated parity check confirms that every value the page displays and every action it performs is available through the CLI/API with the same JSON.
 
-**Plans**: TBD
+**Plans:** 12 plans
 **UI hint**: yes
+
+Plans:
+**Wave 1**
+- [ ] 03-01-PLAN.md — Tracer: `sil up` -> sticky web port -> TCP listener -> embedded page shell + /ws (api.key redacted) -> live frames on the real firmware; lifecycle operations refused on the web listener (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 03-02-PLAN.md — Live readouts (view.js) proven in headless Chrome: CDP harness recording HTTP requests and WebSocket connections, fake bench, `make test-ui`, offline load, reconnect and resync (wave 2)
+- [ ] 03-03-PLAN.md — LAN listener limits: connection cap, header deadline, keep-alives off, WS ping reaping and the 8-stream browser share (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 03-04-PLAN.md — Parity spine: `control.Operations` table behind both listeners and the CLI (D-19/D-20 by row), request/snapshot/displayed-value/page-state parity checks with a named UI-only allow-list, first-party asset scans (wave 3)
+- [ ] 03-05-PLAN.md — Reach the bench safely from the LAN: `--listen`, `--web-port`, `--allow-host`, `--ui-dir`, URL and unauthenticated notice, Host/CSRF/WS-origin guard and CSP (wave 3)
+- [ ] 03-06-PLAN.md — Instrument front panel (D-01..D-06 palette, typography, 2x2 layout, breakpoints) and the virtual LEDs with display gamma, glow and segment captions (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 03-07-PLAN.md — Bench signals for every client: `sample` events + history ring + `sil history`, `sim.behind_real_time`, `max_hold_ms` on button down + `sil press --down --max-hold` (wave 4)
+- [ ] 03-08-PLAN.md — Set inputs from the page: API wrapper, message line with server text only, per-port fan select, temperature/humidity fields (wave 4)
+- [ ] 03-09-PLAN.md — Vendor uPlot 1.6.32 with recorded and re-checked hashes, served from the binary; UI-SPEC wording aligned with the researched stack (wave 4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 03-10-PLAN.md — Scope screens: per-port duty/RPM plots from history + live samples, fixed axes, honest gaps, bounded rings, CSP check (wave 5)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 03-11-PLAN.md — USR press-and-hold caps, REAL TIME cell, stale overlay and resync (wave 6)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 03-12-PLAN.md — Acceptance against the real firmware, final viewport check, docs, phase gate, human UAT checklist (wave 7)
 
 ## Progress
 
@@ -124,4 +151,4 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Closed-Loop Fan Skeleton | 13/13 | In Progress|  |
 | 2. Full Rev 3.3 Bench | 8/8 | Complete    | 2026-11-09 |
-| 3. Live Web UI | 0/TBD | Not started | - |
+| 3. Live Web UI | 0/12 | Planned | - |

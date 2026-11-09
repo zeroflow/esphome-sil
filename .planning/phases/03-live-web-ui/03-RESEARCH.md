@@ -326,6 +326,7 @@ Run a ping loop on `clk.NewTicker(15s)` with `clock.WithTimeout(ctx, clk, 10s)` 
 **What goes wrong:** UI-SPEC says "`Float64Array` ring buffers" and "Missing samples are `null`: draw a gap". Measured in Chrome 157 with uPlot 1.6.32 (width-3 white line, column sampled inside the gap): plain array with `null` -> gap column has **0** lit pixels; `Float64Array` with `NaN` -> **3** lit pixels (the line crosses the gap). `[VERIFIED: executed this session; scratchpad uptest/t.html output {"nullArray":{"before":3,"gap":0,"after":3},"typedNaN":{"before":3,"gap":3,"after":3}}]`
 **How to avoid:** series values in plain `Array`s with `null`; keep rings in module scope; bounded by compaction (append; when `length > cap + slack`, `splice(0, length - cap)`). Cap = 62 s x 10 Hz = 620 plus slack. The UI-SPEC's intent (module scope, bounded, no reactive proxy) is preserved; only the container type changes. Note in the plan that this deviates from the "Float64Array" wording.
 **Also:** a simulator-restart gap produces no samples (no `null`s), so the client breaks the line when consecutive `t` differ by more than 2.5 sample periods (presentation rule, not interpolation).
+**Superseded in planning (2026-11-09):** the page infers no gap from timing, because CONTEXT says the UI has no logic of its own. Instead the engine marks the first sample of every engine with `gap: true`. Every simulator restart starts a new engine, and sim time runs on across it. `/ws`, `GET /api/v1/history` and `sil history` all carry the marker (03-07), and `plot.js` only renders it (03-10).
 
 ### Pitfall 5: Vendored libraries contain `https://` strings
 **What goes wrong:** the "no `http(s)://` in served assets" CI check (CLAUDE.md, CONTEXT) fails on vendored files: `alpinejs cdn.min.js` has 2 occurrences of `https://alpinejs.dev/plugins/${r}` (error text) and `uPlot.iife.min.js` has `https://github.com/leeoniya/uPlot` (credit comment) `[VERIFIED: grep over the packed dist files]`. Neither triggers a request.
@@ -468,16 +469,21 @@ for (const el of document.querySelectorAll("[data-src]")) {
 | A10 | `github.com/coder/websocket` is legitimate (tool does not support the Go ecosystem; evidence is proxy origin, sum DB, Context7 reputation, GitHub metadata) | Package Legitimacy | A tool-checked verdict is not available |
 | A11 | Fan `<option>` value = id, text = name (UI-SPEC says names; `set` needs ids) | Pitfall 8 | Spec wording mismatch only |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Redact `api.key` on the LAN listener (A1) and should `down`/restarts be reachable there (A8)?**
    - What we know: D-08 accepted an open control API; AR-02-04 relied on the socket; the key unlocks the firmware's native API.
    - What's unclear: whether "open control API" was meant to include the key and process-control operations.
    - Recommendation: redact the key (cheap, no UX cost); keep operations open per D-08 and say so in README and `sil up` stderr; ask the user once at plan review.
+   - RESOLVED: by user decisions in 03-CONTEXT.md. D-18: `api.key` is redacted on the TCP/web listener and served only over the 0600 `api.sock`. D-19: `down`, `sim restart` and `fw restart` are socket-only and refused on TCP with `operation_not_allowed`. D-20: `logs` (tail and follow) is socket-only as well. A8 is superseded. Planned in 03-01 (redaction, refusals) and 03-04 (refusals as Operations table rows).
 2. **Fan select text: name or id?** UI-SPEC copy says names "exactly as returned" and `set portN.fan=<name>`, but the API key is `id`. Recommendation: label = `name`, value/`title` = `id`.
+   - RESOLVED: planner assumption A-03-07 in 03-08. Option text is `FanInfo.name`; option value and `title` are `FanInfo.id`. 03-09 Task 2 aligns the UI-SPEC wording.
 3. **Float64Array vs plain arrays.** UI-SPEC's Performance contract names `Float64Array`; measured behavior requires `null`-capable arrays. Recommendation: plain arrays; update the contract wording.
+   - RESOLVED: plain arrays with `null` gaps. 03-09 Task 2 amends the UI-SPEC Performance contract, and 03-10 (`ring.js`, `plot.js`) keeps plain arrays with `null`.
 4. **Behind-real-time threshold.** Resolved as A2 pending user/UAT feedback; the page only renders the flag.
+   - RESOLVED: planner assumption A-03-05 in 03-07. Behind means a tick handled more than 50 ms late or more than 50 ms after the previous one, cleared after 2 s of sim time. The threshold stays `[ASSUMED]` until UAT feedback.
 5. **Does the live phone UAT need the CSP `unsafe-inline` fallback?** Settle in the browser test (A6).
+   - RESOLVED (rule): the CSP keeps `style-src 'self'`. The `style-src 'self' 'unsafe-inline'` fallback applies only if 03-10 `TestNoCSPViolations` fails with a uPlot style-src violation. `script-src` stays `'self'` either way, and the 03-10 SUMMARY records the outcome (03-10 Task 2, T-03-29).
 
 ## Environment Availability
 
