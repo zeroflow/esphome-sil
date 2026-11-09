@@ -779,3 +779,259 @@ func TestEngineSetButtonAfterStopAnswersAtOnce(t *testing.T) {
 		t.Fatal("SetButton blocked on a stopped engine")
 	}
 }
+
+// ledChan is the leds channel entry of the Rev 3.3 firmware's manifest.
+func ledChan(n int64, seg string) bus.Channel {
+	return bus.Channel{Ch: LEDChannel, Dir: "out", Type: "rgb", N: n, Seg: seg}
+}
+
+// ledPx is an out frame on the leds channel carrying px.
+func ledPx(px string) bus.Frame {
+	return bus.NewFrame("out").Str("ch", LEDChannel).Str("px", px).Int("t", 0)
+}
+
+// ledHello sends hello, the port chan frames, the given extra chan entries (with n and seg when set),
+// then early (frames sent before the sync, like the hub's px replay), then the sync.
+func ledHello(fw *firmware, extra []bus.Channel, early ...bus.Frame) {
+	fw.t.Helper()
+	fw.send(bus.NewFrame("hello").Int("proto", bus.Proto).Str("name", "test-fw").Int("chans", int64(len(fullManifest())+len(extra))).Int("t", 0))
+	for _, c := range append(fullManifest(), extra...) {
+		f := bus.NewFrame("chan").Str("ch", c.Ch).Str("dir", c.Dir).Str("type", c.Type)
+		if c.N > 0 {
+			f = f.Int("n", c.N).Str("seg", c.Seg)
+		}
+		fw.send(f)
+	}
+	for _, f := range early {
+		fw.send(f)
+	}
+	fw.send(bus.NewFrame("sync").Int("t", 0))
+}
+
+// newLEDHarness starts an engine whose firmware announces the given leds channel and is synced.
+func newLEDHarness(t *testing.T, c bus.Channel, early ...bus.Frame) *harness {
+	t.Helper()
+	h := startEngine(t)
+	h.fw = h.dial()
+	ledHello(h.fw, []bus.Channel{c}, early...)
+	waitUntil(t, "the manifest to be checked", func() bool { return h.eng.Snapshot().Synced })
+	return h
+}
+
+// ledBarrier returns once every frame sent so far has been applied. Unlike settle it can be used
+// repeatedly: each call waits for a duty value no earlier call used.
+func (h *harness) ledBarrier(v float64) {
+	h.t.Helper()
+	h.out("port3.duty", v)
+	waitUntil(h.t, "the barrier frame", func() bool { return h.eng.Snapshot().Ports[2].Duty == v })
+}
+
+func ledBlack(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = "#000000"
+	}
+	return out
+}
+
+func TestEngineLEDManifest(t *testing.T) {
+	t.Run("segments and a black strip", func(t *testing.T) {
+		h := newLEDHarness(t, ledChan(5, "board:0:0,fan1:1:1"))
+		s := h.eng.Snapshot()
+		if fmt.Sprint(s.LEDs.Segments) != "map[board:[0] fan1:[1]]" {
+			t.Fatalf("segments = %v, want board [0] and fan1 [1]", s.LEDs.Segments)
+		}
+		if fmt.Sprint(s.LEDs.Strip) != fmt.Sprint(ledBlack(5)) {
+			t.Fatalf("strip = %v, want 5 x #000000", s.LEDs.Strip)
+		}
+		if len(s.Warnings) != 0 {
+			t.Fatalf("warnings = %v, want none", s.Warnings)
+		}
+	})
+	t.Run("a segment spans several LEDs", func(t *testing.T) {
+		h := newLEDHarness(t, ledChan(5, "status:0:1"))
+		if got := fmt.Sprint(h.eng.Snapshot().LEDs.Segments["status"]); got != "[0 1]" {
+			t.Fatalf("status = %s, want [0 1]", got)
+		}
+	})
+	t.Run("an empty seg is no segments and no warning", func(t *testing.T) {
+		h := newLEDHarness(t, ledChan(5, ""))
+		s := h.eng.Snapshot()
+		if len(s.LEDs.Segments) != 0 || len(s.LEDs.Strip) != 5 || len(s.Warnings) != 0 {
+			t.Fatalf("segments %v strip %v warnings %v, want none, 5 entries, none", s.LEDs.Segments, s.LEDs.Strip, s.Warnings)
+		}
+	})
+	t.Run("no leds channel", func(t *testing.T) {
+		h := newHarness(t)
+		s := h.eng.Snapshot()
+		if len(s.LEDs.Strip) != 0 || len(s.LEDs.Segments) != 0 || len(s.Warnings) != 0 {
+			t.Fatalf("strip %v segments %v warnings %v, want all empty", s.LEDs.Strip, s.LEDs.Segments, s.Warnings)
+		}
+	})
+	t.Run("wrong type", func(t *testing.T) {
+		c := ledChan(5, "board:0:0")
+		c.Type = "f32"
+		h := newLEDHarness(t, c)
+		s := h.eng.Snapshot()
+		if fmt.Sprint(s.Warnings) != `[channel leds has type "f32", expected "rgb"]` {
+			t.Fatalf("warnings = %q, want the wrong-type warning", s.Warnings)
+		}
+		if len(s.LEDs.Strip) != 0 || len(s.LEDs.Segments) != 0 {
+			t.Fatalf("strip %v segments %v, want both empty", s.LEDs.Strip, s.LEDs.Segments)
+		}
+	})
+	t.Run("wrong direction", func(t *testing.T) {
+		c := ledChan(5, "board:0:0")
+		c.Dir = "in"
+		h := newLEDHarness(t, c)
+		if fmt.Sprint(h.eng.Snapshot().Warnings) != `[channel leds has direction "in", expected "out"]` {
+			t.Fatalf("warnings = %q", h.eng.Snapshot().Warnings)
+		}
+	})
+}
+
+func TestEngineLEDManifestWarnings(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		n    int64
+		seg  string
+		strp int // expected strip length: 0 for a bad n, n for a bad seg
+	}{
+		{"n 0", 0, "board:0:0", 0},
+		{"n 256", 256, "board:0:0", 0},
+		{"seg without to", 5, "board:0", 5},
+		{"uppercase label", 5, "Board:0:0", 5},
+		{"from after to", 5, "a:2:1", 5},
+		{"to beyond n", 5, "a:0:5", 5},
+		{"duplicate label", 5, "a:0:0,a:1:1", 5},
+		{"signed index", 5, "a:+0:1", 5},
+		{"negative index", 5, "a:-1:1", 5},
+		{"empty part", 5, "a:0:0,", 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := startEngine(t)
+			h.fw = h.dial()
+			// n 0 is not sent by the hub (it only writes n for pixels() > 0), so build the frame by hand.
+			h.fw.send(bus.NewFrame("hello").Int("proto", bus.Proto).Str("name", "test-fw").Int("chans", 9).Int("t", 0))
+			for _, c := range fullManifest() {
+				h.fw.send(bus.NewFrame("chan").Str("ch", c.Ch).Str("dir", c.Dir).Str("type", c.Type))
+			}
+			h.fw.send(bus.NewFrame("chan").Str("ch", LEDChannel).Str("dir", "out").Str("type", "rgb").Int("n", tc.n).Str("seg", tc.seg))
+			h.fw.send(bus.NewFrame("sync").Int("t", 0))
+			waitUntil(t, "the manifest to be checked", func() bool { return h.eng.Snapshot().Synced })
+			s := h.eng.Snapshot()
+			if len(s.Warnings) != 1 || !strings.HasPrefix(s.Warnings[0], "channel leds") {
+				t.Fatalf("warnings = %q, want exactly one naming channel leds", s.Warnings)
+			}
+			if len(s.LEDs.Segments) != 0 {
+				t.Fatalf("segments = %v, want none", s.LEDs.Segments)
+			}
+			if len(s.LEDs.Strip) != tc.strp {
+				t.Fatalf("strip has %d entries, want %d", len(s.LEDs.Strip), tc.strp)
+			}
+		})
+	}
+}
+
+func TestEngineLEDPixels(t *testing.T) {
+	blue := "0000FF" + strings.Repeat("0", 24)
+	t.Run("px is stored lowercase", func(t *testing.T) {
+		h := newLEDHarness(t, ledChan(5, "board:0:0"))
+		h.fw.send(ledPx(blue))
+		h.settle()
+		s := h.eng.Snapshot()
+		want := ledBlack(5)
+		want[0] = "#0000ff"
+		if fmt.Sprint(s.LEDs.Strip) != fmt.Sprint(want) {
+			t.Fatalf("strip = %v, want %v", s.LEDs.Strip, want)
+		}
+		if len(s.Warnings) != 0 {
+			t.Fatalf("warnings = %v, want none", s.Warnings)
+		}
+	})
+	t.Run("exact pixel bytes", func(t *testing.T) {
+		h := newLEDHarness(t, ledChan(5, "board:0:0"))
+		h.fw.send(ledPx("002500" + "010203" + "fffffe" + "a0b1c2" + "7f8081"))
+		h.settle()
+		want := []string{"#002500", "#010203", "#fffffe", "#a0b1c2", "#7f8081"}
+		if got := h.eng.Snapshot().LEDs.Strip; fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("strip = %v, want %v (no conversion or rounding)", got, want)
+		}
+	})
+	t.Run("px before the manifest is kept", func(t *testing.T) {
+		h := newLEDHarness(t, ledChan(5, "board:0:0"), ledPx(blue))
+		s := h.eng.Snapshot()
+		if len(s.LEDs.Strip) != 5 || s.LEDs.Strip[0] != "#0000ff" || len(s.Warnings) != 0 {
+			t.Fatalf("strip %v warnings %v, want the early frame kept without a warning", s.LEDs.Strip, s.Warnings)
+		}
+	})
+	t.Run("early px of the wrong size is dropped with one warning", func(t *testing.T) {
+		h := newLEDHarness(t, ledChan(5, "board:0:0"), ledPx("0000ff0000ff"))
+		s := h.eng.Snapshot()
+		if len(s.Warnings) != 1 || fmt.Sprint(s.LEDs.Strip) != fmt.Sprint(ledBlack(5)) {
+			t.Fatalf("strip %v warnings %q, want 5 x black and one warning", s.LEDs.Strip, s.Warnings)
+		}
+	})
+	for _, bad := range []struct{ name, px string }{
+		{"length 29", strings.Repeat("0", 29)},
+		{"not hex", "zz0000" + strings.Repeat("0", 24)},
+		{"too short for n", strings.Repeat("0", 24)},
+		{"too long for n", strings.Repeat("0", 36)},
+		{"empty", ""},
+	} {
+		t.Run("bad px "+bad.name, func(t *testing.T) {
+			h := newLEDHarness(t, ledChan(5, "board:0:0"))
+			h.fw.send(ledPx(blue))
+			h.ledBarrier(0.11)
+			before := h.eng.Snapshot().LEDs.Strip
+			h.fw.send(ledPx(bad.px))
+			h.fw.send(ledPx(bad.px)) // the same warning twice is recorded once
+			h.ledBarrier(0.12)
+			s := h.eng.Snapshot()
+			if len(s.Warnings) != 1 || !strings.HasPrefix(s.Warnings[0], "channel leds") {
+				t.Fatalf("warnings = %q, want exactly one naming channel leds", s.Warnings)
+			}
+			if fmt.Sprint(s.LEDs.Strip) != fmt.Sprint(before) {
+				t.Fatalf("strip = %v, want the previous strip %v kept", s.LEDs.Strip, before)
+			}
+		})
+	}
+	t.Run("a value instead of px", func(t *testing.T) {
+		h := newLEDHarness(t, ledChan(5, "board:0:0"))
+		h.fw.send(bus.NewFrame("out").Str("ch", LEDChannel).Num("v", 1).Int("t", 0))
+		h.settle()
+		s := h.eng.Snapshot()
+		if len(s.Warnings) != 1 || !strings.Contains(s.Warnings[0], "wrong type") {
+			t.Fatalf("warnings = %q, want one wrong-type warning", s.Warnings)
+		}
+	})
+	t.Run("the strip survives a disconnect and a new session starts empty", func(t *testing.T) {
+		h := newLEDHarness(t, ledChan(5, "board:0:0"))
+		h.fw.send(ledPx(blue))
+		h.settle()
+		_ = h.fw.conn.Close()
+		waitUntil(t, "the disconnect", func() bool { return !h.eng.Snapshot().BusConnected })
+		s := h.eng.Snapshot()
+		if len(s.LEDs.Strip) != 5 || s.LEDs.Strip[0] != "#0000ff" || len(s.LEDs.Segments) != 1 {
+			t.Fatalf("after the disconnect: strip %v segments %v, want the last frame kept", s.LEDs.Strip, s.LEDs.Segments)
+		}
+		fw2 := h.dial()
+		fw2.send(bus.NewFrame("hello").Int("proto", bus.Proto).Str("name", "test-fw").Int("chans", 0).Int("t", 0))
+		waitUntil(t, "the new session", func() bool { return h.eng.Snapshot().BusConnected })
+		if s := h.eng.Snapshot(); len(s.LEDs.Strip) != 0 || len(s.LEDs.Segments) != 0 {
+			t.Fatalf("new session: strip %v segments %v, want both empty until the manifest", s.LEDs.Strip, s.LEDs.Segments)
+		}
+	})
+	t.Run("a published snapshot is not changed by later frames", func(t *testing.T) {
+		h := newLEDHarness(t, ledChan(5, "board:0:0"))
+		before := h.eng.Snapshot()
+		h.fw.send(ledPx(blue))
+		h.ledBarrier(0.13)
+		if before.LEDs.Strip[0] != "#000000" {
+			t.Fatalf("an earlier snapshot changed to %v", before.LEDs.Strip)
+		}
+		if h.eng.Snapshot().LEDs.Strip[0] != "#0000ff" {
+			t.Fatalf("the new frame is missing: %v", h.eng.Snapshot().LEDs.Strip)
+		}
+	})
+}
