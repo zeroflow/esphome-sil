@@ -32,10 +32,10 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 
 ### Plant Model
 
-- [ ] **MODEL-01**: Each fan port runs a linear duty→RPM model with min duty, start threshold (with hysteresis against stall), max RPM and first-order lag (exact exponential update)
-- [ ] **MODEL-02**: Fan parameters come from a `fan.toml` in the fan library; unknown keys are rejected; at least one fan ships in M1
+- [x] **MODEL-01**: Each fan port runs a linear duty→RPM model with min duty, start threshold (with hysteresis against stall), max RPM and first-order lag (exact exponential update)
+- [x] **MODEL-02**: Fan parameters come from a `fan.toml` in the fan library; unknown keys are rejected; at least one fan ships in M1
 - [ ] **MODEL-03**: Developer can choose which library fan is plugged into which port
-- [ ] **MODEL-04**: The simulator reads time only from an injectable clock and integrates by `dt`; sim-bus messages carry sim timestamps; a lint bans wall-clock calls outside the clock (time factor stays fixed at 1 in M1)
+- [x] **MODEL-04**: The simulator reads time only from an injectable clock and integrates by `dt`; sim-bus messages carry sim timestamps; a lint bans wall-clock calls outside the clock (time factor stays fixed at 1 in M1)
 
 ### Example Firmware
 
@@ -137,10 +137,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | IO-04 | Phase 2 | Pending |
 | IO-05 | Phase 2 | Pending |
 | IO-06 | Phase 1 | Pending |
-| MODEL-01 | Phase 1 | Pending |
-| MODEL-02 | Phase 1 | Pending |
+| MODEL-01 | Phase 1 | Complete |
+| MODEL-02 | Phase 1 | Complete |
 | MODEL-03 | Phase 2 | Pending |
-| MODEL-04 | Phase 1 | Pending |
+| MODEL-04 | Phase 1 | Complete |
 | FW-01 | Phase 2 | Pending |
 | FW-02 | Phase 2 | Pending |
 | FW-03 | Phase 2 | Pending |

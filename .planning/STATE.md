@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
 status: executing
-stopped_at: Completed 01-04-PLAN.md
-last_updated: "2026-11-09T01:11:23.865Z"
+stopped_at: Completed 01-05-PLAN.md
+last_updated: "2026-11-09T01:19:07.139Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: fb885a70f4bf318277f07419f66dc018454cd4e5
+state_head: c79e52cb4507cbc32b22ccaa7ce1d9badb8e84a4
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 4
+  completed_plans: 5
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
-Plan: 5 of 13
+Plan: 6 of 13
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 1 execution started
 
@@ -60,6 +60,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P02 | 20min | 2 tasks | 12 files |
 | Phase 01 P03 | 10min | 2 tasks | 11 files |
 | Phase 1 P04 | 3 min | 2 tasks | 3 files |
+| Phase 01 P05 | 6 min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -81,6 +82,8 @@ Recent decisions affecting current work:
 - [Phase 01]: 01-03 D-02: engine is a goroutine in sil serve with fresh state per engine.New; engine.Run owns bus.Listen and socket unlink; supervisor owns lifecycle of engine slot and firmware process group; a sim restart (01-10) keeps the firmware PID
 - [Phase 01]: 01-03: control API only on <run>/api.sock (0600); run-dir parent must be a real 0700 dir owned by the user (run_dir_unsafe otherwise)
 - [Phase 1]: 01-04: clock.Manual delivers tick/timer values by blocking unbuffered sends; Timer.Stop is false exactly when Advance already took the timer
+- [Phase 01]: 01-05: start_duty == min_duty accepted as a zero-width hysteresis band; only start_duty < min_duty rejected
+- [Phase 01]: 01-05: missing fan.toml key reports <file>: missing required key <key> (no line); unknown keys report file:line:col; non-finite numbers rejected; NaN duty treated as 0 in model.Step
 
 ### Pending Todos
 
@@ -95,6 +98,7 @@ None yet.
 - [Phase 2] Live HA behaviour with the stable-MAC scheme is unverified (research read HA source, no live run)
 - [Later] Static linking with real product modules (DNS, `json:`) is unverified; run-in-image fallback stays available
 - [Later] Host `select()` timeout lives in `core/wake/wake_host.cpp::wakeable_delay` in 2026.10.1, not `core/application.cpp` as PROJECT.md says (affects the time-factor milestone)
+- 01-05 A1 (non-blocking): Arctic start_duty 0.10, tau_up 1.0 s, tau_down 2.5 s are ASSUMED; maintainer to confirm or measure (fans/arctic-p12-pwm-pst.toml)
 
 ## Deferred Items
 
@@ -106,8 +110,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T01:11:23.837Z
-Stopped at: Completed 01-04-PLAN.md
+Last session: 2026-11-09T01:19:07.110Z
+Stopped at: Completed 01-05-PLAN.md
 Resume file: None
 
 ## Needs Human
