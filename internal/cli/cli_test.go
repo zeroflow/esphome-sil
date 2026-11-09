@@ -99,6 +99,8 @@ type fakeControl struct {
 	mu              sync.Mutex
 	calls           []string
 	sim             []control.SimRestartRequest
+	press           []control.PressRequest
+	edges           []bool
 	status          control.Status
 	err             error
 	onDown          func() // runs when a down request arrives (e.g. to end the stand-in supervisor)
@@ -131,6 +133,24 @@ func (f *fakeControl) SimRestart(_ context.Context, r control.SimRestartRequest)
 
 func (f *fakeControl) FwRestart(context.Context) (control.Status, error) {
 	return f.status, f.record("fw.restart")
+}
+
+func (f *fakeControl) Press(_ context.Context, id string, r control.PressRequest) (control.PressResult, error) {
+	f.mu.Lock()
+	f.press = append(f.press, r)
+	f.mu.Unlock()
+	return control.PressResult{Button: id, Action: "press", HoldMS: r.HoldMS, TDownUS: 5, TUpUS: 5 + r.HoldMS*1000}, f.record("press." + id)
+}
+
+func (f *fakeControl) SetButton(_ context.Context, id string, down bool) (control.PressResult, error) {
+	f.mu.Lock()
+	f.edges = append(f.edges, down)
+	f.mu.Unlock()
+	action := "up"
+	if down {
+		action = "down"
+	}
+	return control.PressResult{Button: id, Action: action, Level: down}, f.record(action + "." + id)
 }
 
 func (f *fakeControl) seen() []string {
@@ -539,5 +559,112 @@ func TestRunFileDoesNotChooseTheSocket(t *testing.T) {
 	}
 	if r := run(t, "status", "fan"); r.exit != 0 || r.object(t)["instance"] != "fan" {
 		t.Fatalf("exit %d, %s", r.exit, r.stdout)
+	}
+}
+
+// TestPressHolds: the presets, --hold, the instance selectors and the one JSON value.
+func TestPressHolds(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want int64
+	}{
+		{[]string{"press", "usr1", "-i", "fan"}, 200},
+		{[]string{"press", "usr2", "--long", "-i", "fan"}, 1500},
+		{[]string{"press", "usr1", "--hold", "750ms", "--instance", "fan"}, 750},
+		{[]string{"press", "usr3", "--hold", "2s", "-i", "fan"}, 2000},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			cliEnv(t)
+			fc := &fakeControl{status: readyStatus("fan")}
+			liveInstance(t, "fan", fc)
+			r := run(t, tc.args...)
+			if r.exit != 0 {
+				t.Fatalf("exit %d, stdout %s", r.exit, r.stdout)
+			}
+			fc.mu.Lock()
+			got := append([]control.PressRequest(nil), fc.press...)
+			fc.mu.Unlock()
+			if len(got) != 1 || got[0].HoldMS != tc.want {
+				t.Fatalf("hold requests %v, want one of %d ms", got, tc.want)
+			}
+			var res control.PressResult
+			if err := json.Unmarshal([]byte(r.stdout), &res); err != nil || res.Button != tc.args[1] || res.Action != "press" || res.HoldMS != tc.want {
+				t.Fatalf("result %s (%v)", r.stdout, err)
+			}
+		})
+	}
+}
+
+// An explicit --hold 0s is not silently replaced by a preset: the server rejects it.
+func TestPressHoldZeroIsRejected(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan")}
+	liveInstance(t, "fan", fc)
+	r := run(t, "press", "usr1", "--hold", "0s", "-i", "fan")
+	if r.exit != 1 || r.errCode(t) != "invalid_argument" || len(fc.press) != 0 {
+		t.Fatalf("exit %d, stdout %s, presses %v, want exit 1 invalid_argument and no press", r.exit, r.stdout, fc.press)
+	}
+}
+
+func TestPressInstanceFromEnvAndSingleLive(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan")}
+	liveInstance(t, "fan", fc)
+	if r := run(t, "press", "usr1"); r.exit != 0 {
+		t.Fatalf("single live instance: exit %d, %s", r.exit, r.stdout)
+	}
+	t.Setenv(envInstance, "fan")
+	if r := run(t, "press", "usr1", "--long"); r.exit != 0 {
+		t.Fatalf("SIL_INSTANCE: exit %d, %s", r.exit, r.stdout)
+	}
+	if len(fc.press) != 2 || fc.press[0].HoldMS != 200 || fc.press[1].HoldMS != 1500 {
+		t.Fatalf("hold requests %v, want 200 then 1500", fc.press)
+	}
+}
+
+func TestPressDownUp(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan")}
+	liveInstance(t, "fan", fc)
+	r := run(t, "press", "usr1", "--down", "-i", "fan")
+	if r.exit != 0 || r.object(t)["action"] != "down" || r.object(t)["level"] != true {
+		t.Fatalf("--down: exit %d, %s", r.exit, r.stdout)
+	}
+	r = run(t, "press", "usr1", "--up", "-i", "fan")
+	if r.exit != 0 || r.object(t)["action"] != "up" || r.object(t)["level"] != false {
+		t.Fatalf("--up: exit %d, %s", r.exit, r.stdout)
+	}
+	if len(fc.press) != 0 || len(fc.edges) != 2 || !fc.edges[0] || fc.edges[1] {
+		t.Fatalf("presses %v, edges %v, want no press and edges [true false]", fc.press, fc.edges)
+	}
+}
+
+func TestPressModesAreExclusive(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan")}
+	liveInstance(t, "fan", fc)
+	for _, args := range [][]string{
+		{"press", "usr1", "--long", "--hold", "1s", "-i", "fan"},
+		{"press", "usr1", "--down", "--up", "-i", "fan"},
+		{"press", "usr1", "--long", "--down", "-i", "fan"},
+		{"press", "usr1", "--hold", "1s", "--up", "-i", "fan"},
+	} {
+		r := run(t, args...)
+		if r.exit != 1 || r.errCode(t) != "invalid_argument" {
+			t.Fatalf("sil %v: exit %d, stdout %s, want exit 1 invalid_argument", args, r.exit, r.stdout)
+		}
+	}
+	if len(fc.seen()) != 0 {
+		t.Fatalf("a parse error reached the control API: %v", fc.seen())
+	}
+}
+
+func TestPressErrorsKeepTheirCode(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan"), err: apperr.Failed("button_busy", "held", map[string]any{"button": "usr1"})}
+	liveInstance(t, "fan", fc)
+	r := run(t, "press", "usr1", "-i", "fan")
+	if r.exit != 1 || r.errCode(t) != "button_busy" || r.detail(t)["button"] != "usr1" {
+		t.Fatalf("exit %d, stdout %s, want exit 1 button_busy with detail.button usr1", r.exit, r.stdout)
 	}
 }

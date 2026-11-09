@@ -3,6 +3,7 @@ package engine
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -588,5 +589,193 @@ func TestEngineStoppedSnapshotIsDisconnected(t *testing.T) {
 	waitUntil(t, "the final snapshot", func() bool { return !h.eng.Snapshot().BusConnected })
 	if s := h.eng.Snapshot(); s.Synced || s.BusProto != 0 {
 		t.Fatalf("after the stop: synced %v proto %d, want false and 0", s.Synced, s.BusProto)
+	}
+}
+
+// buttonManifest is the Rev 3.3 manifest: the ports plus the buttons except those in skip.
+func buttonManifest(skip ...string) []bus.Channel {
+	chs := fullManifest()
+	for _, id := range ButtonIDs {
+		omit := false
+		for _, s := range skip {
+			omit = omit || s == id
+		}
+		if !omit {
+			chs = append(chs, bus.Channel{Ch: id, Dir: "in", Type: "f32"})
+		}
+	}
+	return chs
+}
+
+// newButtonHarness is newHarness with a manifest that announces the buttons.
+func newButtonHarness(t *testing.T, skip ...string) *harness {
+	t.Helper()
+	h := startEngine(t)
+	h.fw = h.dial()
+	h.fw.session(buttonManifest(skip...))
+	waitUntil(t, "the manifest to be checked", func() bool { return h.eng.Snapshot().Synced })
+	return h
+}
+
+// buttonFrames returns the recorded in frames for button id.
+func (fw *firmware) buttonFrames(id string) []bus.Frame { return fw.rpmFrames(id) }
+
+func setButton(t *testing.T, e *Engine, id string, level, strict bool) (time.Duration, error) {
+	t.Helper()
+	ctx, cancel := clock.WithTimeout(context.Background(), clock.NewReal(), guard)
+	defer cancel()
+	return e.SetButton(ctx, id, level, strict)
+}
+
+func TestEngineButtonsStartReleased(t *testing.T) {
+	h := newButtonHarness(t)
+	b := h.eng.Snapshot().Buttons
+	if len(b) != len(ButtonIDs) {
+		t.Fatalf("Buttons = %v, want all of %v", b, ButtonIDs)
+	}
+	for _, id := range ButtonIDs {
+		if v, ok := b[id]; !ok || v {
+			t.Fatalf("Buttons[%s] = %v (present %v), want false", id, v, ok)
+		}
+	}
+}
+
+func TestEngineSetButtonErrors(t *testing.T) {
+	t.Run("before the hello", func(t *testing.T) {
+		h := startEngine(t) // listening, no firmware
+		if _, err := setButton(t, h.eng, "usr1", true, true); !errors.Is(err, ErrNotConnected) {
+			t.Fatalf("strict down without a firmware: %v, want ErrNotConnected", err)
+		}
+	})
+	t.Run("hello without a manifest", func(t *testing.T) {
+		h := startEngine(t)
+		fw := h.dial()
+		fw.send(bus.NewFrame("hello").Int("proto", bus.Proto).Str("name", "test-fw").Int("chans", 8).Int("t", 0))
+		waitUntil(t, "the engine to record the connection", func() bool { return h.eng.Snapshot().BusConnected })
+		if _, err := setButton(t, h.eng, "usr1", true, true); !errors.Is(err, ErrNotConnected) {
+			t.Fatalf("strict down before the manifest: %v, want ErrNotConnected", err)
+		}
+	})
+	t.Run("input not in the manifest", func(t *testing.T) {
+		h := newButtonHarness(t, "usr2")
+		if _, err := setButton(t, h.eng, "usr2", true, true); !errors.Is(err, ErrInputNotAvailable) {
+			t.Fatalf("down on usr2 without that channel: %v, want ErrInputNotAvailable", err)
+		}
+		if w := h.eng.Snapshot().Warnings; len(w) != 0 {
+			t.Fatalf("a missing optional button channel warned: %q", w)
+		}
+		if _, err := setButton(t, h.eng, "usr1", true, true); err != nil {
+			t.Fatalf("down on usr1: %v", err)
+		}
+	})
+	t.Run("busy and not held", func(t *testing.T) {
+		h := newButtonHarness(t)
+		if _, err := setButton(t, h.eng, "usr1", false, true); !errors.Is(err, ErrButtonNotHeld) {
+			t.Fatalf("strict up on a released button: %v, want ErrButtonNotHeld", err)
+		}
+		if _, err := setButton(t, h.eng, "usr1", false, false); err != nil {
+			t.Fatalf("non-strict up on a released button: %v, want nil", err)
+		}
+		if _, err := setButton(t, h.eng, "usr1", true, true); err != nil {
+			t.Fatalf("first down: %v", err)
+		}
+		if _, err := setButton(t, h.eng, "usr1", true, true); !errors.Is(err, ErrButtonBusy) {
+			t.Fatalf("second down: %v, want ErrButtonBusy", err)
+		}
+		if _, err := setButton(t, h.eng, "usr3", true, true); err != nil {
+			t.Fatalf("down on another button while usr1 is held: %v", err)
+		}
+		if _, err := setButton(t, h.eng, "usr1", false, true); err != nil {
+			t.Fatalf("up on a held button: %v", err)
+		}
+	})
+	t.Run("unknown id", func(t *testing.T) {
+		h := newButtonHarness(t)
+		if _, err := setButton(t, h.eng, "usr9", true, false); err == nil {
+			t.Fatal("an id outside ButtonIDs was accepted")
+		}
+	})
+}
+
+func TestEngineSetButtonSendsOneFrameAtTheEdge(t *testing.T) {
+	h := newButtonHarness(t)
+	h.clk.Advance(750 * time.Millisecond)
+	waitUntil(t, "SimTime == 750 ms", func() bool { return h.eng.Snapshot().SimTime == 750*time.Millisecond })
+	before := len(h.fw.buttonFrames("usr1"))
+
+	edge, err := setButton(t, h.eng, "usr1", true, true)
+	if err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	waitUntil(t, "the usr1 frame", func() bool { return len(h.fw.buttonFrames("usr1")) == before+1 })
+	fr := h.fw.buttonFrames("usr1")
+	last := fr[len(fr)-1]
+	if v, ok := last.GetF32("v"); !ok || v != 1 {
+		t.Fatalf("frame %s: v %v (present %v), want 1", last, v, ok)
+	}
+	if tm, ok := last.GetInt("t"); !ok || tm != edge.Microseconds() {
+		t.Fatalf("frame t = %d (present %v), want the edge time %d", tm, ok, edge.Microseconds())
+	}
+	if edge < 750*time.Millisecond {
+		t.Fatalf("edge time %v is before the sim time 750 ms", edge)
+	}
+	if !h.eng.Snapshot().Buttons["usr1"] {
+		t.Fatal("Snapshot.Buttons[usr1] is false after the down")
+	}
+
+	h.clk.Advance(200 * time.Millisecond)
+	edge2, err := setButton(t, h.eng, "usr1", false, true)
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if edge2-edge < 200*time.Millisecond {
+		t.Fatalf("up edge %v is less than 200 ms after the down edge %v", edge2, edge)
+	}
+	waitUntil(t, "the release frame", func() bool { return len(h.fw.buttonFrames("usr1")) == before+2 })
+	fr = h.fw.buttonFrames("usr1")
+	if v, _ := fr[len(fr)-1].GetF32("v"); v != 0 {
+		t.Fatalf("release frame %s, want v 0", fr[len(fr)-1])
+	}
+	if h.eng.Snapshot().Buttons["usr1"] {
+		t.Fatal("Snapshot.Buttons[usr1] is true after the up")
+	}
+}
+
+// A button that is held when the firmware reconnects is announced as held in the new in-snapshot.
+func TestEngineHeldButtonSurvivesAFirmwareReconnect(t *testing.T) {
+	h := newButtonHarness(t)
+	if _, err := setButton(t, h.eng, "usr2", true, true); err != nil {
+		t.Fatal(err)
+	}
+	fw2 := h.dial()
+	fw2.session(buttonManifest())
+	fw2.waitKinds(9)
+	fr := fw2.buttonFrames("usr2")
+	if len(fr) == 0 {
+		t.Fatal("no usr2 frame on the new connection")
+	}
+	if v, _ := fr[0].GetF32("v"); v != 1 {
+		t.Fatalf("usr2 in the new snapshot = %v, want 1 (still held)", v)
+	}
+}
+
+func TestEngineSetButtonAfterStopAnswersAtOnce(t *testing.T) {
+	h := newButtonHarness(t)
+	h.cancel()
+	waitUntil(t, "the engine to stop", func() bool { return !h.eng.Snapshot().BusConnected })
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.eng.SetButton(context.Background(), "usr1", false, false)
+		done <- err
+	}()
+	tm := clock.NewReal().NewTimer(guard)
+	defer tm.Stop()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrStopped) {
+			t.Fatalf("SetButton after Run returned: %v, want ErrStopped", err)
+		}
+	case <-tm.C():
+		t.Fatal("SetButton blocked on a stopped engine")
 	}
 }
