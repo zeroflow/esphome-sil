@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
 status: executing
-stopped_at: Completed 01-10-PLAN.md
-last_updated: "2026-11-09T02:46:53.349Z"
+stopped_at: Completed 01-11-PLAN.md
+last_updated: "2026-11-09T03:01:17.934Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: 0c6e39db3f66926a838336c308d98bcee03d39d7
+state_head: 58307c5784b19d42d2a694b2a629e403882e34a1
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 10
+  completed_plans: 11
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
-Plan: 11 of 13
+Plan: 12 of 13
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 1 execution started
 
@@ -66,6 +66,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P08 | 20min | 2 tasks | 15 files |
 | Phase 01 P09 | 15min | 2 tasks | 11 files |
 | Phase 01 P10 | 27 min | 2 tasks | 13 files |
+| Phase 01 P11 | 13 min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -102,6 +103,9 @@ Recent decisions affecting current work:
 - [Phase 01]: 01-10: a connection becomes the active sim-bus session at its first valid hello, so stray clients never disturb a running session; a newer hello replaces the older (bye, close)
 - [Phase 01]: 01-10: Server.Send is held between a hello and the queued snapshot so welcome and the in-snapshot always precede steady frames; the hub's reconnect backoff is 100 ms to 2 s reset by welcome, TX cap 64 KiB
 - [Phase 01]: 01-10: sim restart keeps the monotonic sim clock (only the World is fresh); restarts, fw restart and shutdown serialize on one supervisor mutex while status never takes it
+- [Phase 01]: 01-11: unrequested firmware exits restart via a goroutine under opMu that gives up if the process was replaced or the instance is stopping; restarts counts started processes
+- [Phase 01]: 01-11: sil down fallback is SIGTERM (5 s) then SIGKILL of the run.json pid, gated by /proc cmdline; instance.ReadRunFile now reports not_running for a dead/foreign pid (LoadRunFile is the raw read)
+- [Phase 01]: 01-11: last_exit.signal uses POSIX names via SignalName; firmware_crash_loop keeps exit class 1 in sil up through lifecycle.userClass
 
 ### Pending Todos
 
@@ -128,8 +132,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T02:46:53.314Z
-Stopped at: Completed 01-10-PLAN.md
+Last session: 2026-11-09T03:01:17.902Z
+Stopped at: Completed 01-11-PLAN.md
 Resume file: None
 
 ## Needs Human
