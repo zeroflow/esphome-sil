@@ -149,6 +149,66 @@ func TestLayoutDesktop(t *testing.T) {
 	if !near(g.Strip.H, 128, 1) {
 		t.Errorf("bottom strip height = %v, want 128", g.Strip.H)
 	}
+
+	// The strip holds every group (LEDs, buttons, environment) inside its content box, and the LED
+	// group (the tallest) fits that content with no inner scrolling (UIC-16, 03-12 final check).
+	var sg struct {
+		Content box
+		Groups  []struct {
+			ID string `json:"id"`
+			box
+		}
+		LedsScroll, LedsClient float64
+		LedsNatural            float64
+		Lenses                 int
+		Controls               int
+	}
+	const stripJS = `(() => { ` + rectJS + `
+	  const strip = document.getElementById('strip'), r = strip.getBoundingClientRect(), cs = getComputedStyle(strip);
+	  const f = (v) => parseFloat(v);
+	  const content = {l: r.left + f(cs.borderLeftWidth) + f(cs.paddingLeft), t: r.top + f(cs.borderTopWidth) + f(cs.paddingTop),
+	    r: r.right - f(cs.borderRightWidth) - f(cs.paddingRight), b: r.bottom - f(cs.borderBottomWidth) - f(cs.paddingBottom)};
+	  content.w = content.r - content.l; content.h = content.b - content.t;
+	  const leds = document.getElementById('leds'), lg = document.getElementById('leds-group');
+	  // The group's natural height: its children and the gaps between them (the group itself is stretched to the strip).
+	  const kids = [...lg.children], gap = f(getComputedStyle(lg).rowGap) || 0;
+	  const natural = kids.reduce((n, k) => n + (k === leds ? leds.scrollHeight + f(getComputedStyle(leds).borderTopWidth) + f(getComputedStyle(leds).borderBottomWidth) : k.getBoundingClientRect().height), 0) + gap * (kids.length - 1);
+	  return {Content: content, LedsNatural: natural,
+	    Groups: [...strip.querySelectorAll(':scope > .group')].map((e) => Object.assign({id: e.id}, rect(e))),
+	    LedsScroll: leds.scrollHeight, LedsClient: leds.clientHeight,
+	    Lenses: leds.querySelectorAll('.lens').length,
+	    Controls: strip.querySelectorAll('button, input').length};
+	})()`
+	if err := p.Eval(within(t, 10*time.Second), stripJS, &sg); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("strip content %+v", sg.Content)
+	for _, grp := range sg.Groups {
+		t.Logf("strip group %s: %+v", grp.ID, grp.box)
+	}
+	ids := make([]string, 0, len(sg.Groups))
+	for _, grp := range sg.Groups {
+		ids = append(ids, grp.ID)
+		if grp.T < sg.Content.T-0.5 || grp.B > sg.Content.B+0.5 || grp.L < sg.Content.L-0.5 || grp.R > sg.Content.R+0.5 {
+			t.Errorf("strip group %s %+v sticks out of the strip content %+v", grp.ID, grp.box, sg.Content)
+		}
+	}
+	if strings.Join(ids, ",") != "leds-group,usr-group,env-group" {
+		t.Errorf("strip groups = %v, want leds-group, usr-group, env-group", ids)
+	}
+	t.Logf("LED group natural height %v, strip content %v", sg.LedsNatural, sg.Content.H)
+	if sg.LedsNatural > sg.Content.H+0.5 {
+		t.Errorf("the LED group needs %v px, the strip content is only %v", sg.LedsNatural, sg.Content.H)
+	}
+	if sg.Lenses != 5 {
+		t.Errorf("%d LED lenses in the strip, want 5", sg.Lenses)
+	}
+	if sg.Controls != 6 {
+		t.Errorf("%d buttons and inputs in the strip, want 6 (USR1-3, TEMPERATURE, HUMIDITY, APPLY VALUES)", sg.Controls)
+	}
+	if sg.LedsScroll > sg.LedsClient {
+		t.Errorf("the LED box scrolls inside the strip: scroll height %v > %v", sg.LedsScroll, sg.LedsClient)
+	}
 	if len(g.Panels) != 4 {
 		t.Fatalf("%d panels, want 4", len(g.Panels))
 	}
@@ -337,7 +397,8 @@ func TestLayoutNarrow(t *testing.T) {
 }
 
 // TestLayoutPhone: at 390 x 844 (mobile) the page is one column without sideways overflow, every
-// control is at least 44 x 44, and a panel's top row splits into chip + fan above the readouts.
+// real control (fan selects, USR caps, the two inputs, APPLY VALUES) is at least 44 x 44, every
+// scope is at least 128 px high, and a panel's top row splits into chip + fan above the readouts.
 func TestLayoutPhone(t *testing.T) {
 	b := newBench(t)
 	base := newSite(t, b)
@@ -350,17 +411,21 @@ func TestLayoutPhone(t *testing.T) {
 		Panels          []box
 		Chip, Fan, Rpm  box
 		Duty            box
-		Controls        []box
+		Controls        []struct {
+			Name string `json:"name"`
+			box
+		}
+		Scopes []box
 	}
 	js := `(() => { ` + rectJS + `
-	  const strip = document.getElementById('strip');
-	  const controls = ['button', 'select', 'input'].map((tag) => { const el = document.createElement(tag); strip.appendChild(el); return rect(el); });
 	  const q = document.querySelector('#ports .port');
+	  const name = (el) => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (el.getAttribute('aria-label') ? '[' + el.getAttribute('aria-label') + ']' : '');
 	  return {ScrollW: document.documentElement.scrollWidth, InnerW: window.innerWidth,
 	    Panels: [...document.querySelectorAll('#ports .port')].map(rect),
 	    Chip: rect(q.querySelector('.chip')), Fan: rect(q.querySelector('.fan')),
 	    Rpm: rect(q.querySelector('.readout .value[data-fmt="rpm"]')), Duty: rect(q.querySelector('.readout .value[data-fmt="pct"]')),
-	    Controls: controls};
+	    Controls: [...document.querySelectorAll('button, select, input')].map((el) => Object.assign({name: name(el)}, rect(el))),
+	    Scopes: [...document.querySelectorAll('#ports .scope')].map(rect)};
 	})()`
 	if err := p.Eval(within(t, 10*time.Second), js, &g); err != nil {
 		t.Fatal(err)
@@ -376,9 +441,24 @@ func TestLayoutPhone(t *testing.T) {
 	if g.ScrollW > g.InnerW {
 		t.Errorf("sideways overflow at 390 px: scroll width %v > %v", g.ScrollW, g.InnerW)
 	}
-	for i, c := range g.Controls {
+	// 4 fan selects + USR1-3 + TEMPERATURE + HUMIDITY + APPLY VALUES.
+	if len(g.Controls) != 10 {
+		t.Errorf("%d controls on the page, want 10 (4 selects, 3 USR caps, 2 inputs, APPLY VALUES): %+v", len(g.Controls), g.Controls)
+	}
+	for _, c := range g.Controls {
 		if c.H < 44 || c.W < 44 {
-			t.Errorf("%s is %v x %v, want at least 44 x 44", []string{"button", "select", "input"}[i], c.W, c.H)
+			t.Errorf("%s is %v x %v, want at least 44 x 44", c.Name, c.W, c.H)
+		}
+		if c.R > g.InnerW+0.5 {
+			t.Errorf("%s runs past the %v px viewport: %+v", c.Name, g.InnerW, c.box)
+		}
+	}
+	if len(g.Scopes) != 4 {
+		t.Errorf("%d scopes, want 4", len(g.Scopes))
+	}
+	for i, s := range g.Scopes {
+		if s.H < 128 {
+			t.Errorf("scope %d is %v px high, want at least 128", i+1, s.H)
 		}
 	}
 	if g.Chip.B > g.Rpm.T+0.5 || g.Fan.B > g.Rpm.T+0.5 || g.Chip.B > g.Duty.T+0.5 {

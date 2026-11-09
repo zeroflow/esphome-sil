@@ -9,12 +9,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1111,4 +1114,450 @@ func TestWebHold(t *testing.T) {
 	if errs := page.ConsoleErrors(); len(errs) != 0 {
 		t.Errorf("console errors: %v", errs)
 	}
+}
+
+// accLookup walks a dotted path through decoded JSON (object keys, array indexes as numbers) and
+// reports whether every step exists.
+func accLookup(v any, path string) (any, bool) {
+	for _, key := range strings.Split(path, ".") {
+		switch c := v.(type) {
+		case map[string]any:
+			next, ok := c[key]
+			if !ok {
+				return nil, false
+			}
+			v = next
+		case []any:
+			i, err := strconv.Atoi(key)
+			if err != nil || i < 0 || i >= len(c) {
+				return nil, false
+			}
+			v = c[i]
+		default:
+			return nil, false
+		}
+	}
+	return v, true
+}
+
+// accDiff lists the paths where a and b differ. A path in skip is not compared; a path in near is
+// compared as numbers within the given tolerance (the paths use the form `ports.0.rpm`).
+func accDiff(path string, a, b any, skip map[string]bool, near map[string]float64) []string {
+	if skip[path] {
+		return nil
+	}
+	switch av := a.(type) {
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok {
+			return []string{path}
+		}
+		keys := map[string]bool{}
+		for k := range av {
+			keys[k] = true
+		}
+		for k := range bv {
+			keys[k] = true
+		}
+		var out []string
+		for k := range keys {
+			child := k
+			if path != "" {
+				child = path + "." + k
+			}
+			out = append(out, accDiff(child, av[k], bv[k], skip, near)...)
+		}
+		sort.Strings(out)
+		return out
+	case []any:
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return []string{path}
+		}
+		var out []string
+		for i := range av {
+			out = append(out, accDiff(fmt.Sprintf("%s.%d", path, i), av[i], bv[i], skip, near)...)
+		}
+		return out
+	case float64:
+		bv, ok := b.(float64)
+		if !ok {
+			return []string{path}
+		}
+		tol := 0.0
+		for pat, tolerance := range near {
+			if accPathMatch(pat, path) {
+				tol = tolerance
+			}
+		}
+		if math.Abs(av-bv) > tol {
+			return []string{path}
+		}
+		return nil
+	}
+	if fmt.Sprintf("%T:%v", a, a) != fmt.Sprintf("%T:%v", b, b) {
+		return []string{path}
+	}
+	return nil
+}
+
+// accPathMatch reports whether path matches pattern, where a `*` segment matches any one segment.
+func accPathMatch(pattern, path string) bool {
+	ps, xs := strings.Split(pattern, "."), strings.Split(path, ".")
+	if len(ps) != len(xs) {
+		return false
+	}
+	for i := range ps {
+		if ps[i] != "*" && ps[i] != xs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestWebAcceptance (UI-01..UI-06, Phase 3 success criteria 1-5) runs the whole page, offline, against
+// the real Rev 3.3 firmware: the page shows what `sil status` reports, driving the page does to the
+// firmware and to an API client (the Home Assistant proxy) what the CLI does, the page store equals
+// the status JSON, and the open page survives a simulator restart and a `sil down` + `sil up`
+// without a reload (D-10). The subtests share one instance and one page and run in order.
+func TestWebAcceptance(t *testing.T) {
+	const name = "e2e-webacc"
+	const noctua = "noctua-nf-a12x25-pwm"
+	in := r33Up(t, name)
+	start := sysClock.Now()
+	st0 := in.env.Status(t, name)
+	port := int(jget(st0, "web", "port").(float64))
+
+	lctx, lcancel := clock.WithTimeout(context.Background(), sysClock, 10*time.Minute)
+	defer lcancel()
+	b, err := cdptest.Launch(lctx, sysClock, cdptest.LaunchOptions{Offline: true, Width: 1280, Height: 720})
+	if errors.Is(err, cdptest.ErrNoChrome) {
+		t.Fatal("Chrome not found; install google-chrome or set SIL_CHROME")
+	}
+	if err != nil {
+		t.Fatalf("launch Chrome: %v", err)
+	}
+	defer b.Close()
+	nctx, ncancel := clock.WithTimeout(context.Background(), sysClock, 60*time.Second)
+	defer ncancel()
+	page, err := b.NewPage(nctx)
+	if err != nil {
+		t.Fatalf("new page: %v", err)
+	}
+	defer page.Close()
+	base := webBase(port) + "/"
+
+	// ctx bounds one call of a subtest; wait polls a page predicate.
+	ctx := func(d time.Duration) context.Context {
+		c, cancel := clock.WithTimeout(context.Background(), sysClock, d)
+		t.Cleanup(cancel)
+		return c
+	}
+	wait := func(t *testing.T, what, pred string, budget time.Duration) {
+		t.Helper()
+		if err := page.WaitFor(ctx(budget), pred); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	eval := func(t *testing.T, js string, out any) {
+		t.Helper()
+		if err := page.Eval(ctx(20*time.Second), js, out); err != nil {
+			t.Fatalf("page eval %.80q: %v", js, err)
+		}
+	}
+	const linkIs = `document.getElementById('link').textContent === `
+	historyRequests := func() (history, sockets int) {
+		for _, r := range page.Requests() {
+			u, err := url.Parse(r.URL)
+			if err != nil {
+				continue
+			}
+			switch {
+			case r.Kind == "http" && r.Method == http.MethodGet && u.Path == "/api/v1/history":
+				history++
+			case r.Kind == "ws" && u.Path == "/ws":
+				sockets++
+			}
+		}
+		return history, sockets
+	}
+	// hold presses the cap of a USR button with the mouse for d and releases it.
+	hold := func(t *testing.T, id string, d time.Duration) {
+		t.Helper()
+		sel := `button.usr[data-id="` + id + `"]`
+		wait(t, "the "+id+" cap enabled and dark", `(() => { const c = document.querySelector('`+sel+`'); return !c.disabled && c.getAttribute('aria-pressed') === 'false'; })()`, 10*time.Second)
+		x, y, err := page.Center(ctx(10*time.Second), sel)
+		if err != nil {
+			t.Fatalf("centre of %s: %v", id, err)
+		}
+		if err := page.Mouse(ctx(10*time.Second), "mousePressed", x, y); err != nil {
+			t.Fatalf("mouse press on %s: %v", id, err)
+		}
+		in.env.WaitStatus(t, name, 5*time.Second, func(st map[string]any) bool {
+			level, _ := r33Buttons(st, id)
+			return level
+		})
+		if err := sysClock.Sleep(ctx(d+5*time.Second), d); err != nil {
+			t.Fatal(err)
+		}
+		if err := page.Mouse(ctx(10*time.Second), "mouseReleased", x, y); err != nil {
+			t.Fatalf("mouse release on %s: %v", id, err)
+		}
+	}
+
+	if err := page.Navigate(ctx(60*time.Second), base); err != nil {
+		t.Fatalf("navigate to %s: %v", base, err)
+	}
+
+	t.Run("loads_offline", func(t *testing.T) {
+		wait(t, "LINK LIVE", linkIs+`'LIVE'`, 15*time.Second)
+		wait(t, "the instance name", `document.querySelector('[data-src="instance"]').textContent === '`+name+`'`, 5*time.Second)
+		var n struct{ Panels, Lenses int }
+		eval(t, `({Panels: document.querySelectorAll('#ports .port').length, Lenses: document.querySelectorAll('#leds .lens').length})`, &n)
+		if n.Panels != 4 || n.Lenses != 5 {
+			t.Errorf("%d port panels and %d LED lenses, want 4 and 5", n.Panels, n.Lenses)
+		}
+		if errs := page.ConsoleErrors(); len(errs) != 0 {
+			t.Errorf("console errors: %v", errs)
+		}
+		reqs := page.Requests()
+		sawWS := false
+		for _, r := range reqs {
+			if !cdptest.SameOrigin(base, r.URL) {
+				t.Errorf("request %s %s (%s) is not same-origin with %s", r.Method, r.URL, r.Kind, base)
+			}
+			if u, err := url.Parse(r.URL); r.Kind == "ws" && err == nil && u.Path == "/ws" {
+				sawWS = true
+			}
+		}
+		if !sawWS {
+			t.Errorf("no WebSocket entry for /ws among the recorded requests: %v", reqs)
+		}
+		if len(reqs) < 5 {
+			t.Errorf("only %d requests recorded: the recorder is not seeing the page: %v", len(reqs), reqs)
+		}
+	})
+
+	t.Run("leds_match", func(t *testing.T) {
+		if err := sysClock.Sleep(ctx(10*time.Second), 3*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		st := in.env.Status(t, name)
+		strip := jgetSlice(st, "leds", "strip")
+		if len(strip) != 5 {
+			t.Fatalf("sil status leds.strip = %v, want 5 entries", strip)
+		}
+		var hexes []string
+		eval(t, `[...document.querySelectorAll('#leds .led .led-hex')].map((e) => e.textContent)`, &hexes)
+		if len(hexes) != 5 {
+			t.Fatalf("%d LED hex texts on the page, want 5: %v", len(hexes), hexes)
+		}
+		for i := range hexes {
+			if hexes[i] != strip[i] {
+				t.Errorf("LED %d: the page shows %q, sil status leds.strip[%d] = %v", i, hexes[i], i, strip[i])
+			}
+		}
+		t.Logf("leds on the page %v, in sil status %v", hexes, strip)
+	})
+
+	t.Run("usr1_like_cli", func(t *testing.T) {
+		in.setFan(t, 1, 40)
+		in.waitDuties(t, [4]float64{0.4, 0, 0, 0})
+		hold(t, "usr1", 300*time.Millisecond)
+		st := in.waitDuties(t, [4]float64{0.5, 0.1, 0.1, 0.1})
+		if level, ok := r33Buttons(st, "usr1"); !ok || level {
+			t.Errorf("buttons.usr1 = %v (present %v) after the release, want false", level, ok)
+		}
+		wait(t, "the cap dark again", `document.querySelector('button.usr[data-id="usr1"]').getAttribute('aria-pressed') === 'false'`, 5*time.Second)
+	})
+
+	t.Run("usr2_long_like_cli", func(t *testing.T) {
+		hold(t, "usr2", 1500*time.Millisecond)
+		in.waitDuties(t, [4]float64{1, 1, 1, 1})
+		wait(t, "the cap dark again", `document.querySelector('button.usr[data-id="usr2"]').getAttribute('aria-pressed') === 'false'`, 5*time.Second)
+	})
+
+	t.Run("env_reaches_firmware", func(t *testing.T) {
+		st := in.env.Status(t, name)
+		humidity, ok := r33Env(st, "humidity")
+		if !ok {
+			t.Fatalf("sil status has no env.humidity: %v", st["env"])
+		}
+		var focused bool
+		eval(t, `(() => { const e = document.getElementById('temperature'); e.focus(); e.select(); return document.activeElement === e; })()`, &focused)
+		if !focused {
+			t.Fatal("could not focus the TEMPERATURE field")
+		}
+		for _, key := range []string{"2", "6", "Enter"} {
+			if err := page.Key(ctx(10*time.Second), "keyDown", key); err != nil {
+				t.Fatalf("key %q down: %v", key, err)
+			}
+			if err := page.Key(ctx(10*time.Second), "keyUp", key); err != nil {
+				t.Fatalf("key %q up: %v", key, err)
+			}
+		}
+		in.env.WaitStatus(t, name, 5*time.Second, func(st map[string]any) bool {
+			v, ok := r33Env(st, "temperature")
+			return ok && math.Abs(v-26) < 1e-3
+		})
+		// The Home Assistant proxy: the firmware's own Temperature entity, over the native API.
+		in.waitFwEnv(t, 45*time.Second, 26, humidity)
+		wait(t, "the field reading 26 clean", `(() => { const e = document.getElementById('temperature'); return e.value === '26' && !e.classList.contains('dirty'); })()`, 5*time.Second)
+	})
+
+	t.Run("fan_swap", func(t *testing.T) {
+		out, code, _ := in.env.Sil(t, "fans", "-i", name)
+		if code != 0 {
+			t.Fatalf("sil fans: exit %d: %v", code, out)
+		}
+		var maxRPM float64
+		for _, f := range jgetSlice(out, "fans") {
+			if jget(f, "id") == noctua {
+				maxRPM, _ = jget(f, "max_rpm").(float64)
+			}
+		}
+		if maxRPM == 0 {
+			t.Fatalf("sil fans = %v has no max_rpm for %s", out, noctua)
+		}
+		if cur := jget(in.env.Status(t, name), "ports", 2, "fan"); cur == noctua {
+			t.Fatalf("ports[2].fan is already %v: the test needs another fan to switch to", cur)
+		}
+		const sel = `document.querySelector('select[aria-label="Fan on port 3"]')`
+		wait(t, "the fan list", sel+`.options.length >= 2 && !`+sel+`.disabled`, 10*time.Second)
+		var got string
+		choose := fmt.Sprintf(`(() => { const s = %s; s.value = %q; s.dispatchEvent(new Event('change', {bubbles: true})); return s.value; })()`, sel, noctua)
+		eval(t, choose, &got)
+		if got != noctua {
+			t.Fatalf("choosing %s: the select reads %q", noctua, got)
+		}
+		in.env.WaitStatus(t, name, 5*time.Second, func(st map[string]any) bool { return jget(st, "ports", 2, "fan") == noctua })
+		eval(t, `(window.__plot = await import('/js/plot.js'), true)`, nil)
+		wait(t, "scope 3 re-scaled to the new fan", fmt.Sprintf(`(() => { const u = __plot.scopeFor(3); return u && u.scales.rpm && u.scales.rpm.min === 0 && u.scales.rpm.max === %v; })()`, maxRPM), 10*time.Second)
+		wait(t, "the select showing the new fan", sel+`.value === `+fmt.Sprintf("%q", noctua), 3*time.Second)
+	})
+
+	t.Run("parity_real", func(t *testing.T) {
+		if err := sysClock.Sleep(ctx(15*time.Second), 5*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		// The fan swapped in the previous subtest is still spinning up to its own top speed, and a
+		// moving RPM cannot be compared to 1 rpm between two reads: wait until every RPM has settled
+		// (two status reads 1 s apart within 0.5 rpm), as a page left quiet would be.
+		settledAt := func() [4]float64 {
+			var v [4]float64
+			for i := range v {
+				v[i], _ = jget(in.env.Status(t, name), "ports", i, "rpm").(float64)
+			}
+			return v
+		}
+		for prev, tries := settledAt(), 0; ; tries++ {
+			if err := sysClock.Sleep(ctx(5*time.Second), time.Second); err != nil {
+				t.Fatal(err)
+			}
+			cur := settledAt()
+			settled := true
+			for i := range cur {
+				settled = settled && math.Abs(cur[i]-prev[i]) <= 0.5
+			}
+			if settled {
+				break
+			}
+			if tries >= 30 {
+				t.Fatalf("the RPMs never settled: %v then %v", prev, cur)
+			}
+			prev = cur
+		}
+		skip := map[string]bool{"sim.time_s": true, "sim.behind_real_time": true}
+		near := map[string]float64{"ports.*.rpm": 1}
+		var state map[string]any
+		eval(t, `(await import('/js/store.js')).getState()`, &state)
+		code, _, raw := webDo(t, port, http.MethodGet, "/api/v1/status")
+		if code != 200 {
+			t.Fatalf("GET /api/v1/status = %d: %s", code, raw)
+		}
+		status := webJSON(t, raw)
+		if d := accDiff("", state, status, skip, near); len(d) != 0 {
+			t.Errorf("the page store and GET /api/v1/status differ at %v\nstore:  %v\nstatus: %v", d, state, status)
+		}
+		for what, doc := range map[string]map[string]any{"store": state, "status": status} {
+			if _, ok := jget(doc, "sim", "behind_real_time").(bool); !ok {
+				t.Errorf("%s sim.behind_real_time = %v, want a boolean", what, jget(doc, "sim", "behind_real_time"))
+			}
+		}
+		// The REAL TIME cell is the realtime format of the store's own value; the value itself is not
+		// compared with status on this real clock (a loaded host may flip it between the two reads).
+		var cell struct {
+			Behind bool   `json:"behind"`
+			Text   string `json:"text"`
+		}
+		for attempt := 0; attempt < 5; attempt++ {
+			eval(t, `(async () => { const s = (await import('/js/store.js')).getState();
+			  return {behind: s.sim.behind_real_time === true, text: document.querySelector('[data-src="sim.behind_real_time"]').textContent}; })()`, &cell)
+			want := "IN SYNC"
+			if cell.Behind {
+				want = "BEHIND"
+			}
+			if cell.Text == want {
+				break
+			}
+			if attempt == 4 {
+				t.Errorf("REAL TIME cell shows %q for a store value of behind=%v, want %q", cell.Text, cell.Behind, want)
+			}
+			if err := sysClock.Sleep(ctx(5*time.Second), 200*time.Millisecond); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Every displayed value has its path in the JSON.
+		var srcs []string
+		eval(t, `[...document.querySelectorAll('[data-src]')].map((e) => e.dataset.src)`, &srcs)
+		if len(srcs) < 20 {
+			t.Errorf("only %d data-src elements on the page, want at least 20", len(srcs))
+		}
+		for _, src := range srcs {
+			if _, ok := accLookup(status, src); !ok {
+				t.Errorf("data-src %q is not a path of GET /api/v1/status", src)
+			}
+		}
+		t.Logf("%d data-src elements checked, sim.behind_real_time in status = %v", len(srcs), jget(status, "sim", "behind_real_time"))
+	})
+
+	t.Run("sim_restart", func(t *testing.T) {
+		before, _ := historyRequests()
+		if out, code, stderr := in.env.Sil(t, "sim", "restart", name); code != 0 {
+			t.Fatalf("sil sim restart: exit %d: %v\n%s", code, out, stderr)
+		}
+		deadline := sysClock.Now() + 15*time.Second
+		for {
+			after, _ := historyRequests()
+			if after > before {
+				break
+			}
+			if sysClock.Now() > deadline {
+				t.Fatalf("no new history request within 15 s of the simulator restart (still %d)", before)
+			}
+			if err := sysClock.Sleep(ctx(20*time.Second), 100*time.Millisecond); err != nil {
+				t.Fatal(err)
+			}
+		}
+		wait(t, "LINK LIVE again", linkIs+`'LIVE'`, 15*time.Second)
+	})
+
+	t.Run("down_up", func(t *testing.T) {
+		if out, code, stderr := in.env.Sil(t, "down", name); code != 0 {
+			t.Fatalf("sil down: exit %d: %v\n%s", code, out, stderr)
+		}
+		wait(t, "LINK DISCONNECTED, RETRYING", linkIs+`'DISCONNECTED, RETRYING'`, 5*time.Second)
+		up := in.env.Up(t, name, "--config", filepath.Join(repoRoot(t), "examples", "rev33.yaml"))
+		if got, _ := jget(up, "web", "port").(float64); int(got) != port {
+			t.Fatalf("sil up web.port = %v, want the same %d", jget(up, "web", "port"), port)
+		}
+		wait(t, "LINK LIVE again, without a reload", linkIs+`'LIVE'`, 90*time.Second)
+		wait(t, "the same instance name", `document.querySelector('[data-src="instance"]').textContent === '`+name+`'`, 10*time.Second)
+		for _, r := range page.Requests() {
+			if !cdptest.SameOrigin(base, r.URL) {
+				t.Errorf("request %s %s (%s) is not same-origin with %s", r.Method, r.URL, r.Kind, base)
+			}
+		}
+	})
+	t.Logf("TestWebAcceptance took %s after the instance was up", sysClock.Now()-start)
 }
