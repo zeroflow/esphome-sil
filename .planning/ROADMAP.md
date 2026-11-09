@@ -74,7 +74,30 @@ Plans:
   4. The user adds a running instance to any Home Assistant using host:port and key from `sil status`, controls fan speed per port, and sees RPM, temperature, humidity and button states follow. Restarting the instance reuses the same HA device with no duplicates, and a second instance appears as a separate device.
   5. One command runs the contract test (builds and runs the example with the simulator; duty to RPM settles, a button press registers, a temperature change arrives) and the aioesphomeapi smoke test (HA-visible entity set, fan command round trip), and both pass.
 
-**Plans**: TBD
+**Plans:** 8 plans
+
+Plans:
+**Wave 1**
+- [ ] 02-01-PLAN.md — Tracer: `sil press` -> sim_bus binary_sensor -> firmware on_click -> fan duty -> `sil status`; examples/rev33.yaml (fans, RPM, USR1-3); full D-01..D-04 press vocabulary (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 02-02-PLAN.md — LED strip: sim_bus addressable light under stock `partition` lights, codegen-derived segments, dedupe + 20 Hz cap + replay, `leds` in `sil status`, D-13 board/fan LED logic (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 02-03-PLAN.md — Temperature/humidity (`mode: latest`), supervisor-held inputs, atomic `sil set`, `env` in status, exact HIL entity set (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 02-04-PLAN.md — Phase 2 wire contract in PROTOCOL.md and golden vectors (Go + C++); LED and cross-domain channel misconfigurations fail at config time (wave 4)
+- [ ] 02-05-PLAN.md — Fan per port: `sil set portN.fan=` replug, `sil up --fan`, `sil fans`, second shipped fan (Noctua, ASSUMED constants) (wave 4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 02-06-PLAN.md — `sil watch` (supervisor event broker, snapshot-then-delta NDJSON) and `sil logs` (tail, follow, raw, redaction) (wave 5)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 02-07-PLAN.md — pytest under tests/ (uv, lock hash-gated against the product HIL lock): TEST-02 smoke, TEST-01 contract chain, HA-01 identity proxy, `make test-contract` (wave 6)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 02-08-PLAN.md — HA reachability (`api.lan_host`, README HA guide), Rev 3.3 as the default bench, docs, full Phase 1 + 2 acceptance run (wave 7)
 
 ### Phase 3: Live Web UI
 
@@ -100,5 +123,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Closed-Loop Fan Skeleton | 13/13 | In Progress|  |
-| 2. Full Rev 3.3 Bench | 0/TBD | Not started | - |
+| 2. Full Rev 3.3 Bench | 0/8 | Planned | - |
 | 3. Live Web UI | 0/TBD | Not started | - |

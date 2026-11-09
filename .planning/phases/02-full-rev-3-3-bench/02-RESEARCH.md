@@ -664,7 +664,9 @@ Target RPM at duty 0.4 with `min_duty 0.05`, `min_rpm 200`, `max_rpm 1800`: `200
 | A8 | Default-route interface detection by UDP `connect` works on the user's hosts without internet | Pitfall 9 | `lan_host: null` then; the user reads the IP themselves. |
 | A9 | `sil press` hold timing jitter (a few ms on a loaded host) never moves a 200 ms / 1500 ms press across the 50/1000 ms firmware thresholds | Pattern 3 | Margins are 150 ms and 500 ms; low risk. |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All eight questions are resolved; the last one (8) was decided at planning time.
 
 1. **RESOLVED: How are segment names carried (D-06)?**
    - Resolution: derive `label:from:to` from the stock `partition` lights at codegen (ranges from the YAML), optional `segment_labels` override on the sim light for naming (`status_led` → `board`), delivered in the `chan` frame's `seg` field. No simulator-side config.
@@ -680,9 +682,10 @@ Target RPM at duty 0.4 with `min_duty 0.05`, `min_rpm 200`, `max_rpm 1800`: `200
    - Resolution: `--kind k1,k2` filter; ends with exit 0 when the instance stops or SIGINT; `logs` returns `{"source","lines":[...]}` by default, `--follow` NDJSON `{"src","line"}`, `--raw` plain text, ANSI stripped by default, `--tail` default 100, sources `firmware` (firmware.log) and `sim` (sil.log).
 7. **RESOLVED: What about the live Home Assistant?**
    - Resolution: not available in this run. Automated proxy = aioesphomeapi (device info, MAC, entity keys, fan round trip, identity across `down`/`up`, second instance distinct); the rest is the manual UAT checklist below. HA-side item to confirm: HA on another machine needs the `lan_host`, not `127.0.0.1`.
-8. **OPEN (non-blocking): Ship the Noctua fan now?**
+8. **RESOLVED: Ship the Noctua fan now?**
    - What we know: partial spec (A2), `below_min = "hold"` semantics are Noctua-specific and unsourced; `SIL_FAN_DIR` replaces the library so a test-only fixture needs both files.
    - Recommendation: ship `fans/noctua-nf-a12x25-pwm.toml` with `source` text marking `start_duty`, `tau_*` and `below_min` ASSUMED (same convention as the Arctic file) so MODEL-03 swaps have two visibly different fans (1800 vs 2000 max RPM); if the planner prefers no new unsourced constants, use a `tests/fixtures/fans/` copy of the Arctic file with `max_rpm = 1200` and run the swap test with `SIL_FAN_DIR` set for that instance only.
+   - Resolution (planner, 2026-11-09, unattended): take the recommendation. Plan 02-05 ships `fans/noctua-nf-a12x25-pwm.toml` (max_rpm 2000, min_rpm 450 at min_duty 0.20, below_min hold; start_duty, below_min, tau_up, tau_down labelled ASSUMED) and records it as flagged assumption A2 for maintainer review. No test-only fixture library.
 
 ## Environment Availability
 

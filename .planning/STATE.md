@@ -1,17 +1,17 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 1
-current_phase_name: Closed-Loop Fan Skeleton
-status: verifying
+current_phase: 2
+current_phase_name: Full Rev 3.3 Bench
+status: executing
 stopped_at: Completed 01-13-PLAN.md
-last_updated: "2026-11-09T03:28:55.000Z"
+last_updated: "2026-11-09T06:03:30.394Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: 755a41db5dcbcc8f3d52f0e59ccdf1fcf7161cd7
+state_head: 199fc81eaa1eee6cc8e1823b1ee9d72d85c67126
 progress:
   total_phases: 3
   completed_phases: 0
-  total_plans: 13
+  total_plans: 21
   completed_plans: 13
   percent: 0
 ---
@@ -27,9 +27,9 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 
 ## Current Position
 
-Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
+Phase: 2 (Full Rev 3.3 Bench) — READY TO EXECUTE
 Plan: 13 of 13
-Status: Phase complete — ready for verification
+Status: Ready to execute
 Last activity: 2026-11-09 — Phase 1 execution started
 
 Progress: [░░░░░░░░░░] 0%
@@ -163,3 +163,13 @@ Items recorded during the unattended `/gsd-autonomous --from 1 --to 3` run (2026
 | Phase | State | Resume |
 |-------|-------|--------|
 | 1 | verification_deferred_human | /gsd-verify-work 1 |
+
+### Needs Human — Phase 2 (planning, 2026-11-09)
+
+| Phase | Item | Where | Status |
+|-------|------|-------|--------|
+| 2 | Plan check hit the 3-iteration cap with 0 blockers / 3 warnings (missing named tests for: non-pulse LED effect dedupe in 02-02; seg > 2048 bytes in 02-04; `sil watch` SIGINT exit 0 / dropped stream exit 2 / too_many_streams in 02-06). Forced proceed; executors told to add the tests | 02-02/02-04/02-06 PLAN | needs review |
+| 2 | Autonomous decisions D-17 (example ignores `sil`'s own readiness probe for the board LED) and D-18 (TEST-01 drives/observes only via `sil`; temperature-arrival check moved to TEST-02), plus a plan-size acceptance note (10–14 files) | 02-CONTEXT.md | needs review |
+| 2 | Unattended choices: HDC1080 bounds -40..125 °C / 0..100 % (A1); Noctua NF-A12x25 constants ASSUMED (A2); press presets in `control.ShortPress/LongPress`, HTTP API requires `hold_ms`; RPM events sampled once per sim second; logs default firmware/last 100; contract state in `~/.cache/sil-contract/state` with `ct-main`/`ct-second`; `lan_host` by default-route detection (A8) | 02-RESEARCH.md, plans | needs review |
+| 2 | Python test deps (aioesphomeapi 46.12.0, pytest 9.2.0, pytest-timeout 2.4.0) flagged SUS by package check; human review replaced by `make lock-check` hash diff against ../wifi-fancontroller/hil/uv.lock | 02-07-PLAN | needs review |
+| 2 | Live Home Assistant UAT (7-step checklist, HA on another machine) — automated proxy is aioesphomeapi only | 02-07/02-08 backstop truths | needs human |
