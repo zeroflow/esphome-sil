@@ -5,7 +5,7 @@ RUN ?= .
 PKG ?= ./...
 E2E_RUN ?= .
 
-.PHONY: build test test-pkg vet fmt-check check mod-verify e2e
+.PHONY: build test test-pkg vet fmt-check check mod-verify e2e test-cpp test-cpp-image
 
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/sil ./cmd/sil
@@ -25,7 +25,24 @@ fmt-check:
 	@out=$$(find . \( -path ./.git -o -path ./prototype -o -path ./.planning -o -path ./.gsd \) -prune -o -name '*.go' -print | xargs -r gofmt -l); \
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
-check: fmt-check vet test
+# test-cpp (host g++) is part of check. test-cpp-image runs the same test with the gcc of the pinned
+# ESPHome image; it needs docker and the image present, so it is run next to check, not inside it.
+check: fmt-check vet test test-cpp
+
+CXX ?= g++
+CPP_TEST_FLAGS ?= -std=c++20 -Wall -Wextra -Werror -O1
+CPP_IMAGE ?= ghcr.io/esphome/esphome:2026.10.1@sha256:eab8cd6b4f51077c3883af4cedc058280ddc34a94f3b2ffee23e9d2cd5f1db64
+
+# Header-only sim-bus codec against protocol/vectors/frames.tsv, the same file the Go test reads.
+test-cpp:
+	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; \
+	$(CXX) $(CPP_TEST_FLAGS) -Icomponents/sim_bus -o "$$d/test_protocol" tests/cpp/test_protocol.cpp; \
+	"$$d/test_protocol" protocol/vectors/frames.tsv
+
+test-cpp-image:
+	@docker run --rm --pull=never --user "$$(id -u):$$(id -g)" -v "$(CURDIR):$(CURDIR):ro" -w "$(CURDIR)" \
+		--entrypoint sh $(CPP_IMAGE) -c \
+		'g++ --version | head -n 1 && g++ $(CPP_TEST_FLAGS) -Icomponents/sim_bus -o /tmp/test_protocol tests/cpp/test_protocol.cpp && /tmp/test_protocol protocol/vectors/frames.tsv'
 
 mod-verify:
 	$(GO) mod verify
