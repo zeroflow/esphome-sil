@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/zeroflow/esphome-sil/internal/cdptest"
 	"github.com/zeroflow/esphome-sil/internal/clock"
 )
 
@@ -282,6 +285,75 @@ func TestWebTracer(t *testing.T) {
 			if a, b := jget(before, path...), jget(after, path...); a != b {
 				t.Fatalf("%v changed from %v to %v: a refused operation must do nothing", path, a, b)
 			}
+		}
+	})
+
+	t.Run("browser", func(t *testing.T) {
+		lctx, lcancel := clock.WithTimeout(context.Background(), sysClock, 60*time.Second)
+		defer lcancel()
+		b, err := cdptest.Launch(lctx, sysClock, cdptest.LaunchOptions{Offline: true, Width: 1280, Height: 720})
+		if errors.Is(err, cdptest.ErrNoChrome) {
+			t.Fatal("Chrome not found; install google-chrome or set SIL_CHROME")
+		}
+		if err != nil {
+			t.Fatalf("launch Chrome: %v", err)
+		}
+		defer b.Close()
+		ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 60*time.Second)
+		defer cancel()
+		page, err := b.NewPage(ctx)
+		if err != nil {
+			t.Fatalf("new page: %v", err)
+		}
+		defer page.Close()
+		base := webBase(port) + "/"
+		if err := page.Navigate(ctx, base); err != nil {
+			t.Fatalf("navigate to %s: %v", base, err)
+		}
+		wait := func(what, pred string, budget time.Duration) {
+			t.Helper()
+			wctx, wcancel := clock.WithTimeout(context.Background(), sysClock, budget)
+			defer wcancel()
+			if err := page.WaitFor(wctx, pred); err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+		}
+		wait("LINK LIVE", `document.getElementById('link').textContent === 'LIVE'`, 15*time.Second)
+		wait("instance name", `document.querySelector('[data-src="instance"]').textContent === 'e2e-web'`, 5*time.Second)
+		var panels int
+		if err := page.Eval(ctx, `document.querySelectorAll('#ports .port').length`, &panels); err != nil || panels != 4 {
+			t.Fatalf("port panels = %d (%v), want 4", panels, err)
+		}
+		if out, code := in.set(t, "humidity=50"); code != 0 {
+			t.Fatalf("sil set humidity=50: exit %d: %v", code, out)
+		}
+		hctx, hcancel := clock.WithTimeout(context.Background(), sysClock, 5*time.Second)
+		defer hcancel()
+		for {
+			var humidity float64
+			if err := page.Eval(hctx, `(await import('/js/store.js')).getState().env.humidity`, &humidity); err != nil {
+				t.Fatalf("read the store: %v", err)
+			}
+			if humidity == 50 {
+				break
+			}
+			if err := sysClock.Sleep(hctx, 50*time.Millisecond); err != nil {
+				t.Fatalf("the store never mirrored humidity=50 (last %v): %v", humidity, err)
+			}
+		}
+
+		reqs := page.Requests()
+		sawWS := false
+		for _, r := range reqs {
+			if !cdptest.SameOrigin(base, r.URL) {
+				t.Errorf("request %s %s (%s) is not same-origin with %s", r.Method, r.URL, r.Kind, base)
+			}
+			if u, err := url.Parse(r.URL); r.Kind == "ws" && err == nil && u.Path == "/ws" {
+				sawWS = true
+			}
+		}
+		if !sawWS {
+			t.Errorf("no WebSocket entry for /ws among the recorded requests: %v", reqs)
 		}
 	})
 
