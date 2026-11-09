@@ -19,6 +19,7 @@ from pathlib import Path
 
 import aioesphomeapi
 import pytest
+from aioesphomeapi.client import APIClient
 
 REPO = Path(__file__).resolve().parent.parent
 # Instance names reserved for the tests (they share the developer's build cache dir by name).
@@ -117,7 +118,7 @@ class Bench:
 
     # -- sil CLI ---------------------------------------------------------------------------------
 
-    def sil(self, *args, expect_exit=0):
+    def sil(self, *args, expect_exit: int | None = 0):
         """Run sil; stdout must be exactly one JSON value. Returns (obj, exit_code)."""
         try:
             proc = subprocess.run(
@@ -232,7 +233,10 @@ class Watcher:
         self._thread.start()
 
     def _read(self):
-        for raw in self._proc.stdout:
+        stdout = self._proc.stdout
+        if stdout is None:  # never: Popen was started with stdout=PIPE
+            stdout = iter(())
+        for raw in stdout:
             raw = raw.strip()
             if not raw:
                 continue
@@ -303,7 +307,7 @@ class Api:
         self._thread.start()
         self._cond = threading.Condition()
         self._states = {}
-        self._cli = None
+        self._cli: APIClient | None = None
         self._closed = False
         self._entities = []
         self._by_name = {}
@@ -323,7 +327,7 @@ class Api:
             pytest.fail(f"native API call failed: {type(exc).__name__}: {exc}", pytrace=False)
 
     async def _connect(self, host, port, key):
-        cli = aioesphomeapi.APIClient(host, port, None, noise_psk=key, client_info="sil-contract")
+        cli = APIClient(host, port, None, noise_psk=key, client_info="sil-contract")
         await asyncio.wait_for(cli.connect(login=True), API_TIMEOUT_S)
         self._cli = cli
         self._info = await asyncio.wait_for(cli.device_info(), API_TIMEOUT_S)
@@ -363,11 +367,15 @@ class Api:
         if ent is None:
             pytest.fail(f"no entity named 'Fan {n}' on the native API", pytrace=False)
 
+        cli = self._cli
+        if cli is None:
+            pytest.fail("native API client is not connected", pytrace=False)
+
         async def send():
             if on:
-                self._cli.fan_command(ent.key, state=True, speed_level=speed)
+                cli.fan_command(ent.key, state=True, speed_level=speed)
             else:
-                self._cli.fan_command(ent.key, state=False)
+                cli.fan_command(ent.key, state=False)
 
         self._call(send())
 

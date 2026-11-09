@@ -60,5 +60,5 @@ lock-check:
 
 # Contract test (TEST-01) and aioesphomeapi smoke test (TEST-02) against real Rev 3.3 bench instances.
 # Needs docker with the pinned ESPHome image and uv; not part of `check` (no Python in check).
-test-contract: build
+test-contract: build lock-check
 	@cd tests && SIL_BIN=$(CURDIR)/bin/sil uv run --locked pytest
