@@ -5,6 +5,7 @@ package e2e
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,6 +89,26 @@ func TestTracer(t *testing.T) {
 	})
 	t.Logf("sil status: port 1 duty %v rpm %.1f state %v", jget(st, "ports", 0, "duty"), tracerPortValue(st, 0, "rpm"), jget(st, "ports", 0, "state"))
 
+	t.Run("four_ports", func(t *testing.T) {
+		for _, c := range []struct {
+			fan, speed int
+			duty       float64
+		}{{2, 20, 0.2}, {3, 60, 0.6}, {4, 100, 1.0}} {
+			out, code := env.APIClient(t, port, key, "set-fan", "--fan", fmt.Sprint(c.fan), "--speed", fmt.Sprint(c.speed))
+			if code != 0 {
+				t.Fatalf("set-fan %d exit %d: %v", c.fan, code, out)
+			}
+		}
+		env.WaitStatus(t, name, 10*time.Second, func(s map[string]any) bool {
+			for i, want := range []float64{0.2, 0.6, 1.0} {
+				if tracerPortValue(s, i+1, "duty") != want || tracerPortValue(s, i+1, "rpm") <= 0 {
+					return false
+				}
+			}
+			return true
+		})
+	})
+
 	out, code = env.APIClient(t, port, key, "watch", "--seconds", "3")
 	if code != 0 {
 		t.Fatalf("watch exit %d: %v", code, out)
@@ -127,5 +148,46 @@ func TestTracer(t *testing.T) {
 	gone, code, _ := env.Sil(t, "status", name)
 	if code != 1 || jget(gone, "error", "code") != "not_running" {
 		t.Fatalf("sil status after down: exit %d: %v", code, gone)
+	}
+}
+
+// TestCLIErrors checks the CLI error contract (CLI-05) on the common failure
+// paths: one JSON error object on stdout, exit class 1, no JSON on stderr.
+func TestCLIErrors(t *testing.T) {
+	env := newEnv(t)
+	for _, c := range []struct {
+		what string
+		args []string
+		code string
+	}{
+		{"status of an instance that never ran", []string{"status", "e2e-nothing"}, "not_running"},
+		{"invalid instance name", []string{"up", "Bad_Name"}, "invalid_name"},
+		{"missing --config file", []string{"up", "e2e-cfg", "--config", filepath.Join(t.TempDir(), "missing.yaml")}, "config_not_found"},
+		{"status without a name", []string{"status"}, "instance_required"},
+	} {
+		t.Run(c.code, func(t *testing.T) {
+			out, exit, stderr := env.Sil(t, c.args...) // fails unless stdout is exactly one JSON object
+			if exit != 1 {
+				t.Errorf("%s: exit %d, want 1 (stdout %v)", c.what, exit, out)
+			}
+			if len(out) != 1 {
+				t.Errorf("%s: stdout has keys %v, want only \"error\"", c.what, out)
+			}
+			if jget(out, "error", "code") != c.code {
+				t.Errorf("%s: error.code = %v, want %s", c.what, jget(out, "error", "code"), c.code)
+			}
+			if msg, _ := jget(out, "error", "message").(string); msg == "" {
+				t.Errorf("%s: error.message is empty", c.what)
+			}
+			for _, line := range strings.Split(stderr, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "{") {
+					t.Errorf("%s: stderr carries JSON: %q", c.what, line)
+				}
+			}
+		})
+	}
+	// Failing commands must not leave instance state behind.
+	if entries, _ := os.ReadDir(filepath.Join(env.State, "sil")); len(entries) != 0 {
+		t.Errorf("failing commands created state: %v", entries)
 	}
 }
