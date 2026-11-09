@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Full Rev 3.3 Bench
 status: executing
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-11-09T06:42:38.216Z"
+stopped_at: Completed 02-03-PLAN.md
+last_updated: "2026-11-09T07:02:11.230Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 2 execution started
-state_head: 39cc09809086386b4520feda9e46f649c4f05917
+state_head: 907e1c6fc42cf6398ae08646668d52808a4223f2
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 21
-  completed_plans: 15
+  completed_plans: 16
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 2 (Full Rev 3.3 Bench) — EXECUTING
-Plan: 3 of 8
+Plan: 4 of 8
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 2 execution started
 
@@ -71,6 +71,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 1 P13 | 15min | 2 tasks | 4 files |
 | Phase 02 P01 | 16 min | 2 tasks | 14 files |
 | Phase 02 P02 | 25 min | 2 tasks | 13 files |
+| Phase 02 P03 | 15 min | 2 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -117,6 +118,8 @@ Recent decisions affecting current work:
 - [Phase 02]: ShortPress 200 ms / LongPress 1500 ms / MaxHold 60 s live in internal/control; HTTP API requires explicit hold_ms; --instance/-i is the selector for Phase 2 verbs with positional args
 - [Phase 02]: 02-02: LED state is per bus session (hello clears, disconnect keeps the last frame); px before the manifest accepted then checked against n
 - [Phase 02]: 02-02: segment names come only from the firmware's partition lights (light.py codegen, segment_labels override); final-validate rejects unknown label keys and invalid or duplicate labels
+- [Phase 02]: 02-03: each env value has its own 10 s re-send deadline; inputs live in the supervisor under inMu and seed every engine (sim restart keeps them, a set while the bus is down is accepted)
+- [Phase 02]: 02-03: sil set numbers are plain decimals only (no hex, separators, Inf/NaN, overflow); ranges temperature -40..125, humidity 0..100 (HDC1080, assumption A1 open)
 
 ### Pending Todos
 
@@ -143,8 +146,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T06:42:37.678Z
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-11-09T07:02:11.184Z
+Stopped at: Completed 02-03-PLAN.md
 Resume file: None
 
 ## Needs Human
