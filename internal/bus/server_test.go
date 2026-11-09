@@ -255,6 +255,7 @@ func TestBadFrameClosesTheSession(t *testing.T) {
 		{"line over the cap without newline", strings.Repeat("x", 5000), "bad_frame: too_long"},
 		{"trailing garbage", `{"k":"out","ch":"a","v":1} x` + "\n", "bad_frame: trailing"},
 		{"not an object", "hello\n", "bad_frame: not_object"},
+		{"CRLF line ending", `{"k":"bye"}` + "\r\n", "bad_frame: trailing"},
 		{"nested value", `{"k":"out","v":{}}` + "\n", "bad_frame: nested"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

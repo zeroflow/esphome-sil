@@ -2,6 +2,7 @@ package bus
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -236,12 +237,26 @@ func (s *Server) sendErr(c *conn, msg string) {
 	c.enqueue(Encode(NewFrame("err").Str("msg", msg)))
 }
 
+// splitLF frames on "\n" only. bufio.ScanLines would also drop a trailing
+// "\r", hiding from Decode a byte that the protocol (and the firmware's parser)
+// rejects.
+func splitLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[:i], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
 // read frames lines and drives the session until it ends; it returns the
 // reason (see Handler.Disconnected) and whether the connection became active.
 func (s *Server) read(c *conn, h Handler) (reason string, activated bool) {
 	_ = c.c.SetReadDeadline(s.clk.Deadline(s.helloTimeout))
 	sc := bufio.NewScanner(c.c)
 	sc.Buffer(make([]byte, 0, MaxLine), MaxLine)
+	sc.Split(splitLF)
 	var chans []Channel
 	manifest := false
 	for sc.Scan() {
