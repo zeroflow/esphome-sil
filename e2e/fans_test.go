@@ -4,6 +4,8 @@ package e2e
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -172,6 +174,110 @@ func TestFanSwap(t *testing.T) {
 		for _, v := range []string{"../arctic-p12-pwm-pst", "/etc/passwd"} {
 			out, code = in.set(t, "port2.fan="+v)
 			r33ExpectErr(t, fmt.Sprintf("set port2.fan=%s", v), out, code, "unknown_fan")
+		}
+	})
+}
+
+// fansFour is the fan id on every port of a status object.
+func fansFour(st map[string]any) [4]string {
+	var out [4]string
+	for i := range out {
+		out[i], _, _, _ = fansPort(st, i)
+	}
+	return out
+}
+
+// TestUpFan: `sil up --fan ID` plugs ID into all four ports; an unknown id fails before anything is
+// written for the instance.
+func TestUpFan(t *testing.T) {
+	cfg := filepath.Join(repoRoot(t), "examples", "rev33.yaml")
+
+	t.Run("unknown_fan_writes_nothing", func(t *testing.T) {
+		env := newEnv(t)
+		out, code, _ := env.Sil(t, "up", "e2e-upbad", "--fan", "nope", "--config", cfg)
+		r33ExpectErr(t, "up --fan nope", out, code, "unknown_fan")
+		known := jgetSlice(out, "error", "detail", "known")
+		if !reflect.DeepEqual(known, []any{fansArctic, fansNoctua}) {
+			t.Fatalf("detail.known = %v, want [%s %s]", known, fansArctic, fansNoctua)
+		}
+		for _, dir := range []string{filepath.Join(env.State, "sil", "e2e-upbad"), filepath.Join(env.Runtime, "sil", "e2e-upbad")} {
+			if _, err := os.Stat(dir); !os.IsNotExist(err) {
+				t.Errorf("%s exists after a rejected `up --fan nope` (stat error %v), want nothing written", dir, err)
+			}
+		}
+	})
+
+	t.Run("fan_on_all_four_ports", func(t *testing.T) {
+		env := newEnv(t)
+		env.Up(t, "e2e-upfan", "--config", cfg, "--fan", fansNoctua)
+		st := env.Status(t, "e2e-upfan")
+		if got := fansFour(st); got != [4]string{fansNoctua, fansNoctua, fansNoctua, fansNoctua} {
+			t.Fatalf("ports fans = %v, want the Noctua on every port", got)
+		}
+	})
+}
+
+// TestFanChoice: the fan choice is run state held by the supervisor, so it survives both kinds of
+// restart; `sil fans` lists the library. This is the assumption-delta invariant test: every port's
+// fan in `sil status` equals the held choice after a set, a sim restart and a fw restart.
+func TestFanChoice(t *testing.T) {
+	in := r33Up(t, "e2e-fanchoice")
+	want := [4]string{fansArctic, fansArctic, fansNoctua, fansArctic}
+	holds := func(t *testing.T, step string) {
+		t.Helper()
+		st := in.env.Status(t, in.name)
+		if got := fansFour(st); got != want {
+			t.Fatalf("%s: ports fans = %v, want %v", step, got, want)
+		}
+	}
+
+	out, code := in.set(t, "port3.fan="+fansNoctua)
+	if code != 0 {
+		t.Fatalf("set port3.fan: exit %d: %v", code, out)
+	}
+	holds(t, "after the set")
+
+	sim, code, _ := in.env.Sil(t, "sim", "restart", in.name)
+	if code != 0 {
+		t.Fatalf("sim restart: exit %d: %v", code, sim)
+	}
+	holds(t, "after sim restart")
+	if fan, _, _, _ := fansPort(sim, 2); fan != fansNoctua {
+		t.Fatalf("the status printed by sim restart has ports[2].fan %q, want %s", fan, fansNoctua)
+	}
+
+	fw, code, _ := in.env.Sil(t, "fw", "restart", in.name)
+	if code != 0 {
+		t.Fatalf("fw restart: exit %d: %v", code, fw)
+	}
+	holds(t, "after fw restart")
+
+	// The chosen model is live in the new engine: only the Noctua gets above the Arctic's 1800.
+	in.setFan(t, 3, 100)
+	in.fansWait(t, 2, 20*time.Second, "noctua above 1900 after the restarts", func(fan string, rpm, _ float64, _ string) bool {
+		return fan == fansNoctua && rpm > 1900
+	})
+
+	t.Run("fans_lists_the_library", func(t *testing.T) {
+		out, code, _ := in.env.Sil(t, "fans", "-i", in.name)
+		if code != 0 {
+			t.Fatalf("sil fans: exit %d: %v", code, out)
+		}
+		list := jgetSlice(out, "fans")
+		if len(out) != 1 || len(list) != 2 {
+			t.Fatalf("sil fans = %v, want exactly {fans: [two entries]}", out)
+		}
+		for i, w := range []struct {
+			id, name, below string
+			min, max        float64
+		}{
+			{fansArctic, "Arctic P12 PWM PST", "stop", 200, 1800},
+			{fansNoctua, "Noctua NF-A12x25 PWM", "hold", 450, 2000},
+		} {
+			if jget(list, i, "id") != w.id || jget(list, i, "name") != w.name || jget(list, i, "below_min") != w.below ||
+				jget(list, i, "min_rpm") != w.min || jget(list, i, "max_rpm") != w.max {
+				t.Errorf("fans[%d] = %v, want %+v", i, list[i], w)
+			}
 		}
 	})
 }
