@@ -100,6 +100,7 @@ type fakeControl struct {
 	sim    []control.SimRestartRequest
 	status control.Status
 	err    error
+	onDown func() // runs when a down request arrives (e.g. to end the stand-in supervisor)
 }
 
 func (f *fakeControl) record(call string) error {
@@ -114,6 +115,9 @@ func (f *fakeControl) Status(context.Context) (control.Status, error) {
 }
 
 func (f *fakeControl) Down(context.Context) (control.DownResult, error) {
+	if f.onDown != nil {
+		f.onDown()
+	}
 	return control.DownResult{}, f.record("down")
 }
 
@@ -142,11 +146,12 @@ func readyStatus(name string) control.Status {
 	}
 }
 
-// supervisorProc starts a process whose cmdline carries `serve <name>`, which
-// is what instance.ProcessAlive looks for, and registers its removal.
+// supervisorProc starts a process that looks like `sil serve <name>` to
+// instance.ProcessAlive (argv[0] is "sil", the arguments carry `serve <name>`)
+// and registers its removal.
 func supervisorProc(t *testing.T, name string) int {
 	t.Helper()
-	cmd := exec.Command("sh", "-c", "sleep 120 & wait", "serve", name)
+	cmd := exec.Command("bash", "-c", `exec -a sil bash -c 'sleep 120 & wait' serve "$1"`, "bash", name)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start the stand-in supervisor: %v", err)
@@ -155,6 +160,14 @@ func supervisorProc(t *testing.T, name string) int {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		_ = cmd.Wait()
 	})
+	// Wait for the exec: until then the cmdline is the launcher's, not sil's.
+	ctx, cancel := clock.WithTimeout(context.Background(), testClock, 5*time.Second)
+	defer cancel()
+	for !instance.ProcessAlive(instance.RunFile{PID: cmd.Process.Pid}, name) {
+		if err := testClock.Sleep(ctx, 5*time.Millisecond); err != nil {
+			t.Fatalf("the stand-in supervisor for %s never became `sil serve %s`", name, name)
+		}
+	}
 	return cmd.Process.Pid
 }
 
@@ -467,10 +480,47 @@ func TestUnsafeRuntimeBaseIsRefused(t *testing.T) {
 	if err := os.Chmod(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, cmd := range [][]string{{"status"}, {"status", "fan"}, {"fw", "restart", "fan"}} {
+	for _, cmd := range [][]string{{"status"}, {"status", "fan"}, {"fw", "restart", "fan"}, {"down", "fan"}, {"down"}} {
 		if r := run(t, cmd...); r.exit != 2 || r.errCode(t) != "unsafe_runtime_dir" {
 			t.Fatalf("sil %v: exit %d, %s", cmd, r.exit, r.stdout)
 		}
+	}
+}
+
+// TestDownDoesNotDialTheRunFileSocket: like every instance command, down dials
+// the socket in the instance's own run dir; the path run.json names is never
+// connected to (T-01-17).
+func TestDownDoesNotDialTheRunFileSocket(t *testing.T) {
+	cliEnv(t)
+	own := &fakeControl{status: readyStatus("fan")}
+	p := liveInstance(t, "fan", own)
+	foreign := &fakeControl{status: readyStatus("fan")}
+	foreignSock := filepath.Join(t.TempDir(), "elsewhere.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- control.Serve(ctx, foreignSock, control.NewHandler(foreign)) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	waitSocket(t, foreignSock)
+	pid := supervisorProc(t, "fan")
+	own.onDown = func() { _ = syscall.Kill(-pid, syscall.SIGKILL) }
+	if err := instance.WriteRunFile(p, instance.RunFile{
+		Schema: 1, Instance: "fan", PID: pid, RunDir: p.RunDir,
+		APISock: foreignSock, BusSock: p.BusSock(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(t, "down", "fan"); r.exit != 0 {
+		t.Fatalf("exit %d, %s", r.exit, r.stdout)
+	}
+	own.mu.Lock()
+	defer own.mu.Unlock()
+	foreign.mu.Lock()
+	defer foreign.mu.Unlock()
+	if len(foreign.calls) != 0 || len(own.calls) == 0 || own.calls[0] != "down" {
+		t.Fatalf("own socket calls %v, run.json socket calls %v; want down on the own socket only", own.calls, foreign.calls)
 	}
 }
 

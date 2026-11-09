@@ -263,6 +263,11 @@ func (c *DownCmd) Run(env *runEnv) error {
 	if err != nil {
 		return err
 	}
+	// Same gate as connect: an unsafe runtime base must not steer the
+	// signalling fallback or the socket dial (T-01-17).
+	if err := checkPrivateDir(filepath.Dir(p.RunDir)); err != nil {
+		return err
+	}
 	res, err := lifecycle.Down(env.context, p.Name)
 	if err != nil {
 		return err

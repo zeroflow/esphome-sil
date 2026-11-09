@@ -235,7 +235,7 @@ func checkNotRunning(ctx context.Context, p instance.Paths) error {
 	clk := clock.NewReal()
 	sctx, cancel := clock.WithTimeout(ctx, clk, time.Second)
 	defer cancel()
-	if st, err := control.Dial(rf.APISock).Status(sctx); err == nil {
+	if st, err := control.Dial(p.APISock()).Status(sctx); err == nil {
 		detail["phase"] = st.Phase
 	} else {
 		detail["control_responding"] = false
@@ -433,7 +433,9 @@ func Down(ctx context.Context, name string) (control.DownResult, error) {
 	}
 	clk := clock.NewReal()
 	dctx, cancel := clock.WithTimeout(ctx, clk, downBudget)
-	res, err := control.Dial(rf.APISock).Down(dctx)
+	// Dial the socket of this instance's own run dir, never the path run.json
+	// names: run.json says whether the instance is live, not where to connect.
+	res, err := control.Dial(p.APISock()).Down(dctx)
 	timedOut := clock.TimedOut(dctx)
 	cancel()
 	if err != nil {
