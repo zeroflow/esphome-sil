@@ -45,6 +45,8 @@ type bench struct {
 
 	btnHold chan struct{} // non-nil while SetButton calls wait before they apply
 
+	stall map[string]bool // button ops whose next call never answers (StallNext)
+
 	watchErr error // returned by the next Watch after its snapshot (FailWatchAfterSnapshot)
 
 	histHold chan struct{}                                      // non-nil while History answers are held
@@ -493,7 +495,14 @@ func (b *bench) SetButton(ctx context.Context, id string, down bool, r control.D
 	}
 	b.mu.Lock()
 	hold := b.btnHold
+	stalled := b.stall[op]
+	delete(b.stall, op)
 	b.mu.Unlock()
+	if stalled {
+		// A request that is never answered and never applied: it ends only when the client gives up.
+		<-ctx.Done()
+		return control.PressResult{}, ctx.Err()
+	}
 	if hold != nil {
 		select {
 		case <-hold:
@@ -524,6 +533,17 @@ func (b *bench) SetButton(ctx context.Context, id string, down bool, r control.D
 // max_hold, and the status changed.
 func (b *bench) AutoRelease(id string) {
 	b.Emit(events.Event{K: "button", ID: id, V: false, Reason: "max_hold"}, func(st *control.Status) { st.Buttons[id] = false })
+}
+
+// StallNext makes the next call of the button op ("button.down" or "button.up") hang: it is recorded,
+// then neither answered nor applied until the client aborts the request (once).
+func (b *bench) StallNext(op string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.stall == nil {
+		b.stall = map[string]bool{}
+	}
+	b.stall[op] = true
 }
 
 // HoldButtonEvents makes SetButton calls wait (after they are recorded) until ReleaseButtonEvents, so

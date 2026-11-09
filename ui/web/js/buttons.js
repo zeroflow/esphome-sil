@@ -8,6 +8,11 @@ import { showError } from "./message.js";
 // The max hold the page asks for with every down: 10 s of sim time, well above the 1.5 s long press.
 export const MAX_HOLD_MS = 10000;
 
+// The time a button request gets before the page gives up on it (real time). It is far below the max
+// hold, so a stalled request ends well before the hold it belongs to would, and it bounds how long a
+// cap's later presses can wait behind it (cap.tail).
+export const REQUEST_TIMEOUT_MS = 3000;
+
 // caps maps a button id to its cap: the element, `holding` (this page started a hold it has not
 // released), `seenHeld` (the server has reported that hold), `gen` (counts downs, so an answer to an
 // old down cannot touch a newer hold), `downDone` (a promise of the last down's success), `tail` (a
@@ -28,6 +33,15 @@ function say(err) {
 // cap is left to the server's report. The request waits for the cap's earlier requests to be answered
 // (cap.tail): the web listener serves one request per connection, so nothing else orders a quick
 // re-press after the up of the hold before it.
+//
+// A down that gets no answer within REQUEST_TIMEOUT_MS is aborted and counts as a down that never
+// registered, exactly like a refused one: it resolves false, so the cap is not holding, the release
+// that follows sends no up (an up for a hold the server does not have would only be refused as
+// button_not_held), and the chain moves on so the next press goes through. Nothing is shown for it
+// (D-17: the message line carries only server text; the abort has none, and LINK reports the
+// connection). The cap is never lit by the page, only by the server's report, so a timed-out down
+// does not light it. If the server did apply that down after all, the cap shows the hold the server
+// reports, and the engine's max hold (D-15) releases it.
 function down(cap) {
   if (cap.holding || cap.el.disabled) {
     return;
@@ -36,7 +50,9 @@ function down(cap) {
   cap.seenHeld = false;
   const gen = ++cap.gen;
   cap.downDone = cap.tail
-    .then(() => call("button.down", { params: { id: cap.id }, body: { max_hold_ms: MAX_HOLD_MS } }))
+    .then(() =>
+      call("button.down", { params: { id: cap.id }, body: { max_hold_ms: MAX_HOLD_MS }, timeoutMs: REQUEST_TIMEOUT_MS }),
+    )
     .then(
       () => true,
       (err) => {
@@ -61,7 +77,9 @@ function release(cap) {
   cap.ownLoss.clear();
   // keepalive: the up is most often sent while the page is being closed (tab hidden, window blur).
   cap.tail = cap.downDone.then((started) =>
-    started ? call("button.up", { params: { id: cap.id }, keepalive: true }).catch(say) : undefined,
+    started
+      ? call("button.up", { params: { id: cap.id }, keepalive: true, timeoutMs: REQUEST_TIMEOUT_MS }).catch(say)
+      : undefined,
   );
 }
 
@@ -122,7 +140,6 @@ function releaseAll() {
     release(cap);
   }
 }
-
 
 // initButtons wires every USR cap under root.
 export function initButtons(root = document) {

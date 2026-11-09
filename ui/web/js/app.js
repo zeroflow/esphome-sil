@@ -18,6 +18,10 @@ const HISTORY_WINDOW_S = 62;
 // The most sample frames held back while the history request is out (5 minutes at 10 Hz, the
 // server's ring); a request that long has failed.
 const HELD_MAX = 3000;
+// The time the history request gets (real time); when it elapses the join fails and the plot goes on
+// with live samples only (failJoin), so a request that hangs while the WebSocket stays up cannot hold
+// the plot back for good.
+const HISTORY_TIMEOUT_MS = 10000;
 
 let socket = null;
 let delay = RETRY_MIN_MS;
@@ -73,7 +77,7 @@ function syncFanMax() {
 function startJoin(ws) {
   const j = { ws, held: [], done: false };
   join = j;
-  call("history", { query: { window_s: HISTORY_WINDOW_S } }).then(
+  call("history", { query: { window_s: HISTORY_WINDOW_S }, timeoutMs: HISTORY_TIMEOUT_MS }).then(
     (res) => finishJoin(j, res),
     (err) => failJoin(j, err),
   );

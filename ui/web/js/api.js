@@ -25,10 +25,12 @@ export class ApiError extends Error {
 // ({window_s: 62} becomes ?window_s=62) and the values of the path's {name} parameters ({id: "usr1"}
 // fills {id}, percent-encoded), and returns the parsed JSON answer. `keepalive: true` lets the
 // request outlive the page (the browser does not cancel it when the tab closes or navigates away; only
-// for small bodies). A response
-// that is not ok throws ApiError; a request that got no response at all rejects with the browser's
-// own error, which callers do not show (LINK reports the connection).
-export async function call(name, { body, query, params, keepalive } = {}) {
+// for small bodies). `timeoutMs` bounds the whole call, answer body included: when it elapses the
+// request is aborted and the call rejects with the browser's AbortError (no ApiError, so nothing is
+// shown; LINK reports the connection). Without it the call waits as long as the browser does. A
+// response that is not ok throws ApiError; a request that got no response at all rejects with the
+// browser's own error, which callers do not show.
+export async function call(name, { body, query, params, keepalive, timeoutMs } = {}) {
   const op = OPS[name];
   if (!op) {
     throw new TypeError("not an operation of the page: " + name);
@@ -46,6 +48,21 @@ export async function call(name, { body, query, params, keepalive } = {}) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
+  if (timeoutMs === undefined) {
+    return perform(path, init);
+  }
+  const ctl = new AbortController();
+  init.signal = ctl.signal;
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    return await perform(path, init);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// perform sends the request and turns the response into the parsed answer or an ApiError.
+async function perform(path, init) {
   const res = await fetch(path, init);
   if (res.ok) {
     return res.json();

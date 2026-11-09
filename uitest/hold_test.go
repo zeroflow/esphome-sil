@@ -490,3 +490,52 @@ func TestUSRRepressWaitsForUp(t *testing.T) {
 	b.waitCalls(t, "button.up", 2, 5*time.Second)
 	waitPressed(t, p, "usr1", "false", 5*time.Second)
 }
+
+// TestUSRStalledRequestTimesOut (WR-01 of the second review, D-17): a button request that is never
+// answered must not block the cap for good. The page gives a button request a few seconds, then aborts
+// it. A down that timed out counts as a down that never registered: the cap is not lit, the release of
+// that press sends no up (there is no hold to end), nothing is invented for the message line, and the
+// next press of the cap goes out once the timeout has elapsed and stands.
+func TestUSRStalledRequestTimesOut(t *testing.T) {
+	b, p := liveWithCaps(t)
+	b.StallNext("button.down")
+	x, y := capCentre(t, p, "usr1")
+	mouse(t, p, "mousePressed", x, y)
+	first := b.waitCalls(t, "button.down", 1, 5*time.Second)[0]
+	// The press is released and made again while the first down hangs: the second down is queued
+	// behind it and cannot be sent yet.
+	mouse(t, p, "mouseReleased", x, y)
+	mouse(t, p, "mousePressed", x, y)
+	settle(t, 1*time.Second)
+	if n := len(b.callsOf("button.down")); n != 1 {
+		t.Fatalf("%d downs while the first one hangs, want the second queued behind it", n)
+	}
+	if got := pressed(t, p, "usr1"); got != "false" {
+		t.Errorf("cap aria-pressed = %q while the down hangs, want false (the page never lights a cap)", got)
+	}
+
+	// Once the page gives up on the first down the second one goes through, and the hold stands.
+	second := b.waitCalls(t, "button.down", 2, 10*time.Second)[1]
+	if gap := second.At - first.At; gap < 2500*time.Millisecond {
+		t.Errorf("the second down came %v after the first, want it only after the request timeout (about 3 s)", gap)
+	}
+	waitPressed(t, p, "usr1", "true", 5*time.Second)
+	settle(t, 300*time.Millisecond)
+	if n := len(b.callsOf("button.up")); n != 0 {
+		t.Errorf("%d ups for a down that timed out, want none (an orphan up)", n)
+	}
+	if msg := textOf(t, p, "#message"); msg != "" {
+		t.Errorf("message line = %q after a timed-out request, want it empty (nothing invented)", msg)
+	}
+	if link := textOf(t, p, "#link"); link != "LIVE" {
+		t.Errorf("LINK = %q, want LIVE (the WebSocket is healthy)", link)
+	}
+
+	mouse(t, p, "mouseReleased", x, y)
+	b.waitCalls(t, "button.up", 1, 5*time.Second)
+	waitPressed(t, p, "usr1", "false", 5*time.Second)
+	settle(t, 300*time.Millisecond)
+	if n, m := len(b.callsOf("button.down")), len(b.callsOf("button.up")); n != 2 || m != 1 {
+		t.Errorf("%d downs and %d ups, want two downs (one timed out) and one up", n, m)
+	}
+}
