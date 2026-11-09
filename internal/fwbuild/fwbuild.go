@@ -276,12 +276,19 @@ func (b *builder) compile(ctx context.Context, network string) error {
 		raw, _ := os.ReadFile(b.o.LogPath)
 		tail := lastLines(cleanOutput(string(raw), b.o.APIKey), tailLines)
 		msg := "firmware build failed; see the build log " + b.o.LogPath
-		if bytes.Contains(raw, []byte("Failed to download")) || bytes.Contains(raw, []byte("HTTPClientError")) {
+		download := bytes.Contains(raw, []byte("Failed to download")) || bytes.Contains(raw, []byte("HTTPClientError"))
+		if download {
 			if network == "none" {
 				msg += ": a library or its registry entry is missing from the toolcache and the compile runs offline; delete " + b.toolcache + " so the next build fetches them again (needs network)"
 			} else {
 				msg += ": the one-time fetch of the noise-c/libsodium archives failed; the first build on this host needs network access"
 			}
+		}
+		var ee *exec.ExitError
+		if !download && errors.As(err, &ee) && ee.ExitCode() == 1 {
+			// ESPHome ran and the compiler rejected the firmware: that is the
+			// code under test, so it is user-fixable, not bench infrastructure.
+			return apperr.Failed("compile_failed", msg, map[string]any{"log": b.o.LogPath, "output_tail": tail, "error": err.Error()})
 		}
 		return apperr.Infra("build_failed", msg, map[string]any{"log": b.o.LogPath, "output_tail": tail, "error": err.Error()})
 	}

@@ -10,6 +10,7 @@ package apperr
 var Registry = map[string]int{
 	// Exit 1: the user can fix it (bad name or argument, bad config, wrong state).
 	"already_running":      ExitFailed,
+	"compile_failed":       ExitFailed,
 	"config_invalid":       ExitFailed,
 	"config_not_found":     ExitFailed,
 	"fan_toml_invalid":     ExitFailed,
