@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Live Web UI
 status: executing
-stopped_at: Completed 03-03-PLAN.md
-last_updated: "2026-11-09T13:20:38.234Z"
+stopped_at: Completed 03-04-PLAN.md
+last_updated: "2026-11-09T13:29:56.140Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 3 execution started
-state_head: cdaefdf0fe2ee5dc84d14b79cd3fa57e03f9c5cd
+state_head: 4362b8ba8caab1155284d061d1750bc0e422ae70
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 33
-  completed_plans: 24
+  completed_plans: 25
   percent: 33
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 ## Current Position
 
 Phase: 3 (Live Web UI) — EXECUTING
-Plan: 4 of 12
+Plan: 5 of 12
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 3 execution started
 
@@ -80,6 +80,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 3 P01 | 40 min | 2 tasks | 16 files |
 | Phase 3 P02 | 25 min | 2 tasks | 8 files |
 | Phase 03 P03 | 40 min | 2 tasks | 6 files |
+| Phase 03 P04 | 35 min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -143,6 +144,8 @@ Recent decisions affecting current work:
 - [Phase 3]: 03-02: linkState tokens (connecting/live/retrying) live in app.js, display strings in view.js; app.js clears #message on every snapshot
 - [Phase 03]: 03-03: web listener served as web.Serve(web.Limit(...), web.LimitBody(...)); header deadline relies on net/http clearing it only after headers with keep-alives off; no per-IP cap (accepted residual)
 - [Phase 03]: 03-03: WS reap releases Watch and browser slots before the close handshake; browsers capped at 8 of 16 with the existing too_many_streams code
+- [Phase 03]: 03-04: control.Operations is the identity of the control API; the listener policy (socket all rows, LAN only LAN rows, others 403 operation_not_allowed) follows from the row's LAN flag
+- [Phase 03]: 03-04: logs (tail and follow) is socket-only on the web listener (D-20) and enforced by the table
 
 ### Pending Todos
 
@@ -168,8 +171,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T13:20:38.180Z
-Stopped at: Completed 03-03-PLAN.md
+Last session: 2026-11-09T13:29:56.086Z
+Stopped at: Completed 03-04-PLAN.md
 Resume file: None
 
 ## Needs Human
