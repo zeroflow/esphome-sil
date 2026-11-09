@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -162,4 +164,256 @@ func TestLEDStatus(t *testing.T) {
 	if !ledsOff(st, 2, 4) {
 		t.Errorf("strip = %v, want fans 2-4 off while only fan 1 runs", ledsStrip(st))
 	}
+}
+
+// ledsOut returns the leds out frames received on connection conn, in arrival order.
+func ledsOut(p *ioPeer, conn int) []ioFrame {
+	var out []ioFrame
+	for _, f := range ioConnFrames(p, conn) {
+		if f.M["k"] == "out" && f.M["ch"] == "leds" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// ledsPx is the px of a leds frame and its firmware timestamp t in microseconds.
+func ledsPx(f ioFrame) (px string, tUS float64) {
+	px, _ = f.M["px"].(string)
+	tUS, _ = f.M["t"].(float64)
+	return px, tUS
+}
+
+// ledsFirstPixel is "#rrggbb" of the first LED of a px string.
+func ledsFirstPixel(px string) string {
+	if len(px) < 6 {
+		return px
+	}
+	return "#" + px[:6]
+}
+
+// ledsClient connects a real API client once the firmware's API is up, so the board LED turns
+// green (the client's client_info is not "sil").
+func ledsClient(t testing.TB, id fwIdentity) {
+	t.Helper()
+	waitFor(t, 30*time.Second, "an API client to connect", func() bool {
+		_, code := runAPIClient(t, id.Port, id.Key, "info")
+		return code == 0
+	})
+}
+
+// ledsStart runs the firmware program against a fresh fake peer.
+func ledsStart(t testing.TB, program string) *ioPeer {
+	t.Helper()
+	dir := shortTempDir(t)
+	busPath := filepath.Join(dir, "bus.sock")
+	peer := ioListen(t, busPath)
+	startFirmware(t, program, busPath, filepath.Join(dir, "prefs"))
+	peer.Wait(15*time.Second, "sync on connection 1", func(f ioFrame) bool { return f.Conn == 1 && f.M["k"] == "sync" })
+	return peer
+}
+
+// ledsCheckRate asserts the D-07 rules on the frames of a window: enough frames, every px 30
+// lowercase hex characters, every frame different from the previous one, consecutive firmware
+// timestamps at least 50000 us apart. It returns the measured rate in frames per second.
+func ledsCheckRate(t testing.TB, frames []ioFrame, minFrames int) float64 {
+	t.Helper()
+	if len(frames) < minFrames {
+		t.Fatalf("%d leds frames, want at least %d", len(frames), minFrames)
+	}
+	hex30 := regexp.MustCompile(`^[0-9a-f]{30}$`)
+	var prevPx string
+	var prevT float64
+	for i, f := range frames {
+		px, ts := ledsPx(f)
+		if !hex30.MatchString(px) {
+			t.Fatalf("frame %d px = %q, want 30 lowercase hex characters", i, px)
+		}
+		if i > 0 {
+			if px == prevPx {
+				t.Errorf("frame %d repeats the px of frame %d (%s): not change-only", i, i-1, px)
+			}
+			if gap := ts - prevT; gap < 50000 {
+				t.Errorf("frame %d is %.0f us after frame %d, want >= 50000 (20 Hz cap)", i, gap, i-1)
+			}
+		}
+		prevPx, prevT = px, ts
+	}
+	_, first := ledsPx(frames[0])
+	_, last := ledsPx(frames[len(frames)-1])
+	if last <= first {
+		return 0
+	}
+	return float64(len(frames)-1) / ((last - first) / 1e6)
+}
+
+// ledsRev33With writes a copy of examples/rev33.yaml with old replaced by replacement and returns
+// its path. The copy sits next to the original, so its relative component path and the build's
+// read-only mount of the repo keep working; the name matches the *_dev.yaml pattern of .gitignore
+// and the file is removed when the test ends.
+func ledsRev33With(t testing.TB, old, replacement string) string {
+	t.Helper()
+	dir := filepath.Join(repoRoot(t), "examples")
+	raw, err := os.ReadFile(filepath.Join(dir, "rev33.yaml"))
+	if err != nil {
+		t.Fatalf("read rev33.yaml: %v", err)
+	}
+	if !strings.Contains(string(raw), old) {
+		t.Fatalf("rev33.yaml no longer contains %q", old)
+	}
+	f, err := os.CreateTemp(dir, "rev33-*_dev.yaml")
+	if err != nil {
+		t.Fatalf("create variant: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(f.Name()) })
+	if _, err := f.WriteString(strings.Replace(string(raw), old, replacement, 1)); err != nil {
+		t.Fatalf("write variant: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close variant: %v", err)
+	}
+	return f.Name()
+}
+
+// TestLEDFrames drives the real Rev 3.3 firmware from a fake simulator (no sil involved) and
+// checks the LED frames on the wire: the manifest, the 20 Hz cap with change-only frames during a
+// pulse and during another effect, silence when the strip is static, and the replay on reconnect.
+func TestLEDFrames(t *testing.T) {
+	id := newFWIdentity(t, "e2e-ledsfw")
+	program := ledsBuild(t, id, filepath.Join(repoRoot(t), "examples", "rev33.yaml"))
+
+	t.Run("manifest", func(t *testing.T) {
+		peer := ledsStart(t, program)
+		var leds ioFrame
+		for _, f := range ioConnFrames(peer, 1) {
+			if f.M["k"] != "chan" {
+				continue
+			}
+			if f.M["ch"] == "leds" {
+				leds = f
+				continue
+			}
+			if _, ok := f.M["n"]; ok {
+				t.Errorf("chan %v carries n; only the rgb channel may", f.M["ch"])
+			}
+			if _, ok := f.M["seg"]; ok {
+				t.Errorf("chan %v carries seg; only the rgb channel may", f.M["ch"])
+			}
+		}
+		want := map[string]any{
+			"k": "chan", "ch": "leds", "dir": "out", "type": "rgb", "n": float64(5),
+			"seg": "board:0:0,fan1:1:1,fan2:2:2,fan3:3:3,fan4:4:4",
+		}
+		if !reflect.DeepEqual(leds.M, want) {
+			t.Fatalf("leds chan frame = %v, want %v", leds.M, want)
+		}
+	})
+
+	t.Run("pulse_rate", func(t *testing.T) {
+		peer := ledsStart(t, program)
+		if err := sysClock.Sleep(t.Context(), 4*time.Second); err != nil {
+			t.Fatalf("sleep: %v", err)
+		}
+		frames := ledsOut(peer, 1)
+		rate := ledsCheckRate(t, frames, 10)
+		t.Logf("boot pulse: %d leds frames in the first 4 s of the firmware, %.1f frames/s", len(frames), rate)
+		if rate > 20.01 {
+			t.Errorf("measured %.1f frames/s, want at most 20", rate)
+		}
+	})
+
+	t.Run("idle_silence", func(t *testing.T) {
+		peer := ledsStart(t, program)
+		ledsClient(t, id)
+		if err := sysClock.Sleep(t.Context(), 3*time.Second); err != nil {
+			t.Fatalf("sleep: %v", err)
+		}
+		before := ledsOut(peer, 1)
+		if err := sysClock.Sleep(t.Context(), 5*time.Second); err != nil {
+			t.Fatalf("sleep: %v", err)
+		}
+		after := ledsOut(peer, 1)
+		t.Logf("idle window of 5 s: %d leds frames (%d before it)", len(after)-len(before), len(before))
+		if len(after) != len(before) {
+			t.Fatalf("%d leds frames arrived in 5 s of an idle firmware, want 0", len(after)-len(before))
+		}
+		px, _ := ledsPx(after[len(after)-1])
+		if !ledsDominant(t, ledsFirstPixel(px), 'g') {
+			t.Errorf("last leds frame before the silence has first pixel %s, want green-dominant (the final colour was flushed)", ledsFirstPixel(px))
+		}
+	})
+
+	t.Run("replay", func(t *testing.T) {
+		peer := ledsStart(t, program)
+		ledsClient(t, id)
+		var last string
+		waitFor(t, 15*time.Second, "a green strip with no leds frame for 1 s", func() bool {
+			frames := ledsOut(peer, 1)
+			if len(frames) == 0 {
+				return false
+			}
+			px, _ := ledsPx(frames[len(frames)-1])
+			if !ledsDominant(t, ledsFirstPixel(px), 'g') || sysClock.Now()-frames[len(frames)-1].At < time.Second {
+				return false
+			}
+			last = px
+			return true
+		})
+		peer.Down()
+		if err := sysClock.Sleep(t.Context(), 300*time.Millisecond); err != nil {
+			t.Fatalf("sleep: %v", err)
+		}
+		peer.Up()
+		peer.Wait(10*time.Second, "sync on connection 2", func(f ioFrame) bool { return f.Conn == 2 && f.M["k"] == "sync" })
+
+		var between []ioFrame
+		seenHello := false
+		for _, f := range ioConnFrames(peer, 2) {
+			if f.M["k"] == "hello" {
+				seenHello = true
+			}
+			if f.M["k"] == "sync" {
+				break
+			}
+			if seenHello && f.M["k"] == "out" && f.M["ch"] == "leds" {
+				between = append(between, f)
+			}
+		}
+		if len(between) != 1 {
+			t.Fatalf("%d leds frames between hello and sync on connection 2, want exactly 1", len(between))
+		}
+		if px, _ := ledsPx(between[0]); px != last {
+			t.Errorf("replayed px = %s, want the last px of connection 1 (%s)", px, last)
+		}
+		// The strip did not change, so nothing follows the replay.
+		if err := sysClock.Sleep(t.Context(), 2*time.Second); err != nil {
+			t.Fatalf("sleep: %v", err)
+		}
+		if n := len(ledsOut(peer, 2)); n != 1 {
+			t.Errorf("%d leds frames on connection 2, want only the replay", n)
+		}
+	})
+
+	// Effects other than pulse obey the same rules: the board partition runs addressable_rainbow,
+	// (its effect name is "Rainbow") which rewrites the strip about every 32 ms.
+	t.Run("rainbow_rate", func(t *testing.T) {
+		rid := newFWIdentity(t, "e2e-ledsfw-rb")
+		variant := ledsRev33With(t, `call.set_effect("pulse");`, `call.set_effect("rainbow");`)
+		peer := ledsStart(t, ledsBuild(t, rid, variant))
+		if err := sysClock.Sleep(t.Context(), 4*time.Second); err != nil {
+			t.Fatalf("sleep: %v", err)
+		}
+		frames := ledsOut(peer, 1)
+		rate := ledsCheckRate(t, frames, 20)
+		t.Logf("addressable_rainbow: %d leds frames in the first 4 s of the firmware, %.1f frames/s", len(frames), rate)
+		if rate > 20.01 {
+			t.Errorf("measured %.1f frames/s, want at most 20", rate)
+		}
+		// Only the board LED (pixel 0) is lit; the other four stay off in every frame.
+		for i, f := range frames {
+			if px, _ := ledsPx(f); px[6:] != strings.Repeat("0", 24) {
+				t.Fatalf("frame %d = %s: LEDs 1-4 should stay off while only the board partition runs", i, px)
+			}
+		}
+	})
 }
