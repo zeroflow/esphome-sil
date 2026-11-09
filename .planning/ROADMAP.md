@@ -31,14 +31,14 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Two named instances run side by side, each with its own run dir, API port, MAC, device name and key. `sil up` on a taken port fails with exit code 2 and a JSON error. `sil down` stops both processes, killing the simulator leaves no orphaned firmware, and each new run starts with fresh preferences.
   5. Misconfigurations fail loudly before anything runs: a host-incompatible component (e.g. `wifi:`, `ledc`, `i2c`), a sim platform without `channel:`, an over-long sim-bus socket path, or an unknown key in `fan.toml` each stop the build or start with a message naming the problem.
 
-**Plans:** 1/13 plans executed
+**Plans:** 2/13 plans executed
 
 Plans:
 **Wave 1**
 - [x] 01-01-PLAN.md — Walking skeleton link 1 (tracer): repo sim_bus component + example build statically in the pinned image, run on the host, duty/RPM cross the sim-bus on four ports via the encrypted API (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 01-02-PLAN.md — Walking skeleton link 2 (tracer): Go engine + fan model + fan library close the loop with real firmware; exact duty decimals; wall-clock lint; pinned, provenance-checked modules (wave 2)
+- [x] 01-02-PLAN.md — Walking skeleton link 2 (tracer): Go engine + fan model + fan library close the loop with real firmware; exact duty decimals; wall-clock lint; pinned, provenance-checked modules (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 01-03-PLAN.md — Walking skeleton link 3 (tracer): `sil up` -> detached supervisor -> `sil status` over api.sock -> `sil down`; four ports; CLI error JSON; e2e Env helpers (wave 3)
@@ -99,6 +99,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Closed-Loop Fan Skeleton | 1/13 | In Progress|  |
+| 1. Closed-Loop Fan Skeleton | 2/13 | In Progress|  |
 | 2. Full Rev 3.3 Bench | 0/TBD | Not started | - |
 | 3. Live Web UI | 0/TBD | Not started | - |

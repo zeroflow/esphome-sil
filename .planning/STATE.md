@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
 status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-11-09T00:47:52.505Z"
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-11-09T00:54:43.599Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: 6b56e791a9a20372c536704712a0cd54f3111ad1
+state_head: 09c47ef50720bb81031ad298c686a00128236d4d
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
-Plan: 2 of 13
+Plan: 3 of 13
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 1 execution started
 
@@ -57,6 +57,7 @@ Progress: [░░░░░░░░░░] 0%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 1 P01 | 12 min | 2 tasks | 14 files |
+| Phase 01 P02 | 20min | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -72,6 +73,9 @@ Recent decisions affecting current work:
 - [Roadmap]: Contract tests (TEST-01/02) live in Phase 2 next to the IO surface they guard, not in a separate final phase
 - [Phase 1]: ESPHOME_NOGITIGNORE=1 in the build container: read-only repo mount otherwise breaks esphome compile (write_gitignore)
 - [Phase 1]: fwbuild.Result.Cached stays false until 01-08 builds the hash-skip pipeline
+- [Phase 01]: 01-02: bus.Server.Send is queue-based and non-blocking (1024 frames) so a stalled firmware cannot freeze the engine goroutine
+- [Phase 01]: 01-02: Frame.GetNum re-expresses the wire float32 as its shortest decimal so exact duty comparisons hold; GetF32 keeps the raw float32
+- [Phase 01]: 01-02: wall-clock lint bans context timers and stdlib timeout fields too; infrastructure timeouts go through clock.WithTimeout or clock.Deadline
 
 ### Pending Todos
 
@@ -97,8 +101,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T00:47:52.480Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-11-09T00:54:43.575Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None
 
 ## Needs Human
