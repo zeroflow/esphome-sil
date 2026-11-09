@@ -1,0 +1,41 @@
+{
+  "storage_version": 1,
+  "name": "sil-e2e-lint",
+  "friendly_name": "SiL e2e-lint",
+  "comment": null,
+  "esphome_version": "2026.10.1",
+  "src_version": 1,
+  "address": null,
+  "web_port": null,
+  "esp_platform": "HOST",
+  "build_path": "/build/sil-e2e-lint",
+  "firmware_bin_path": "/build/sil-e2e-lint/.pioenvs/sil-e2e-lint/program",
+  "loaded_integrations": [
+    "api",
+    "esphome",
+    "external_components",
+    "fan",
+    "host",
+    "logger",
+    "mdns",
+    "network",
+    "noise",
+    "output",
+    "preferences",
+    "sensor",
+    "sim_bus",
+    "socket",
+    "speed"
+  ],
+  "loaded_platforms": [
+    "fan/speed",
+    "output/sim_bus",
+    "sensor/sim_bus"
+  ],
+  "no_mdns": false,
+  "framework": "host",
+  "core_platform": "host",
+  "toolchain": "host",
+  "area": null,
+  "framework_version": null
+}
