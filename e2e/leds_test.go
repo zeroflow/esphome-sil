@@ -425,3 +425,134 @@ func TestLEDFrames(t *testing.T) {
 		}
 	})
 }
+
+// ledsPart is one partition light in a codegen fixture.
+type ledsPart struct {
+	id       string
+	from, to int
+}
+
+// ledsLightYAML renders a sim_bus light (id strip) of n LEDs, an optional segment_labels block
+// (already indented lines) and one stock partition light per part. The body carries its own hub.
+func ledsLightYAML(n int, labels string, parts []ledsPart) string {
+	var b strings.Builder
+	b.WriteString("sim_bus:\n  id: bus\n\nlight:\n  - platform: sim_bus\n    id: strip\n    name: \"Strip\"\n    internal: true\n    channel: leds\n")
+	fmt.Fprintf(&b, "    num_leds: %d\n", n)
+	if labels != "" {
+		b.WriteString("    segment_labels:\n" + labels)
+	}
+	for _, p := range parts {
+		fmt.Fprintf(&b, "  - platform: partition\n    name: \"%s\"\n    id: %s\n    internal: true\n    segments:\n      - id: strip\n        from: %d\n        to: %d\n", p.id, p.id, p.from, p.to)
+	}
+	return b.String()
+}
+
+// TestLEDCodegen proves, in the pinned image, that LED and channel mistakes stop `esphome config`
+// with a message that names the light and the offending entry (D-06), that the IO-04 boundaries
+// hold, and that a config with only a sim_bus light or only a sim_bus binary_sensor still builds.
+func TestLEDCodegen(t *testing.T) {
+	reject := func(t *testing.T, name, body string, want ...string) {
+		t.Helper()
+		out, code := codegenConfig(t, codegenFixture(t, name, body), nil)
+		if code == 0 {
+			t.Fatalf("esphome config accepted the %s fixture:\n%s", name, out)
+		}
+		for _, w := range want {
+			if !strings.Contains(out, w) {
+				t.Errorf("output lacks %q:\n%s", w, out)
+			}
+		}
+	}
+	accept := func(t *testing.T, name, body string) {
+		t.Helper()
+		if out, code := codegenConfig(t, codegenFixture(t, name, body), nil); code != 0 {
+			t.Fatalf("esphome config rejected the %s fixture (exit %d):\n%s", name, code, out)
+		}
+	}
+
+	t.Run("num_leds_bounds", func(t *testing.T) {
+		accept(t, "leds-n1", ledsLightYAML(1, "", []ledsPart{{"only_led", 0, 0}}))
+		accept(t, "leds-n255", ledsLightYAML(255, "", []ledsPart{{"all_led", 0, 254}}))
+		reject(t, "leds-n0", ledsLightYAML(0, "", nil), "num_leds")
+		reject(t, "leds-n256", ledsLightYAML(256, "", nil), "num_leds")
+	})
+
+	t.Run("range_bounds", func(t *testing.T) {
+		accept(t, "range-ok", ledsLightYAML(5, "", []ledsPart{{"edge_led", 0, 4}}))
+		reject(t, "range-over", ledsLightYAML(5, "", []ledsPart{{"edge_led", 0, 5}}), "edge_led", "strip", "num_leds: 5")
+	})
+
+	t.Run("unknown_label_key", func(t *testing.T) {
+		reject(t, "label-key", ledsLightYAML(5, "      nope_led: x\n", []ledsPart{{"one_led", 0, 0}}), "nope_led", "strip")
+	})
+
+	t.Run("bad_label", func(t *testing.T) {
+		reject(t, "label-bad", ledsLightYAML(5, "      one_led: Board\n", []ledsPart{{"one_led", 0, 0}}), "Board")
+		// A derived label can be invalid too: a partition id with an uppercase letter.
+		reject(t, "label-derived", ledsLightYAML(5, "", []ledsPart{{"Fan1_led", 0, 0}}), "Fan1", "strip")
+	})
+
+	t.Run("duplicate_label", func(t *testing.T) {
+		reject(t, "label-dup", ledsLightYAML(5, "      a_led: board\n      b_led: board\n",
+			[]ledsPart{{"a_led", 0, 0}, {"b_led", 1, 1}}), "duplicate segment label 'board'", "a_led", "b_led", "strip")
+		// The derived default collides with an explicit label as well.
+		reject(t, "label-dup-derived", ledsLightYAML(5, "      a_led: b\n", []ledsPart{{"a_led", 0, 0}, {"b_led", 1, 1}}),
+			"duplicate segment label 'b'", "strip")
+	})
+
+	t.Run("seg_too_long", func(t *testing.T) {
+		// 24 partitions with 90-character labels: 24 * ~98 bytes = 2.3 KB > 2048.
+		var parts []ledsPart
+		var labels strings.Builder
+		for i := range 24 {
+			id := fmt.Sprintf("p%02d_led", i)
+			parts = append(parts, ledsPart{id, i, i})
+			fmt.Fprintf(&labels, "      %s: s%02d_%s\n", id, i, strings.Repeat("x", 86))
+		}
+		reject(t, "seg-long", ledsLightYAML(255, labels.String(), parts), "strip", "2048", "derived seg")
+		// Boundary: a handful of the same long labels stays below the limit and is accepted.
+		accept(t, "seg-short", ledsLightYAML(255, strings.Join(strings.SplitAfter(labels.String(), "\n")[:5], ""), parts[:5]))
+	})
+
+	t.Run("duplicate_channel_cross_domain", func(t *testing.T) {
+		reject(t, "dup-bs-light", ledsLightYAML(3, "", nil)+
+			"\nbinary_sensor:\n  - platform: sim_bus\n    id: btn_x\n    name: \"X\"\n    channel: leds\n",
+			"duplicate sim_bus channel 'leds'", "btn_x", "strip")
+		reject(t, "dup-s-bs", "sim_bus:\n  id: bus\n\nsensor:\n  - platform: sim_bus\n    id: sens_y\n    name: \"Y\"\n    channel: y\n\nbinary_sensor:\n  - platform: sim_bus\n    id: btn_y\n    name: \"Y2\"\n    channel: y\n",
+			"duplicate sim_bus channel 'y'", "sens_y", "btn_y")
+	})
+
+	// Each new platform builds on its own: the hub carries no USE_LIGHT / USE_BINARY_SENSOR code.
+	t.Run("guard_compiles", func(t *testing.T) {
+		t.Run("light-only", func(t *testing.T) {
+			body := `light:
+  - platform: sim_bus
+    id: strip
+    name: "Strip"
+    internal: true
+    channel: leds
+    num_leds: 3
+  - platform: partition
+    name: "Seg"
+    id: seg_led
+    internal: true
+    segments:
+      - id: strip
+        from: 0
+        to: 1
+`
+			yamlPath, _ := ioFixture(t, "light-only", body)
+			ioCompile(t, yamlPath)
+		})
+		t.Run("binary-sensor-only", func(t *testing.T) {
+			body := `binary_sensor:
+  - platform: sim_bus
+    id: btn
+    name: "Button"
+    channel: usr1
+`
+			yamlPath, _ := ioFixture(t, "bs-only", body)
+			ioCompile(t, yamlPath)
+		})
+	})
+}

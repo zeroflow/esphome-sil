@@ -21,6 +21,8 @@ CONF_SEGMENT_LABELS = "segment_labels"
 
 # A bus line is at most 4095 bytes; 255 LEDs are 510 hex characters of pixels.
 MAX_LEDS = 255
+# The derived seg travels in one chan frame (4095 bytes max); 2048 leaves room for the rest.
+SEG_MAX_BYTES = 2048
 LABEL_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -67,47 +69,73 @@ def partitions_of(light_config, full_config):
     return out
 
 
+def default_label(pid, labels):
+    """The label of a partition: segment_labels wins, else the id minus a trailing `_led`."""
+    label = labels.get(pid)
+    if label is None:
+        label = pid[: -len("_led")] if pid.endswith("_led") else pid
+    return label
+
+
 def derive_segments(light_config, full_config):
     """`label:from:to,...` in partition config order (from and to inclusive). The label is the
     partition id minus a trailing `_led`, unless `segment_labels` names it."""
     labels = light_config.get(CONF_SEGMENT_LABELS) or {}
     out = []
     for pid, lo, hi in partitions_of(light_config, full_config):
-        label = labels.get(pid)
-        if label is None:
-            label = pid[: -len("_led")] if pid.endswith("_led") else pid
+        label = default_label(pid, labels)
         out.append(f"{label}:{lo}:{hi}")
     return ",".join(out)
 
 
-def final_validate(config):
-    """Reject a segment_labels key that names no partition of this light, and segment names that
-    are not valid or not unique (the engine rejects the whole seg otherwise)."""
+def validate_segments(config):
+    """Config-time consistency of this light and its partition segments (D-06: the YAML is the
+    single source of truth, so a mistake stops `esphome config` instead of reaching the bus).
+
+    Rejected, each naming the light and the offending entry: a segment_labels key that is not a
+    partition of this light, a label that is not ^[a-z][a-z0-9_]*$, two partitions with the same
+    label, a partition segment outside 0..num_leds-1, and a derived seg longer than SEG_MAX_BYTES.
+    A light that no partition uses is valid (empty seg)."""
     full = fv.full_config.get()
+    me = _ident(config[CONF_ID])
+    num_leds = config[CONF_NUM_LEDS]
     labels = config.get(CONF_SEGMENT_LABELS) or {}
     parts = partitions_of(config, full)
     pids = {p[0] for p in parts}
     for pid in labels:
         if pid not in pids:
             raise cv.Invalid(
-                f"segment_labels names '{pid}', which is not a partition light of '{_ident(config[CONF_ID])}'"
+                f"light '{me}': segment_labels names '{pid}', which is not a partition light of '{me}'"
             )
     seen = {}
-    for part in derive_segments(config, full).split(","):
-        if not part:
-            continue
-        label = part.split(":")[0]
+    for pid, lo, hi in parts:
+        if lo > hi or hi >= num_leds:
+            raise cv.Invalid(
+                f"light '{me}': partition '{pid}' covers LEDs {lo}..{hi}, outside the strip "
+                f"0..{num_leds - 1} (num_leds: {num_leds})"
+            )
+        label = default_label(pid, labels)
         if not LABEL_RE.match(label):
             raise cv.Invalid(
-                f"segment label '{label}' is not valid ([a-z][a-z0-9_]*); name it with segment_labels"
+                f"light '{me}': segment label '{label}' of partition '{pid}' is not valid "
+                "([a-z][a-z0-9_]*); name it with segment_labels"
             )
         if label in seen:
-            raise cv.Invalid(f"duplicate segment label '{label}'; name one of them with segment_labels")
-        seen[label] = True
+            raise cv.Invalid(
+                f"light '{me}': duplicate segment label '{label}' (partitions '{seen[label]}' and "
+                f"'{pid}'); name one of them with segment_labels"
+            )
+        seen[label] = pid
+    seg = derive_segments(config, full)
+    if len(seg.encode()) > SEG_MAX_BYTES:
+        raise cv.Invalid(
+            f"light '{me}': the derived seg is {len(seg.encode())} bytes, over the limit of "
+            f"{SEG_MAX_BYTES}; shorten the partition labels or use fewer partitions"
+        )
     return config
 
 
-FINAL_VALIDATE_SCHEMA = final_validate
+FINAL_VALIDATE_SCHEMA = validate_segments
 
 
 async def to_code(config):

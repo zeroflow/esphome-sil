@@ -74,8 +74,9 @@ def check_unique_channels(config):
             channel = entry.get(CONF_CHANNEL)
             if channel is None:
                 continue
-            # A light is named by its output_id when it has one (the id of the underlying light).
-            ident = entry.get(CONF_OUTPUT_ID) or entry.get(CONF_ID)
+            # The id the user wrote: a light is named by its `id` (the one partitions refer to), not by
+            # the auto-generated output_id of the SimLight behind it.
+            ident = entry.get(CONF_ID) or entry.get(CONF_OUTPUT_ID)
             ident = getattr(ident, "id", None) or str(ident)
             if channel in seen:
                 raise cv.Invalid(
