@@ -327,7 +327,12 @@ func TestSupervisorRebootExit(t *testing.T) {
 		polite(p)
 	}}
 	s, _, probes := newFake(t, st)
-	eventually(t, "the restart", func() bool { r, _, _, running := s.snapshotState(); return r == 1 && running })
+	// autoRestart sets fwRunning before it starts the probe, and the probe counts from its own
+	// goroutine, so the probe count is part of the condition being waited for.
+	eventually(t, "the restart and its probe", func() bool {
+		r, _, _, running := s.snapshotState()
+		return r == 1 && running && probes.count() == 2
+	})
 	_, last, code, _ := s.snapshotState()
 	if last != "rebooted" || code != "" {
 		t.Fatalf("last_exit %q, failure %q, want rebooted and none", last, code)
