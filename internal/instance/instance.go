@@ -350,9 +350,13 @@ func notRunning(name string) error {
 }
 
 // ProcessAlive reports whether rf names a live `sil serve <name>` process:
-// the PID exists and /proc/<pid>/cmdline has the arguments "serve" and name.
-// A run.json that names a dead or foreign (reused) PID is treated as not
-// running.
+// the PID exists, /proc/<pid>/cmdline has the arguments "serve" and name, and
+// the process is sil itself: argv[0] has the base name "sil" or
+// /proc/<pid>/exe is the running sil executable (a renamed binary that
+// re-executes itself as the supervisor). Any other process whose arguments
+// merely contain `serve <name>` (a shell, `npx serve dev`) does not count
+// (T-01-24). A run.json that names a dead or foreign (reused) PID is treated as
+// not running.
 func ProcessAlive(rf RunFile, name string) bool {
 	if !Alive(rf.PID) {
 		return false
@@ -362,12 +366,32 @@ func ProcessAlive(rf RunFile, name string) bool {
 		return false
 	}
 	args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+	serving := false
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == "serve" && args[i+1] == name {
-			return true
+			serving = true
+			break
 		}
 	}
-	return false
+	if !serving {
+		return false
+	}
+	return filepath.Base(args[0]) == "sil" || sameExecutable(rf.PID)
+}
+
+// sameExecutable reports whether /proc/<pid>/exe is the executable of this
+// process, which is how a `sil serve` supervisor started by startServe
+// (os.Executable) is recognised even if the binary is not called sil.
+func sameExecutable(pid int) bool {
+	self, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	other, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
+	if err != nil {
+		return false
+	}
+	return self == other
 }
 
 // Alive reports whether a process with this PID exists.

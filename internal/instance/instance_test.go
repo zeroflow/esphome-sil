@@ -1,17 +1,22 @@
 package instance
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zeroflow/esphome-sil/internal/apperr"
+	"github.com/zeroflow/esphome-sil/internal/clock"
 )
 
 // code returns the apperr code of err ("" for nil, "?" for a foreign error).
@@ -368,6 +373,53 @@ func TestProcessAlive(t *testing.T) {
 	}
 	if ProcessAlive(RunFile{PID: 0}, "dev") || ProcessAlive(RunFile{PID: 1 << 22}, "dev") {
 		t.Errorf("dead pids are not alive")
+	}
+}
+
+// TestProcessAliveRequiresSil: a process whose arguments merely contain
+// `serve <name>` is not the supervisor; one that is called sil is.
+func TestProcessAliveRequiresSil(t *testing.T) {
+	start := func(script string) RunFile {
+		t.Helper()
+		cmd := exec.Command("bash", "-c", script, "bash", "dev")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+		return RunFile{PID: cmd.Process.Pid}
+	}
+	other := start(`exec bash -c 'sleep 30 & wait' serve "$1"`)
+	clk := clock.NewReal()
+	waitCmdline := func(rf RunFile) {
+		t.Helper()
+		for i := 0; i < 200; i++ {
+			raw, _ := os.ReadFile("/proc/" + strconv.Itoa(rf.PID) + "/cmdline")
+			for _, a := range strings.Split(string(raw), "\x00") {
+				if a == "serve" {
+					return
+				}
+			}
+			_ = clk.Sleep(context.Background(), 10*time.Millisecond)
+		}
+		t.Fatal("stand-in never exec'd")
+	}
+	sil := start(`exec -a /opt/bin/sil bash -c 'sleep 30 & wait' serve "$1"`)
+	waitCmdline(other)
+	waitCmdline(sil)
+	if ProcessAlive(other, "dev") {
+		t.Errorf("a bash running `serve dev` is not sil")
+	}
+	if !ProcessAlive(sil, "dev") {
+		t.Errorf("argv[0] sil with `serve dev` is the supervisor")
+	}
+	if ProcessAlive(sil, "other") {
+		t.Errorf("the name must match")
+	}
+	if !sameExecutable(os.Getpid()) {
+		t.Errorf("a process is its own executable")
+	}
+	if sameExecutable(other.PID) {
+		t.Errorf("bash is not this executable")
 	}
 }
 
