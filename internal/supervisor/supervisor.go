@@ -763,6 +763,9 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 	s.engRestarts++
 	s.engGap = true
 	s.mu.Unlock()
+	// The explicit clears below stay; this one covers a panic between the set and them, so the flag
+	// cannot outlive the restart. Idempotent, and it runs while opMu is still held.
+	defer s.endEngGap()
 	s.stopEngine(old)
 	s.log.Info("simulator engine stopped for a restart", "gap", gap)
 	if gap > 0 {
