@@ -266,18 +266,47 @@ func ReadSpec(p Paths) (Spec, error) {
 }
 
 // ResetRunDir recreates the run dir empty (0700) with prefs/ (0700), so
-// firmware preferences start fresh on every `sil up`.
+// firmware preferences start fresh on every `sil up`. The directory above it
+// (the /tmp/sil-$UID fallback is world-reachable) must be a real directory
+// owned by this user with no group or other permissions, else it is refused.
 func ResetRunDir(p Paths) error {
+	if err := ensurePrivateDir(filepath.Dir(p.RunDir)); err != nil {
+		return err
+	}
 	if err := os.RemoveAll(p.RunDir); err != nil {
 		return apperr.Infra("run_dir_failed", "cannot clear the run directory", map[string]any{"path": p.RunDir, "error": err.Error()})
 	}
 	for _, d := range []string{p.RunDir, p.PrefsDir()} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
+		if err := os.Mkdir(d, 0o700); err != nil {
 			return apperr.Infra("run_dir_failed", "cannot create the run directory", map[string]any{"path": d, "error": err.Error()})
 		}
 		if err := os.Chmod(d, 0o700); err != nil {
 			return apperr.Infra("run_dir_failed", "cannot restrict the run directory", map[string]any{"path": d, "error": err.Error()})
 		}
+	}
+	return nil
+}
+
+// ensurePrivateDir creates dir (0700) if missing and then insists that it is
+// a directory (not a symlink) owned by the current user with mode 0700, so
+// another local user cannot pre-create or redirect it (symlink/ownership race
+// in /tmp).
+func ensurePrivateDir(dir string) error {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return apperr.Infra("run_dir_failed", "cannot create the run directory parent", map[string]any{"path": dir, "error": err.Error()})
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return apperr.Infra("run_dir_failed", "cannot create the run directory parent", map[string]any{"path": dir, "error": err.Error()})
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return apperr.Infra("run_dir_failed", "cannot inspect the run directory parent", map[string]any{"path": dir, "error": err.Error()})
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !fi.IsDir() || !ok || int(st.Uid) != os.Getuid() || fi.Mode().Perm()&0o077 != 0 {
+		return apperr.Infra("run_dir_unsafe",
+			"the run directory parent must be a real directory owned by you with mode 0700; remove or fix it",
+			map[string]any{"path": dir})
 	}
 	return nil
 }
