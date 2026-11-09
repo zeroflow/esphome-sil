@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zeroflow/esphome-sil/internal/bus"
 	"github.com/zeroflow/esphome-sil/internal/clock"
@@ -542,6 +543,49 @@ func TestEngineUnknownOutChannelWarnsOnce(t *testing.T) {
 	w := h.eng.Snapshot().Warnings
 	if len(w) != 1 || w[0] != "unknown channel foo.bar (ignored)" {
 		t.Fatalf("warnings = %q, want one unknown-channel warning", w)
+	}
+}
+
+// WR-04: a peer that sends out frames on ever-new channel names cannot grow the warning list (or
+// one entry) without bound; the list stops at maxWarnings with a closing note.
+func TestEngineWarningsAreBounded(t *testing.T) {
+	h := newHarness(t)
+	for i := 0; i < 3*maxWarnings; i++ {
+		h.out(fmt.Sprintf("junk.%d", i), 1)
+	}
+	h.out("long."+strings.Repeat("\u00e4", 1000), 1) // multi-byte runes: the cut must stay valid UTF-8
+	h.settle()
+	w := h.eng.Snapshot().Warnings
+	if len(w) != maxWarnings {
+		t.Fatalf("%d warnings, want the cap of %d", len(w), maxWarnings)
+	}
+	if w[0] != "unknown channel junk.0 (ignored)" {
+		t.Fatalf("first warning %q, want the first one kept", w[0])
+	}
+	if w[len(w)-1] != warningsSuppressed {
+		t.Fatalf("last warning %q, want the suppression note", w[len(w)-1])
+	}
+	// Re-sending an already known channel stays a no-op at the cap.
+	h.out("junk.0", 2)
+	h.settle()
+	if got := len(h.eng.Snapshot().Warnings); got != maxWarnings {
+		t.Fatalf("%d warnings after a duplicate, want %d", got, maxWarnings)
+	}
+}
+
+func TestEngineWarnTruncatesLongEntries(t *testing.T) {
+	e := &Engine{}
+	e.warn(strings.Repeat("\u00e4", 1000)) // 2000 bytes
+	if len(e.warnings) != 1 {
+		t.Fatalf("%d warnings, want 1", len(e.warnings))
+	}
+	got := e.warnings[0]
+	if len(got) > maxWarningLen+len("...") || !strings.HasSuffix(got, "...") || !utf8.ValidString(got) {
+		t.Fatalf("warning of %d bytes %q: want at most %d bytes plus an ellipsis, valid UTF-8", len(got), got[:20], maxWarningLen)
+	}
+	e.warn(strings.Repeat("\u00e4", 1000))
+	if len(e.warnings) != 1 {
+		t.Fatalf("the same long warning was recorded twice")
 	}
 }
 

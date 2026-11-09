@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zeroflow/esphome-sil/internal/bus"
 	"github.com/zeroflow/esphome-sil/internal/clock"
@@ -523,12 +524,36 @@ func (e *Engine) handle(ev event) {
 	}
 }
 
-// warn records a warning once.
+const (
+	// maxWarnings bounds the warning list and maxWarningLen each entry. Warnings can carry peer
+	// supplied text (channel names, a peer error) and the list is copied on every publish and
+	// serialized in every status, so an unbounded list is a peer-driven growth path.
+	maxWarnings   = 64
+	maxWarningLen = 256
+
+	warningsSuppressed = "further warnings suppressed"
+)
+
+// warn records a warning once. Entries are cut to maxWarningLen bytes (on a rune boundary) and the
+// list stops at maxWarnings, its last entry saying that more were dropped.
 func (e *Engine) warn(w string) {
+	if len(w) > maxWarningLen {
+		cut := maxWarningLen
+		for cut > 0 && !utf8.RuneStart(w[cut]) {
+			cut--
+		}
+		w = w[:cut] + "..."
+	}
 	for _, have := range e.warnings {
 		if have == w {
 			return
 		}
+	}
+	switch {
+	case len(e.warnings) >= maxWarnings:
+		return
+	case len(e.warnings) == maxWarnings-1:
+		w = warningsSuppressed
 	}
 	e.warnings = append(e.warnings, w)
 }
