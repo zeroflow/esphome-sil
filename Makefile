@@ -5,7 +5,7 @@ RUN ?= .
 PKG ?= ./...
 E2E_RUN ?= .
 
-.PHONY: build test test-pkg vet fmt-check check mod-verify e2e test-cpp test-cpp-image
+.PHONY: build test test-pkg vet fmt-check check mod-verify e2e test-cpp test-cpp-image lock-check test-contract
 
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -o bin/sil ./cmd/sil
@@ -49,3 +49,16 @@ mod-verify:
 
 e2e:
 	$(GO) test -tags sil_e2e -count=1 -timeout 30m -v -run '$(E2E_RUN)' ./e2e/
+
+# The Python test dependencies are reviewed through the product repo's lock: every package of
+# tests/uv.lock must exist in LOCK_REF with the same version and the identical sdist/wheel sha256 set.
+# Run it before the first `uv sync` installs anything. Read-only on LOCK_REF.
+LOCK_REF ?= ../wifi-fancontroller/hil/uv.lock
+
+lock-check:
+	@python3 -I tests/tools/lockdiff.py tests/uv.lock $(LOCK_REF)
+
+# Contract test (TEST-01) and aioesphomeapi smoke test (TEST-02) against real Rev 3.3 bench instances.
+# Needs docker with the pinned ESPHome image and uv; not part of `check` (no Python in check).
+test-contract: build
+	@cd tests && SIL_BIN=$(CURDIR)/bin/sil uv run --locked pytest
