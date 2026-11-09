@@ -439,6 +439,17 @@ func (p *Page) SetViewport(ctx context.Context, w, h int, mobile bool) error {
 	}, nil)
 }
 
+// Screenshot returns the visible viewport as PNG bytes (Page.captureScreenshot).
+func (p *Page) Screenshot(ctx context.Context) ([]byte, error) {
+	var res struct {
+		Data []byte `json:"data"` // base64 in the protocol; encoding/json decodes it
+	}
+	if err := p.send(ctx, "Page.captureScreenshot", map[string]any{"format": "png"}, &res); err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
 // Center returns the viewport coordinates of the center of the first element matching selector.
 func (p *Page) Center(ctx context.Context, selector string) (x, y float64, err error) {
 	sel, _ := json.Marshal(selector)
