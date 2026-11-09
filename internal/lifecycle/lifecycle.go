@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,7 +44,14 @@ const (
 type UpOptions struct {
 	Name, ConfigPath string
 	APIPort          int
-	Rebuild, Quiet   bool
+	// WebPort is --web-port (0 keeps the stored port), Listen the IP address of the web listener
+	// ("" means 0.0.0.0), AllowHosts the extra Host names it accepts and UIDir a directory the page is
+	// served from instead of the binary. Up normalizes them with checkWebOptions.
+	WebPort        int
+	Listen         string
+	AllowHosts     []string
+	UIDir          string
+	Rebuild, Quiet bool
 	// Fan is the library fan plugged into all four ports; "" means fanlib.DefaultFan.
 	Fan string
 	// Progress receives human progress lines; nil or Quiet discards them.
@@ -61,10 +69,18 @@ type APIInfo struct {
 	MAC        string  `json:"mac"`
 }
 
+// WebInfo is where the page of the instance is reachable.
+type WebInfo struct {
+	URL    string `json:"url"`
+	Port   int    `json:"port"`
+	Listen string `json:"listen"`
+}
+
 // UpResult is the JSON printed by `sil up`.
 type UpResult struct {
 	Instance string         `json:"instance"`
 	API      APIInfo        `json:"api"`
+	Web      WebInfo        `json:"web"`
 	RunDir   string         `json:"run_dir"`
 	Build    fwbuild.Result `json:"build"`
 }
@@ -140,6 +156,11 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 		progress = io.Discard
 	}
 
+	// The reach options are pure checks too: a bad address, host name or UI directory must not
+	// build, lock or write anything.
+	if err := checkWebOptions(&o); err != nil {
+		return UpResult{}, err
+	}
 	configPath, repo, err := resolveConfig(o.ConfigPath)
 	if err != nil {
 		return UpResult{}, err
@@ -164,11 +185,15 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 	if err := checkNotRunning(ctx, p); err != nil {
 		return UpResult{}, err
 	}
-	id, err := instance.LoadOrCreate(p, o.APIPort)
+	id, err := instance.LoadOrCreate(p, instance.PortRequest{API: o.APIPort, Web: o.WebPort, Listen: o.Listen})
 	if err != nil {
 		return UpResult{}, err
 	}
 	if err := instance.TestBind(id.APIPort); err != nil {
+		return UpResult{}, err
+	}
+	// A taken sticky web port fails here, before the build, and is never moved (D-09).
+	if err := instance.TestBindWeb(o.Listen, id.WebPort); err != nil {
 		return UpResult{}, err
 	}
 	if err := instance.ResetRunDir(p); err != nil {
@@ -196,13 +221,17 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 
 	if err := instance.WriteSpec(p, instance.Spec{
 		Schema: 1, Instance: o.Name, Program: res.Program,
-		Fans: []string{fan, fan, fan, fan},
+		Fans:   []string{fan, fan, fan, fan},
+		Listen: o.Listen, AllowHosts: o.AllowHosts, UIDir: o.UIDir,
 	}); err != nil {
 		return UpResult{}, err
 	}
 
 	// The build takes long enough for another process to take the port.
 	if err := instance.TestBind(id.APIPort); err != nil {
+		return UpResult{}, err
+	}
+	if err := instance.TestBindWeb(o.Listen, id.WebPort); err != nil {
 		return UpResult{}, err
 	}
 	srv, err := startServe(p)
@@ -220,6 +249,8 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 		hint = "127.0.0.1"
 	}
 	fmt.Fprintf(progress, "add to Home Assistant: host %s port %d, encryption key from this JSON (no mDNS on host; Settings > Devices & Services > Add Integration > ESPHome)\n", hint, id.APIPort)
+	url := instance.WebURL(o.Listen, lan, id.WebPort)
+	fmt.Fprintf(progress, "web UI: %s (unauthenticated: anyone who can reach this address can watch and drive this bench; sil up --listen 127.0.0.1 keeps it on this machine)\n", url)
 
 	return UpResult{
 		Instance: o.Name,
@@ -227,9 +258,78 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 			Host: "127.0.0.1", LanHost: lanHostPtr(lan), Port: id.APIPort, Key: id.Key,
 			DeviceName: id.DeviceName(), MAC: instance.MAC(o.Name),
 		},
+		Web:    WebInfo{URL: url, Port: id.WebPort, Listen: o.Listen},
 		RunDir: p.RunDir,
 		Build:  res,
 	}, nil
+}
+
+// defaultListen is the address of the web listener when `sil up --listen` is not given (D-07).
+const defaultListen = "0.0.0.0"
+
+// checkWebOptions validates and normalizes the reach options of `sil up` (D-07, D-09) before
+// anything is built or locked: Listen becomes a canonical IP literal (default 0.0.0.0), AllowHosts
+// become lower-case DNS names without a trailing dot, UIDir becomes an absolute path to a
+// directory that holds a regular index.html.
+func checkWebOptions(o *UpOptions) error {
+	if o.Listen == "" {
+		o.Listen = defaultListen
+	}
+	ip := net.ParseIP(o.Listen)
+	if ip == nil {
+		return apperr.Failed("invalid_argument",
+			fmt.Sprintf("--listen needs an IP address such as 0.0.0.0 or 127.0.0.1, got %q", o.Listen),
+			map[string]any{"listen": o.Listen})
+	}
+	o.Listen = ip.String()
+
+	var hosts []string
+	for _, h := range o.AllowHosts {
+		norm := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
+		if !validHostName(norm) {
+			return apperr.Failed("invalid_argument",
+				fmt.Sprintf("--allow-host needs a host name of letters, digits, '-' and '.', got %q", h),
+				map[string]any{"allow_host": h})
+		}
+		if !slices.Contains(hosts, norm) {
+			hosts = append(hosts, norm)
+		}
+	}
+	o.AllowHosts = hosts
+
+	if o.UIDir != "" {
+		abs, err := filepath.Abs(o.UIDir)
+		if err != nil {
+			return apperr.Failed("invalid_argument", "--ui-dir needs a directory with index.html",
+				map[string]any{"ui_dir": o.UIDir, "error": err.Error()})
+		}
+		fi, err := os.Stat(filepath.Join(abs, "index.html"))
+		if err != nil || !fi.Mode().IsRegular() {
+			return apperr.Failed("invalid_argument", "--ui-dir needs a directory with index.html",
+				map[string]any{"ui_dir": o.UIDir})
+		}
+		o.UIDir = abs
+	}
+	return nil
+}
+
+// validHostName reports whether s is a plausible DNS name: dot-separated labels of 1 to 63 letters,
+// digits and '-' that neither start nor end with '-', at most 253 bytes in all.
+func validHostName(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(s, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // resolveFan validates the fan of `sil up --fan`: "" is the default fan; any other id must be in

@@ -177,7 +177,7 @@ func TestLoadOrCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := LoadOrCreate(p, 0)
+	id, err := LoadOrCreate(p, PortRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,30 +193,30 @@ func TestLoadOrCreate(t *testing.T) {
 			t.Errorf("%s: %v %v, want %v", path, fi, err, want)
 		}
 	}
-	again, err := LoadOrCreate(p, 0)
+	again, err := LoadOrCreate(p, PortRequest{})
 	if err != nil || again != id {
 		t.Fatalf("second load = %+v %v, want %+v", again, err, id)
 	}
 
 	free := freePort(t)
-	moved, err := LoadOrCreate(p, free)
+	moved, err := LoadOrCreate(p, PortRequest{API: free})
 	if err != nil || moved.APIPort != free || moved.Key != id.Key {
 		t.Fatalf("--api-port override = %+v %v", moved, err)
 	}
-	kept, _ := LoadOrCreate(p, 0)
+	kept, _ := LoadOrCreate(p, PortRequest{})
 	if kept.APIPort != free {
 		t.Fatalf("override is not sticky: %+v", kept)
 	}
-	if _, err := LoadOrCreate(p, 80); code(err) != "invalid_argument" {
+	if _, err := LoadOrCreate(p, PortRequest{API: 80}); code(err) != "invalid_argument" {
 		t.Errorf("port 80: %v", err)
 	}
 
 	// Another instance cannot take the stored port.
 	other, _ := PathsFor("other")
-	if _, err := LoadOrCreate(other, free); code(err) != "port_claimed" || !strings.Contains(err.Error(), "dev") {
+	if _, err := LoadOrCreate(other, PortRequest{API: free}); code(err) != "port_claimed" || !strings.Contains(err.Error(), "dev") {
 		t.Errorf("claimed port: %v", err)
 	}
-	oid, err := LoadOrCreate(other, 0)
+	oid, err := LoadOrCreate(other, PortRequest{})
 	if err != nil || oid.APIPort == free {
 		t.Errorf("other instance got %+v, %v", oid, err)
 	}
@@ -245,7 +245,7 @@ func TestLoadOrCreateBusyOverrideIsNotPersisted(t *testing.T) {
 	busyPort := busy.Addr().(*net.TCPAddr).Port
 
 	fresh, _ := PathsFor("fresh")
-	if _, err := LoadOrCreate(fresh, busyPort); code(err) != "port_in_use" {
+	if _, err := LoadOrCreate(fresh, PortRequest{API: busyPort}); code(err) != "port_in_use" {
 		t.Fatalf("busy override on first use: %v, want port_in_use", err)
 	}
 	if _, statErr := os.Stat(fresh.IdentityJSON()); !errors.Is(statErr, os.ErrNotExist) {
@@ -253,14 +253,14 @@ func TestLoadOrCreateBusyOverrideIsNotPersisted(t *testing.T) {
 	}
 
 	p, _ := PathsFor("dev")
-	id, err := LoadOrCreate(p, 0)
+	id, err := LoadOrCreate(p, PortRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadOrCreate(p, busyPort); code(err) != "port_in_use" {
+	if _, err := LoadOrCreate(p, PortRequest{API: busyPort}); code(err) != "port_in_use" {
 		t.Fatalf("busy override on an existing identity: %v, want port_in_use", err)
 	}
-	if kept, err := LoadOrCreate(p, 0); err != nil || kept != id {
+	if kept, err := LoadOrCreate(p, PortRequest{}); err != nil || kept != id {
 		t.Fatalf("identity after a rejected override = %+v %v, want unchanged %+v", kept, err, id)
 	}
 }
@@ -283,7 +283,7 @@ func TestLoadOrCreateCorruptIsNeverRegenerated(t *testing.T) {
 			if err := os.WriteFile(p.IdentityJSON(), []byte(body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := LoadOrCreate(p, 0)
+			_, err := LoadOrCreate(p, PortRequest{})
 			if code(err) != "identity_corrupt" || apperr.ExitCode(err) != apperr.ExitInfra || !strings.Contains(err.Error(), p.StateDir) {
 				t.Fatalf("err = %v, want identity_corrupt with the reset hint", err)
 			}
@@ -304,7 +304,7 @@ func TestConcurrentCreatesGetDistinctPorts(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			p, _ := PathsFor(fmt.Sprintf("c%d", i))
-			id, err := LoadOrCreate(p, 0)
+			id, err := LoadOrCreate(p, PortRequest{})
 			if err != nil {
 				t.Errorf("c%d: %v", i, err)
 				return

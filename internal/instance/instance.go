@@ -189,18 +189,55 @@ func EqualMAC(a, b string) bool {
 	return norm(a) != "" && norm(a) == norm(b)
 }
 
+// PortRequest is what `sil up` asks of the identity's ports. Zero values keep what is stored.
+type PortRequest struct {
+	// API is --api-port and Web is --web-port; 0 keeps the stored port (first use: the lowest free one).
+	API, Web int
+	// Listen is the address the web listener will bind ("" means 0.0.0.0); it decides which
+	// candidate web ports count as free.
+	Listen string
+}
+
+// portsCollide is invalid_argument for a web port that equals the API port of the same instance.
+func portsCollide(port int, r PortRequest) error {
+	var msg string
+	switch {
+	case r.API != 0 && r.Web != 0:
+		msg = fmt.Sprintf("--api-port and --web-port must differ, both are %d", port)
+	case r.API != 0:
+		msg = fmt.Sprintf("--api-port %d is this instance's web port; choose another API port or move the web port with --web-port", port)
+	case r.Web != 0:
+		msg = fmt.Sprintf("--web-port %d is this instance's API port; choose another web port or move the API port with --api-port", port)
+	default:
+		msg = fmt.Sprintf("the API port and the web port of this instance are both %d", port)
+	}
+	return apperr.Failed("invalid_argument", msg, map[string]any{"port": port})
+}
+
 // LoadOrCreate returns the identity of p, creating it on first use (32
 // random bytes as base64, mode 0600 in a 0700 dir). It runs under the global
 // allocation lock so two instances created at the same time never receive the
-// same port. apiPort > 0 overrides and stores the port (invalid_argument
+// same port. r.API > 0 overrides and stores the API port (invalid_argument
 // outside 1024-65535, port_claimed when another instance's identity holds
 // it, port_in_use when it cannot be bound, in which case nothing is
-// stored); 0 keeps the stored port, else the lowest free port from 6054. A
-// stored identity that is malformed is identity_corrupt and is never
-// regenerated silently.
-func LoadOrCreate(p Paths, apiPort int) (Identity, error) {
-	if apiPort != 0 && (apiPort < MinAPIPort || apiPort > MaxAPIPort) {
-		return Identity{}, invalidPort(apiPort)
+// stored); 0 keeps the stored port, else the lowest free port from 6054.
+// r.Web does the same for the web port (first free port from 8054, tested on
+// r.Listen); the web port may never equal the API port of the same instance
+// (invalid_argument naming both flags). A stored identity that is malformed
+// is identity_corrupt and is never regenerated silently.
+func LoadOrCreate(p Paths, r PortRequest) (Identity, error) {
+	if r.API != 0 && (r.API < MinAPIPort || r.API > MaxAPIPort) {
+		return Identity{}, invalidPort(r.API)
+	}
+	if r.Web != 0 && (r.Web < MinAPIPort || r.Web > MaxAPIPort) {
+		return Identity{}, invalidWebPort(r.Web)
+	}
+	if r.API != 0 && r.API == r.Web {
+		return Identity{}, portsCollide(r.API, r)
+	}
+	listen := r.Listen
+	if listen == "" {
+		listen = "0.0.0.0"
 	}
 	root := p.StateRoot()
 	release, err := LockAlloc(root)
@@ -213,28 +250,39 @@ func LoadOrCreate(p Paths, apiPort int) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	port, err := AllocatePort(root, p.Name, apiPort, func(port int) bool { return TestBind(port) == nil })
+	port, err := AllocatePort(root, p.Name, r.API, func(port int) bool { return TestBind(port) == nil })
 	if err != nil {
 		return Identity{}, err
 	}
 	// The web port is sticky like the API port. An identity that has none (written before the web UI)
 	// gets one here; the key and the API port stay as they are.
 	webPort := id.WebPort
-	if !exists || webPort == 0 {
+	switch {
+	case r.Web != 0:
+		webPort, err = AllocateWebPort(root, p.Name, r.Web, nil)
+	case webPort == 0:
 		// The API port just decided is not stored yet on a first use; it must not become the web port.
-		webPort, err = AllocateWebPort(root, p.Name, 0, func(wp int) bool { return wp != port && TestBindWeb("0.0.0.0", wp) == nil })
-		if err != nil {
-			return Identity{}, err
-		}
+		webPort, err = AllocateWebPort(root, p.Name, 0, func(wp int) bool { return wp != port && TestBindWeb(listen, wp) == nil })
+	}
+	if err != nil {
+		return Identity{}, err
+	}
+	if webPort == port {
+		return Identity{}, portsCollide(port, r)
 	}
 	if exists && port == id.APIPort && webPort == id.WebPort {
 		return id, nil
 	}
-	// An explicit --api-port is the user's choice, but it becomes sticky once stored: a busy port
-	// must fail here (port_in_use) without being persisted, or every later plain `sil up` would
-	// re-use it and fail the same way. A port that is already the stored one changes nothing.
-	if apiPort != 0 && !(exists && port == id.APIPort) {
+	// An explicit --api-port or --web-port is the user's choice, but it becomes sticky once stored: a
+	// busy port must fail here (port_in_use) without being persisted, or every later plain `sil up`
+	// would re-use it and fail the same way. A port that is already the stored one changes nothing.
+	if r.API != 0 && !(exists && port == id.APIPort) {
 		if err := TestBind(port); err != nil {
+			return Identity{}, err
+		}
+	}
+	if r.Web != 0 && !(exists && webPort == id.WebPort) {
+		if err := TestBindWeb(listen, webPort); err != nil {
 			return Identity{}, err
 		}
 	}
@@ -442,6 +490,12 @@ type Spec struct {
 	Instance string   `json:"instance"`
 	Program  string   `json:"program"`
 	Fans     []string `json:"fans"`
+	// Listen is the address of the web listener (`sil up --listen`); "" in a spec written before the
+	// web UI means 0.0.0.0. AllowHosts are the extra Host names the web listener accepts and UIDir
+	// is the directory the page is served from instead of the binary; both are per run.
+	Listen     string   `json:"listen,omitempty"`
+	AllowHosts []string `json:"allow_hosts,omitempty"`
+	UIDir      string   `json:"ui_dir,omitempty"`
 }
 
 // WriteSpec writes spec.json into the run dir.

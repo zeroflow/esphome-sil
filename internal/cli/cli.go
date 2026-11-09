@@ -65,8 +65,13 @@ type UpCmd struct {
 	Name    string `arg:"" help:"Instance name (a-z, 0-9, '-')."`
 	Config  string `help:"Firmware YAML (default: examples/rev33.yaml of this checkout, the Rev 3.3 bench; examples/fan-skeleton.yaml is the minimal four-fan config)."`
 	APIPort int    `name:"api-port" help:"Firmware native API port (default: the stored port, first 6054)."`
-	Rebuild bool   `help:"Discard the previous build output of this instance first."`
-	Fan     string `help:"Library fan plugged into all four ports (default arctic-p12-pwm-pst); change one port later with: sil set portN.fan=ID."`
+	WebPort int    `name:"web-port" help:"Web UI and HTTP API port (default: the stored port, first 8054)."`
+	Listen  string `name:"listen" default:"0.0.0.0" help:"IP address the web UI and HTTP API listen on; 127.0.0.1 keeps them on this machine. They are unauthenticated."`
+	// AllowHost is repeatable.
+	AllowHost []string `name:"allow-host" help:"Also accept requests addressed to this host name (repeatable); IP addresses, localhost and this machine's name always work."`
+	UIDir     string   `name:"ui-dir" help:"Serve the page from this directory instead of the binary (UI development)."`
+	Rebuild   bool     `help:"Discard the previous build output of this instance first."`
+	Fan       string   `help:"Library fan plugged into all four ports (default arctic-p12-pwm-pst); change one port later with: sil set portN.fan=ID."`
 }
 
 // StatusCmd is `sil status`.
@@ -287,6 +292,7 @@ func (c *UpCmd) Run(env *runEnv) error {
 func (c *UpCmd) options(env *runEnv) lifecycle.UpOptions {
 	return lifecycle.UpOptions{
 		Name: c.Name, ConfigPath: c.Config, APIPort: c.APIPort,
+		WebPort: c.WebPort, Listen: c.Listen, AllowHosts: c.AllowHost, UIDir: c.UIDir,
 		Rebuild: c.Rebuild, Fan: c.Fan, Quiet: env.quiet, Progress: env.stderr,
 	}
 }

@@ -2,11 +2,15 @@ package instance
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+
+	"github.com/zeroflow/esphome-sil/internal/apperr"
 )
 
 // writeIdentity stores a hand-written identity.json for instance name under root.
@@ -74,7 +78,7 @@ func TestLoadOrCreateWebPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := LoadOrCreate(p, 0)
+	id, err := LoadOrCreate(p, PortRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,9 +88,63 @@ func TestLoadOrCreateWebPort(t *testing.T) {
 	if id.WebPort == id.APIPort {
 		t.Fatalf("web port %d equals the API port", id.WebPort)
 	}
-	again, err := LoadOrCreate(p, 0)
+	again, err := LoadOrCreate(p, PortRequest{})
 	if err != nil || again != id {
 		t.Fatalf("second load = %+v %v, want %+v (sticky)", again, err, id)
+	}
+
+	// An explicit web port is stored (and then sticky) ...
+	free := freePort(t)
+	moved, err := LoadOrCreate(p, PortRequest{Web: free, Listen: "127.0.0.1"})
+	if err != nil || moved.WebPort != free || moved.Key != id.Key || moved.APIPort != id.APIPort {
+		t.Fatalf("--web-port override = %+v %v, want web_port %d, key and api_port kept", moved, err, free)
+	}
+	if kept, err := LoadOrCreate(p, PortRequest{}); err != nil || kept != moved {
+		t.Fatalf("override is not sticky: %+v %v", kept, err)
+	}
+
+	// ... but a busy one is not: it fails with port_in_use and identity.json keeps the old port.
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	busyPort := busy.Addr().(*net.TCPAddr).Port
+	if _, err := LoadOrCreate(p, PortRequest{Web: busyPort, Listen: "127.0.0.1"}); code(err) != "port_in_use" {
+		t.Fatalf("busy --web-port: %v, want port_in_use", err)
+	}
+	if kept, err := LoadOrCreate(p, PortRequest{}); err != nil || kept != moved {
+		t.Fatalf("identity after a rejected override = %+v %v, want unchanged %+v", kept, err, moved)
+	}
+
+	// The web port may not equal the API port, whichever flag names it.
+	for name, req := range map[string]PortRequest{
+		"web equals stored api": {Web: moved.APIPort},
+		"api equals stored web": {API: moved.WebPort},
+		"both flags equal":      {API: free + 1, Web: free + 1},
+	} {
+		_, err := LoadOrCreate(p, req)
+		if code(err) != "invalid_argument" {
+			t.Errorf("%s: %v, want invalid_argument", name, err)
+		}
+	}
+	if _, err := LoadOrCreate(p, PortRequest{Web: moved.APIPort}); err == nil || !strings.Contains(err.Error(), "--web-port") || !strings.Contains(err.Error(), "--api-port") {
+		t.Errorf("web equals api: %v, want a message naming both flags", err)
+	}
+	if kept, err := LoadOrCreate(p, PortRequest{}); err != nil || kept != moved {
+		t.Fatalf("identity after the rejected requests = %+v %v, want unchanged", kept, err)
+	}
+
+	// Another instance cannot take the stored web port of this one.
+	other, _ := PathsFor("other")
+	if _, err := LoadOrCreate(other, PortRequest{Web: moved.WebPort}); code(err) != "port_claimed" || !strings.Contains(err.Error(), "dev") {
+		t.Errorf("claimed web port: %v, want port_claimed naming dev", err)
+	}
+	if _, err := LoadOrCreate(other, PortRequest{Web: 1023}); code(err) != "invalid_argument" {
+		t.Errorf("web port 1023: %v, want invalid_argument", err)
+	}
+	if _, err := LoadOrCreate(other, PortRequest{Web: 65536}); code(err) != "invalid_argument" {
+		t.Errorf("web port 65536: %v, want invalid_argument", err)
 	}
 }
 
@@ -98,12 +156,12 @@ func TestLoadOrCreateMigratesLegacyIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := LoadOrCreate(p, 0)
+	first, err := LoadOrCreate(p, PortRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeIdentityFields(t, p.StateRoot(), "old", map[string]any{"schema": 1, "name": "old", "api_port": first.APIPort, "key": first.Key})
-	got, err := LoadOrCreate(p, 0)
+	got, err := LoadOrCreate(p, PortRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,34 +184,47 @@ func TestLoadOrCreateWebPortOutOfRangeIsCorrupt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := LoadOrCreate(p, 0)
+	first, err := LoadOrCreate(p, PortRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeIdentityFields(t, p.StateRoot(), "bad", map[string]any{"schema": 1, "name": "bad", "api_port": first.APIPort, "web_port": 80, "key": first.Key})
-	if _, err := LoadOrCreate(p, 0); code(err) != "identity_corrupt" {
+	if _, err := LoadOrCreate(p, PortRequest{}); code(err) != "identity_corrupt" {
 		t.Fatalf("err = %v, want identity_corrupt", err)
 	}
 }
 
-func TestListenWebAndURL(t *testing.T) {
+// A taken port is port_in_use (exit class 2) naming the port and the listen address; a foreign
+// address is port_bind_failed.
+func TestListenWebInUse(t *testing.T) {
 	ln, err := ListenWeb("127.0.0.1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
+	_, err = ListenWeb("127.0.0.1", port)
+	if code(err) != "port_in_use" || apperr.ExitCode(err) != apperr.ExitInfra {
+		t.Fatalf("ListenWeb on a taken port: %v, want port_in_use with exit class 2", err)
+	}
+	var ae *apperr.Error
+	if !errors.As(err, &ae) || ae.Detail["port"] != port || ae.Detail["listen"] != "127.0.0.1" {
+		t.Fatalf("detail = %+v, want the port and the listen address", ae)
+	}
 	if err := TestBindWeb("127.0.0.1", port); code(err) != "port_in_use" {
 		t.Fatalf("TestBindWeb on a taken port: %v, want port_in_use", err)
 	}
 	if _, err := ListenWeb("203.0.113.1", port); code(err) != "port_bind_failed" {
 		t.Fatalf("ListenWeb on a foreign address: %v, want port_bind_failed", err)
 	}
+}
+
+func TestWebURL(t *testing.T) {
 	for _, tc := range []struct {
 		listen, lan string
 		want        string
 	}{
-		{"0.0.0.0", "192.168.4.7", "192.168.4.7"},
+		{"0.0.0.0", "192.168.4.20", "192.168.4.20"},
 		{"", "192.168.4.7", "192.168.4.7"},
 		{"0.0.0.0", "", "127.0.0.1"},
 		{"127.0.0.1", "192.168.4.7", "127.0.0.1"},

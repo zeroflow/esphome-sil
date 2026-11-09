@@ -446,7 +446,8 @@ type Env struct {
 	// Extra is appended (KEY=VALUE) to the environment of every sil call.
 	Extra []string
 
-	ports map[string]int
+	ports    map[string]int
+	webPorts map[string]int
 }
 
 // newEnv returns a fresh Env. The runtime dir is short so socket paths stay
@@ -461,6 +462,8 @@ func newEnv(t *testing.T) *Env {
 		Repo:    repoRoot(t),
 		Bin:     silBin,
 		ports:   map[string]int{},
+
+		webPorts: map[string]int{},
 	}
 }
 
@@ -520,27 +523,43 @@ func (e *Env) Sil(t *testing.T, args ...string) (out map[string]any, exit int, s
 	return out, exit, se
 }
 
-// Up runs `sil up name` with a free API port picked once per name and reused
-// on later Ups of that name (down/up flows keep their build cache and HA
-// entry), unless extra carries its own --api-port. It fails the test on a
-// non-zero exit and registers a cleanup `sil down`.
+// Up runs `sil up name` with a free API port and a free web port picked once per name and reused
+// on later Ups of that name (down/up flows keep their build cache and HA entry), and with
+// `--listen 127.0.0.1` so the web listener stays on the test machine; extra may carry its own
+// --api-port, --web-port or --listen. It fails the test on a non-zero exit and registers a cleanup
+// `sil down`.
 func (e *Env) Up(t *testing.T, name string, extra ...string) map[string]any {
 	t.Helper()
-	hasPort := false
-	for _, a := range extra {
-		if a == "--api-port" || strings.HasPrefix(a, "--api-port=") {
-			hasPort = true
+	has := func(flag string) bool {
+		for _, a := range extra {
+			if a == flag || strings.HasPrefix(a, flag+"=") {
+				return true
+			}
 		}
+		return false
 	}
-	if !hasPort {
+	var inject []string
+	if !has("--api-port") {
 		port, ok := e.ports[name]
 		if !ok {
 			port = freePort(t)
 			e.ports[name] = port
 		}
-		extra = append([]string{"--api-port", fmt.Sprint(port)}, extra...)
+		inject = append(inject, "--api-port", fmt.Sprint(port))
 	}
-	return e.UpAutoPort(t, name, extra...)
+	if !has("--web-port") {
+		port, ok := e.webPorts[name]
+		if !ok {
+			for port = freePort(t); port == e.ports[name]; port = freePort(t) {
+			}
+			e.webPorts[name] = port
+		}
+		inject = append(inject, "--web-port", fmt.Sprint(port))
+	}
+	if !has("--listen") {
+		inject = append(inject, "--listen", "127.0.0.1")
+	}
+	return e.UpAutoPort(t, name, append(inject, extra...)...)
 }
 
 // UpAutoPort runs `sil up name extra...` without injecting a port (tests of

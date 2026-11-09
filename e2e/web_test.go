@@ -133,11 +133,11 @@ func TestWebTracer(t *testing.T) {
 	t.Logf("web port %d", port)
 
 	t.Run("status_web", func(t *testing.T) {
-		if got := jget(st, "web", "listen"); got != "0.0.0.0" {
-			t.Fatalf("web.listen = %v, want 0.0.0.0", got)
+		if got := jget(st, "web", "listen"); got != "127.0.0.1" {
+			t.Fatalf("web.listen = %v, want 127.0.0.1 (the harness narrows it)", got)
 		}
-		if port < 8054 || port > 9053 {
-			t.Fatalf("web.port = %d, want within 8054..9053", port)
+		if want := in.env.webPorts[in.name]; port != want {
+			t.Fatalf("web.port = %d, want the injected %d", port, want)
 		}
 		if url, _ := jget(st, "web", "url").(string); !strings.HasSuffix(url, fmt.Sprintf(":%d/", port)) {
 			t.Fatalf("web.url = %q, want it to end with :%d/", url, port)
@@ -404,4 +404,206 @@ func TestWebTracer(t *testing.T) {
 		}
 	})
 	t.Logf("TestWebTracer took %s after the instance was up", sysClock.Now()-start)
+}
+
+// reachUp runs `sil up name args...` without any injected flag, registers a cleanup `sil down`, and
+// returns the decoded result, the exit code and stderr, whatever the exit code is.
+func reachUp(t *testing.T, env *Env, name string, args ...string) (map[string]any, int, string) {
+	t.Helper()
+	t.Cleanup(func() { _, _, _ = env.run(t, "down", name) })
+	return env.Sil(t, append([]string{"up", name}, args...)...)
+}
+
+// reachDown runs `sil down name` and requires success.
+func reachDown(t *testing.T, env *Env, name string) {
+	t.Helper()
+	if out, code, stderr := env.Sil(t, "down", name); code != 0 {
+		t.Fatalf("sil down %s: exit %d: %v\n%s", name, code, out, stderr)
+	}
+}
+
+// reachIdentity reads a field of the stored identity.json of an instance.
+func reachIdentity(t *testing.T, env *Env, name string) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(env.State, "sil", name, "identity.json"))
+	if err != nil {
+		t.Fatalf("identity.json of %s: %v", name, err)
+	}
+	return webJSON(t, raw)
+}
+
+// TestWebReach proves the reach controls of `sil up` (D-07, D-09) on real Rev 3.3 instances: the
+// LAN default and the URL printed for it, --listen narrowing the listener, the sticky web port with
+// its conflict rules, and --ui-dir serving the page from disk. The subtests run in order and share
+// two instance names and one Env.
+func TestWebReach(t *testing.T) {
+	env := newEnv(t)
+	apiPort := freePort(t)
+	var webPort int
+	for webPort = freePort(t); webPort == apiPort; webPort = freePort(t) {
+	}
+
+	t.Run("default_lan", func(t *testing.T) {
+		up, exit, stderr := reachUp(t, env, "e2e-reach", "--api-port", fmt.Sprint(apiPort))
+		if exit != 0 {
+			t.Fatalf("sil up: exit %d: %v\n%s", exit, up, stderr)
+		}
+		if got := jget(up, "web", "listen"); got != "0.0.0.0" {
+			t.Fatalf("up web.listen = %v, want 0.0.0.0", got)
+		}
+		port := int(jget(up, "web", "port").(float64))
+		if port < 8054 || port > 9053 {
+			t.Fatalf("up web.port = %d, want within 8054..9053", port)
+		}
+		wantHost := "127.0.0.1"
+		if lan, ok := jget(up, "api", "lan_host").(string); ok && lan != "" {
+			wantHost = lan
+		}
+		url, _ := jget(up, "web", "url").(string)
+		if want := fmt.Sprintf("http://%s:%d/", wantHost, port); url != want {
+			t.Fatalf("up web.url = %q, want %q", url, want)
+		}
+		if !strings.Contains(stderr, "web UI: "+url) || !strings.Contains(stderr, "unauthenticated") {
+			t.Fatalf("stderr lacks the `web UI: <url>` line with the unauthenticated notice:\n%s", stderr)
+		}
+		if st := env.Status(t, "e2e-reach"); !reflect.DeepEqual(jget(st, "web"), jget(up, "web")) {
+			t.Fatalf("status web = %v, up web = %v, want them equal", jget(st, "web"), jget(up, "web"))
+		}
+		reachDown(t, env, "e2e-reach")
+	})
+
+	t.Run("listen_loopback", func(t *testing.T) {
+		up, exit, stderr := reachUp(t, env, "e2e-reach", "--listen", "127.0.0.1", "--web-port", fmt.Sprint(webPort))
+		if exit != 0 {
+			t.Fatalf("sil up: exit %d: %v\n%s", exit, up, stderr)
+		}
+		wantURL := fmt.Sprintf("http://127.0.0.1:%d/", webPort)
+		if got := jget(up, "web", "url"); got != wantURL {
+			t.Fatalf("up web.url = %v, want %s", got, wantURL)
+		}
+		if !strings.Contains(stderr, "web UI: "+wantURL) {
+			t.Fatalf("stderr lacks the web UI line for %s:\n%s", wantURL, stderr)
+		}
+		if code, _, _ := webDo(t, webPort, http.MethodGet, "/"); code != 200 {
+			t.Fatalf("GET / on 127.0.0.1:%d = %d, want 200", webPort, code)
+		}
+		if lan, ok := jget(up, "api", "lan_host").(string); ok && lan != "" {
+			dctx, dcancel := clock.WithTimeout(context.Background(), sysClock, 3*time.Second)
+			defer dcancel()
+			var d net.Dialer
+			conn, err := d.DialContext(dctx, "tcp", net.JoinHostPort(lan, fmt.Sprint(webPort)))
+			if err == nil {
+				_ = conn.Close()
+				t.Fatalf("a TCP dial to %s:%d succeeded, want it refused with --listen 127.0.0.1", lan, webPort)
+			}
+		}
+		if got := jget(env.Status(t, "e2e-reach"), "web", "listen"); got != "127.0.0.1" {
+			t.Fatalf("status web.listen = %v, want 127.0.0.1", got)
+		}
+		reachDown(t, env, "e2e-reach")
+	})
+
+	t.Run("sticky", func(t *testing.T) {
+		up, exit, stderr := reachUp(t, env, "e2e-reach", "--listen", "127.0.0.1")
+		if exit != 0 {
+			t.Fatalf("sil up: exit %d: %v\n%s", exit, up, stderr)
+		}
+		if got := jget(up, "web", "port"); got != float64(webPort) {
+			t.Fatalf("web.port after down and up = %v, want the sticky %d", got, webPort)
+		}
+		if got := jget(reachIdentity(t, env, "e2e-reach"), "web_port"); got != float64(webPort) {
+			t.Fatalf("identity web_port = %v, want %d", got, webPort)
+		}
+		reachDown(t, env, "e2e-reach")
+	})
+
+	t.Run("claimed", func(t *testing.T) {
+		out := isoExpectError(t, env, 1, "port_claimed", "up", "e2e-reach2", "--listen", "127.0.0.1", "--web-port", fmt.Sprint(webPort))
+		if got := jget(out, "error", "detail", "instance"); got != "e2e-reach" {
+			t.Fatalf("detail.instance = %v, want e2e-reach", got)
+		}
+		if msg, _ := jget(out, "error", "message").(string); !strings.Contains(msg, "e2e-reach") {
+			t.Fatalf("message does not name the owner: %q", msg)
+		}
+		if _, err := os.Stat(filepath.Join(env.State, "sil", "e2e-reach2", "identity.json")); err == nil {
+			t.Fatal("a refused --web-port left an identity behind")
+		}
+		// The web port and the API port of one instance must differ.
+		isoExpectError(t, env, 1, "invalid_argument", "up", "e2e-reach2", "--api-port", fmt.Sprint(webPort+1), "--web-port", fmt.Sprint(webPort+1))
+		isoExpectError(t, env, 1, "invalid_argument", "up", "e2e-reach", "--web-port", fmt.Sprint(apiPort))
+		isoExpectError(t, env, 1, "invalid_argument", "up", "e2e-reach", "--api-port", fmt.Sprint(webPort))
+	})
+
+	t.Run("in_use", func(t *testing.T) {
+		ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", webPort))
+		if err != nil {
+			t.Fatalf("hold port %d: %v", webPort, err)
+		}
+		defer ln.Close()
+		out := isoExpectError(t, env, 2, "port_in_use", "up", "e2e-reach", "--listen", "127.0.0.1")
+		if got := jget(out, "error", "detail", "port"); got != float64(webPort) {
+			t.Fatalf("detail.port = %v, want %d", got, webPort)
+		}
+		if got := jget(out, "error", "detail", "listen"); got != "127.0.0.1" {
+			t.Fatalf("detail.listen = %v, want 127.0.0.1", got)
+		}
+		if pid, _ := jget(out, "error", "detail", "holder", "pid").(float64); int(pid) != os.Getpid() {
+			t.Fatalf("detail.holder = %v, want this test (pid %d)", jget(out, "error", "detail", "holder"), os.Getpid())
+		}
+		if got := jget(reachIdentity(t, env, "e2e-reach"), "web_port"); got != float64(webPort) {
+			t.Fatalf("identity web_port = %v after a port_in_use, want the unmoved %d", got, webPort)
+		}
+		// An explicit busy --web-port is refused and not stored either.
+		busy := freePort(t)
+		ln2, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", busy))
+		if err != nil {
+			t.Fatalf("hold port %d: %v", busy, err)
+		}
+		defer ln2.Close()
+		isoExpectError(t, env, 2, "port_in_use", "up", "e2e-reach", "--listen", "127.0.0.1", "--web-port", fmt.Sprint(busy))
+		if got := jget(reachIdentity(t, env, "e2e-reach"), "web_port"); got != float64(webPort) {
+			t.Fatalf("identity web_port = %v after a busy --web-port, want %d", got, webPort)
+		}
+	})
+
+	t.Run("ui_dir", func(t *testing.T) {
+		dir := t.TempDir()
+		index := filepath.Join(dir, "index.html")
+		write := func(marker string) {
+			t.Helper()
+			if err := os.WriteFile(index, []byte("<!doctype html><title>"+marker+"</title>"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write("marker-one")
+		up, exit, stderr := reachUp(t, env, "e2e-reach", "--listen", "127.0.0.1", "--ui-dir", dir)
+		if exit != 0 {
+			t.Fatalf("sil up --ui-dir: exit %d: %v\n%s", exit, up, stderr)
+		}
+		get := func() string {
+			t.Helper()
+			code, _, body := webDo(t, webPort, http.MethodGet, "/")
+			if code != 200 {
+				t.Fatalf("GET / = %d: %s", code, body)
+			}
+			return string(body)
+		}
+		if body := get(); !strings.Contains(body, "marker-one") {
+			t.Fatalf("GET / = %q, want the marker of --ui-dir", body)
+		}
+		write("marker-two")
+		if body := get(); !strings.Contains(body, "marker-two") {
+			t.Fatalf("GET / after rewriting index.html = %q, want marker-two without a restart", body)
+		}
+		// The API is the same one.
+		if code, _, _ := webDo(t, webPort, http.MethodGet, "/api/v1/status"); code != 200 {
+			t.Fatalf("GET /api/v1/status with --ui-dir = %d, want 200", code)
+		}
+		reachDown(t, env, "e2e-reach")
+
+		// A file is not a UI directory; nothing is built or locked for it.
+		isoExpectError(t, env, 1, "invalid_argument", "up", "e2e-reach", "--listen", "127.0.0.1", "--ui-dir", index)
+		isoExpectError(t, env, 1, "invalid_argument", "up", "e2e-reach", "--listen", "localhost")
+		isoExpectError(t, env, 1, "invalid_argument", "up", "e2e-reach", "--allow-host", "bad_host!")
+	})
 }

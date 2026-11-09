@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"math"
 	"net"
@@ -177,7 +178,7 @@ func Serve(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	id, err := instance.LoadOrCreate(p, 0)
+	id, err := instance.LoadOrCreate(p, instance.PortRequest{})
 	if err != nil {
 		return err
 	}
@@ -204,7 +205,7 @@ func Serve(ctx context.Context, name string) error {
 		fans:   ports,
 
 		lanHost:   instance.LANHost(),
-		webListen: defaultWebListen,
+		webListen: webListenOf(spec),
 
 		starter:  ExecStarter{},
 		guard:    NewCrashGuard(clk),
@@ -219,6 +220,24 @@ func Serve(ctx context.Context, name string) error {
 	sigCtx, stopSignals := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stopSignals()
 	return s.run(sigCtx)
+}
+
+// webListenOf is the address of the web listener: the spec's, or every interface for a spec
+// written before `sil up --listen`.
+func webListenOf(spec instance.Spec) string {
+	if spec.Listen == "" {
+		return defaultWebListen
+	}
+	return spec.Listen
+}
+
+// staticFS is the page file system: the embedded one, or the directory of `sil up --ui-dir`, which
+// is read on every request so a UI edit shows without a rebuild.
+func (s *supervisor) staticFS() fs.FS {
+	if s.spec.UIDir != "" {
+		return os.DirFS(s.spec.UIDir)
+	}
+	return ui.FS()
 }
 
 func (s *supervisor) run(sigCtx context.Context) error {
@@ -279,7 +298,7 @@ func (s *supervisor) run(sigCtx context.Context) error {
 		// The LAN-facing listener is bounded (connection cap, header deadline, one request per
 		// connection); api.sock above is not.
 		webDone <- web.Serve(srvCtx, web.Limit(webLn, s.clk, web.ListenerOptions{}),
-			web.LimitBody(web.NewHandler(s, web.Options{Static: ui.FS(), Clock: s.clk, Log: s.log}), s.clk, 0))
+			web.LimitBody(web.NewHandler(s, web.Options{Static: s.staticFS(), Clock: s.clk, Log: s.log}), s.clk, 0))
 	}()
 
 	s.log.Info("instance serving", "pid", os.Getpid(), "api_sock", s.paths.APISock(), "web_port", s.id.WebPort)
