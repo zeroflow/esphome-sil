@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -100,6 +101,7 @@ type fakeControl struct {
 	calls           []string
 	sim             []control.SimRestartRequest
 	press           []control.PressRequest
+	sets            []control.SetRequest
 	edges           []bool
 	status          control.Status
 	err             error
@@ -151,6 +153,19 @@ func (f *fakeControl) SetButton(_ context.Context, id string, down bool) (contro
 		action = "down"
 	}
 	return control.PressResult{Button: id, Action: action, Level: down}, f.record(action + "." + id)
+}
+
+func (f *fakeControl) Set(_ context.Context, r control.SetRequest) (control.SetResult, error) {
+	f.mu.Lock()
+	f.sets = append(f.sets, r)
+	f.mu.Unlock()
+	applied := map[string]any{}
+	for k, raw := range r.Values {
+		var v float64
+		_ = json.Unmarshal(bytes.Trim(raw, `"`), &v)
+		applied[k] = v
+	}
+	return control.SetResult{Applied: applied}, f.record("set")
 }
 
 func (f *fakeControl) seen() []string {
@@ -666,5 +681,84 @@ func TestPressErrorsKeepTheirCode(t *testing.T) {
 	r := run(t, "press", "usr1", "-i", "fan")
 	if r.exit != 1 || r.errCode(t) != "button_busy" || r.detail(t)["button"] != "usr1" {
 		t.Fatalf("exit %d, stdout %s, want exit 1 button_busy with detail.button usr1", r.exit, r.stdout)
+	}
+}
+
+// Misuse of `sil set` fails before the control API is asked.
+func TestSetMisuse(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan")}
+	liveInstance(t, "fan", fc)
+	for _, args := range [][]string{
+		{"set", "-i", "fan"},
+		{"set", "temperature=", "-i", "fan"},
+		{"set", "=5", "-i", "fan"},
+		{"set", "temperature", "-i", "fan"},
+		{"set", "temperature=1", "temperature=2", "-i", "fan"},
+		{"set", "temperature=1", "humidity", "-i", "fan"},
+	} {
+		r := run(t, args...)
+		if r.exit != 1 || r.errCode(t) != "invalid_argument" {
+			t.Errorf("sil %v: exit %d, stdout %s, want exit 1 invalid_argument", args, r.exit, r.stdout)
+		}
+	}
+	if len(fc.sets) != 0 {
+		t.Fatalf("misuse reached the control API: %v", fc.sets)
+	}
+}
+
+// The values travel as JSON strings exactly as typed, split at the first '='.
+func TestSetSendsPairsAsTyped(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan")}
+	liveInstance(t, "fan", fc)
+	r := run(t, "set", "humidity=40", "temperature=24.50", "-i", "fan")
+	if r.exit != 0 {
+		t.Fatalf("exit %d, stdout %s", r.exit, r.stdout)
+	}
+	if len(fc.sets) != 1 {
+		t.Fatalf("set requests %v, want one", fc.sets)
+	}
+	got := map[string]string{}
+	for k, raw := range fc.sets[0].Values {
+		got[k] = string(raw)
+	}
+	if fmt.Sprint(got) != `map[humidity:"40" temperature:"24.50"]` {
+		t.Fatalf("values %v, want the strings \"40\" and \"24.50\"", got)
+	}
+	if res := r.object(t); res["applied"] == nil || len(res) != 1 {
+		t.Fatalf("result %s, want exactly {applied: ...}", r.stdout)
+	}
+	// A value with its own '=' is split at the first one and left to the server to judge.
+	if r := run(t, "set", "temperature=1=2", "-i", "fan"); r.exit != 0 || string(fc.sets[1].Values["temperature"]) != `"1=2"` {
+		t.Fatalf("temperature=1=2: exit %d, values %v", r.exit, fc.sets[1].Values)
+	}
+}
+
+func TestSetInstanceSelection(t *testing.T) {
+	cliEnv(t)
+	own := &fakeControl{status: readyStatus("fan")}
+	other := &fakeControl{status: readyStatus("other")}
+	liveInstance(t, "fan", own)
+	liveInstance(t, "other", other)
+	if r := run(t, "set", "temperature=20", "-i", "other"); r.exit != 0 {
+		t.Fatalf("-i other: exit %d, %s", r.exit, r.stdout)
+	}
+	if len(other.sets) != 1 || len(own.sets) != 0 {
+		t.Fatalf("sets: other %d, fan %d, want 1 and 0", len(other.sets), len(own.sets))
+	}
+	if r := run(t, "set", "temperature=20"); r.exit != 1 || r.errCode(t) != "instance_ambiguous" {
+		t.Fatalf("two live instances without -i: exit %d, %s, want instance_ambiguous", r.exit, r.stdout)
+	}
+}
+
+// A server-side error (unknown key, range) reaches stdout unchanged with exit 1.
+func TestSetServerErrorPassesThrough(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan"), err: apperr.Failed("value_out_of_range", "humidity=101 is outside 0..100", map[string]any{"key": "humidity"})}
+	liveInstance(t, "fan", fc)
+	r := run(t, "set", "humidity=101", "-i", "fan")
+	if r.exit != 1 || r.errCode(t) != "value_out_of_range" || r.detail(t)["key"] != "humidity" {
+		t.Fatalf("exit %d, stdout %s, want exit 1 value_out_of_range naming humidity", r.exit, r.stdout)
 	}
 }

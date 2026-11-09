@@ -1041,3 +1041,162 @@ func TestEngineLEDPixels(t *testing.T) {
 		}
 	})
 }
+
+// envValues returns the values of the recorded in frames for channel ch, in order.
+func (fw *firmware) envValues(ch string) []float32 {
+	var out []float32
+	for _, f := range fw.rpmFrames(ch) {
+		v, _ := f.GetF32("v")
+		out = append(out, v)
+	}
+	return out
+}
+
+func applyChange(t *testing.T, e *Engine, c Change) error {
+	t.Helper()
+	ctx, cancel := clock.WithTimeout(context.Background(), clock.NewReal(), guard)
+	defer cancel()
+	return e.Apply(ctx, c)
+}
+
+func fp(v float64) *float64 { return &v }
+
+// An unchanged environment is sent exactly once per EnvResend of sim time, per value (D-11).
+func TestEngineEnvResendEvery10s(t *testing.T) {
+	h := newHarness(t)
+	for _, ch := range []string{ChanTemperature, ChanHumidity} {
+		if n := len(h.fw.envValues(ch)); n != 1 {
+			t.Fatalf("%s frames after hello = %d, want the one of the in-snapshot", ch, n)
+		}
+	}
+	for s := 1; s <= 29; s++ {
+		h.clk.Advance(time.Second)
+	}
+	waitUntil(t, "SimTime == 29 s", func() bool { return h.eng.Snapshot().SimTime == 29*time.Second })
+	for _, ch := range []string{ChanTemperature, ChanHumidity} {
+		// hello at 0, then 10 s and 20 s.
+		waitUntil(t, ch+" re-sends", func() bool { return len(h.fw.envValues(ch)) == 3 })
+	}
+	h.clk.Advance(time.Second) // 30 s
+	waitUntil(t, "the third re-send", func() bool { return len(h.fw.envValues(ChanTemperature)) == 4 })
+	if n := len(h.fw.envValues(ChanHumidity)); n != 4 {
+		t.Fatalf("humidity frames = %d, want 4 (0, 10, 20 and 30 s)", n)
+	}
+}
+
+// Apply sends exactly the changed value at once, applies all fields together and re-arms that
+// value's 10 s timer.
+func TestEngineApplySendsChangedValueAtOnce(t *testing.T) {
+	h := newHarness(t)
+	h.clk.Advance(4 * time.Second)
+	waitUntil(t, "SimTime == 4 s", func() bool { return h.eng.Snapshot().SimTime == 4*time.Second })
+	if err := applyChange(t, h.eng, Change{Temperature: fp(30)}); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the temperature frame", func() bool { return len(h.fw.envValues(ChanTemperature)) == 2 })
+	if got := h.fw.envValues(ChanTemperature); got[1] != 30 {
+		t.Fatalf("temperature frames %v, want the second to be 30", got)
+	}
+	if n := len(h.fw.envValues(ChanHumidity)); n != 1 {
+		t.Fatalf("humidity frames = %d after a temperature-only Apply, want 1", n)
+	}
+	if e := h.eng.Snapshot().Env; e.Temperature != 30 || e.Humidity != 0 {
+		t.Fatalf("Snapshot.Env = %+v, want temperature 30 and the unchanged humidity", e)
+	}
+
+	// Both fields at once: one event, both frames, and the snapshot never shows half of it.
+	if err := applyChange(t, h.eng, Change{Temperature: fp(31), Humidity: fp(50)}); err != nil {
+		t.Fatal(err)
+	}
+	if e := h.eng.Snapshot().Env; e.Temperature != 31 || e.Humidity != 50 {
+		t.Fatalf("Snapshot.Env = %+v right after Apply returned, want 31 and 50", e)
+	}
+	waitUntil(t, "both frames", func() bool {
+		return len(h.fw.envValues(ChanTemperature)) == 3 && len(h.fw.envValues(ChanHumidity)) == 2
+	})
+
+	// The timer of a changed value restarts: temperature was sent at 4 s, so its next re-send is
+	// at 14 s, the humidity at 14 s as well (both set at 4 s); nothing at 10 s.
+	h.clk.Advance(9 * time.Second) // 13 s
+	waitUntil(t, "SimTime == 13 s", func() bool { return h.eng.Snapshot().SimTime == 13*time.Second })
+	if n := len(h.fw.envValues(ChanTemperature)); n != 3 {
+		t.Fatalf("temperature frames = %d at 13 s, want 3 (no re-send before 14 s)", n)
+	}
+	h.clk.Advance(time.Second) // 14 s
+	waitUntil(t, "the re-send at 14 s", func() bool { return len(h.fw.envValues(ChanTemperature)) == 4 })
+}
+
+// A fresh engine announces Config.Env in its in-snapshot, and Apply before any firmware connects
+// is what the firmware then sees.
+func TestEngineConfigEnvInSnapshot(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "sil-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	clk := clock.NewManual()
+	eng := New(Config{Clock: clk, BusPath: filepath.Join(dir, "bus.sock"), Env: Env{Temperature: 22, Humidity: 45}})
+	if e := eng.Snapshot().Env; e.Temperature != 22 || e.Humidity != 45 {
+		t.Fatalf("Snapshot.Env before Run = %+v, want the Config.Env", e)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- eng.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	<-eng.Ready()
+	clk.BlockUntil(1)
+	if err := applyChange(t, eng, Change{Humidity: fp(40)}); err != nil {
+		t.Fatal(err)
+	}
+	h := &harness{t: t, eng: eng, clk: clk, busPath: filepath.Join(dir, "bus.sock")}
+	fw := h.dial()
+	fw.session(fullManifest())
+	// No ports configured: welcome, temperature, humidity, three buttons, sync.
+	fw.waitKinds(7)
+	if got := fw.envValues(ChanTemperature); len(got) != 1 || got[0] != 22 {
+		t.Fatalf("temperature in the snapshot = %v, want [22]", got)
+	}
+	if got := fw.envValues(ChanHumidity); len(got) != 1 || got[0] != 40 {
+		t.Fatalf("humidity in the snapshot = %v, want [40] (the value set before the connect)", got)
+	}
+}
+
+func TestEngineApplyAfterStopAnswersAtOnce(t *testing.T) {
+	h := newHarness(t)
+	h.cancel()
+	waitUntil(t, "the engine to stop", func() bool { return !h.eng.Snapshot().BusConnected })
+	done := make(chan error, 1)
+	go func() { done <- h.eng.Apply(context.Background(), Change{Temperature: fp(20)}) }()
+	tm := clock.NewReal().NewTimer(guard)
+	defer tm.Stop()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrStopped) {
+			t.Fatalf("Apply after Run returned: %v, want ErrStopped", err)
+		}
+	case <-tm.C():
+		t.Fatal("Apply blocked on a stopped engine")
+	}
+}
+
+// The env channels are optional: a wrong direction or type warns, a missing one does not.
+func TestEngineEnvManifestWarnings(t *testing.T) {
+	h := startEngine(t)
+	fw := h.dial()
+	fw.session(append(fullManifest(),
+		bus.Channel{Ch: ChanTemperature, Dir: "out", Type: "f32"},
+		bus.Channel{Ch: ChanHumidity, Dir: "in", Type: "rgb"}))
+	waitUntil(t, "the manifest to be checked", func() bool { return h.eng.Snapshot().Synced })
+	want := []string{`channel temperature has direction "out", expected "in"`, `channel humidity has type "rgb", expected "f32"`}
+	if got := h.eng.Snapshot().Warnings; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("warnings = %q, want %q", got, want)
+	}
+	h2 := startEngine(t)
+	fw2 := h2.dial()
+	fw2.session(append(fullManifest(),
+		bus.Channel{Ch: ChanTemperature, Dir: "in", Type: "f32"}, bus.Channel{Ch: ChanHumidity, Dir: "in", Type: "f32"}))
+	waitUntil(t, "the manifest to be checked", func() bool { return h2.eng.Snapshot().Synced })
+	if w := h2.eng.Snapshot().Warnings; len(w) != 0 {
+		t.Fatalf("a correct env manifest produced warnings %q", w)
+	}
+}
