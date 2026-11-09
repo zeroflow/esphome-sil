@@ -15,6 +15,8 @@ package fwbuild
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -317,8 +319,9 @@ func (b *builder) docker(ctx context.Context, network string, stdout, stderr io.
 	name := containerName(b.o)
 	// A container left behind by a build that was killed (SIGKILL of sil, a
 	// crash) would still compile into the shared build directory and make the
-	// --name below collide. Instances are serialised by the instance lock, so
-	// anything running under this name is such an orphan.
+	// --name below collide. The name is unique to this cache directory and
+	// builds into it are serialised by the instance lock, so anything running
+	// under this name is such an orphan.
 	removeContainer(name)
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs(b.o, b.mount, b.buildDir, b.cacheDir, network, esphomeArgs...)...)
 	// Killing the docker client does not stop the container (it belongs to
@@ -333,9 +336,15 @@ func (b *builder) docker(ctx context.Context, network string, stdout, stderr io.
 	return cmd.Run()
 }
 
-// containerName is the fixed name of the build container of an instance, so a
-// cancelled or orphaned build can be found and removed.
-func containerName(o Options) string { return "sil-build-" + o.Substitutions["sil_name"] }
+// containerName is the name of the build container of an instance, so a
+// cancelled or orphaned build can be found and removed. The Docker daemon is
+// host-wide while instance names are only unique inside one cache root, so the
+// name carries a short hash of the cache directory the container owns: two
+// users or two environments building "dev" never touch each other's container.
+func containerName(o Options) string {
+	sum := sha256.Sum256([]byte(o.CacheDir))
+	return "sil-build-" + o.Substitutions["sil_name"] + "-" + hex.EncodeToString(sum[:4])
+}
 
 // removeContainer force-removes the named container; absence is not an error.
 func removeContainer(name string) {

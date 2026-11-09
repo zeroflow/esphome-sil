@@ -169,13 +169,32 @@ func TestDockerArgsSeparateInstances(t *testing.T) {
 		t.Fatalf("instances share a /build mount: %q vs %q", mounts(argsA), mounts(argsB))
 	}
 	joined := strings.Join(argsA, " ")
-	for _, want := range []string{"--name sil-build-dev", "--network none", "ESPHOME_DATA_DIR=/build/data", "-e SIL_API_KEY ", ":ro"} {
+	for _, want := range []string{"--name " + containerName(a), "--network none", "ESPHOME_DATA_DIR=/build/data", "-e SIL_API_KEY ", ":ro"} {
 		if !strings.Contains(joined+" ", want) {
 			t.Fatalf("docker args lack %q: %s", want, joined)
 		}
 	}
 	if strings.Contains(joined, pipeKey) {
 		t.Fatal("the key is on the command line")
+	}
+}
+
+// TestContainerNameIsScopedToTheCacheDir: the Docker daemon is host-wide, so
+// two instances with the same name under different cache roots must not share
+// a container name (the pre-run `docker rm -f` would kill the other's build).
+func TestContainerNameIsScopedToTheCacheDir(t *testing.T) {
+	t.Parallel()
+	a, b := pipeOptions(t), pipeOptions(t)
+	if a.Substitutions["sil_name"] != b.Substitutions["sil_name"] || a.CacheDir == b.CacheDir {
+		t.Fatalf("fixture must give the same name and different cache dirs: %q/%q %q/%q",
+			a.Substitutions["sil_name"], b.Substitutions["sil_name"], a.CacheDir, b.CacheDir)
+	}
+	na, nb := containerName(a), containerName(b)
+	if na == nb {
+		t.Fatalf("two cache dirs share the container name %q", na)
+	}
+	if !strings.HasPrefix(na, "sil-build-"+a.Substitutions["sil_name"]+"-") || na != containerName(a) {
+		t.Fatalf("container name %q is not stable or lacks the instance name", na)
 	}
 }
 
