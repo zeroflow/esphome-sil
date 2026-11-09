@@ -21,6 +21,15 @@ class SimChild {
   const std::string &channel() const { return this->channel_; }
   /// "out" (firmware to simulator) or "in" (simulator to firmware).
   virtual const char *direction() const = 0;
+  /// Wire type of the channel: "f32" (a number in `v`) or "rgb" (pixels in `px`).
+  virtual const char *type() const { return "f32"; }
+  /// LED count of an "rgb" channel; 0 for every other channel.
+  virtual int pixels() const { return 0; }
+  /// Segments of an "rgb" channel as `label:from:to,...` (empty for none); sent with the chan frame.
+  virtual const std::string &segments() const {
+    static const std::string none;
+    return none;
+  }
   virtual void on_value(float v) {}
   virtual void on_connected() {}
   virtual void on_disconnected() {}
@@ -52,6 +61,10 @@ class SimBus : public Component {
   /// Records the latest value of an output channel and sends it when connected and changed.
   /// Non-finite values are ignored: they have no wire form.
   void set_out(const std::string &ch, float v);
+  /// Same for a pixel channel: `hex` is 2 lowercase hex characters per byte, RGB order. It is stored
+  /// also while the bus is down, so the connect snapshot replays the strip state at reconnect (the
+  /// newest strip the light handed over, changes made during the gap included).
+  void set_out_px(const std::string &ch, const std::string &hex);
 
  protected:
   void try_connect_();
@@ -60,6 +73,7 @@ class SimBus : public Component {
   bool handle_line_(const std::string &line);
   void queue_(const std::string &line) { this->tx_ += line; }
   void send_out_(const std::string &ch, float v);
+  void send_px_(const std::string &ch, const std::string &hex);
   void send_err_(const std::string &msg);
   void bump_backoff_();
   void flush_();
@@ -75,6 +89,8 @@ class SimBus : public Component {
   /// Latest value per output channel, in the order the channels were first written. While
   /// connected every entry equals what the peer last received; on connect all of it is replayed once.
   std::vector<std::pair<std::string, float>> last_out_;
+  /// Same for pixel channels: replayed after last_out_ and before sync.
+  std::vector<std::pair<std::string, std::string>> last_px_;
 };
 
 }  // namespace esphome::sim_bus

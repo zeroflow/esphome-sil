@@ -48,9 +48,19 @@ type Status struct {
 	Sim      SimStatus      `json:"sim"`
 	Ports    []PortStatus   `json:"ports"`
 	// Buttons is the current level of every button (true = held): usr1, usr2, usr3.
-	Buttons  map[string]bool `json:"buttons"`
-	Warnings []string        `json:"warnings"`
-	Error    *apperr.Error   `json:"error,omitempty"`
+	Buttons map[string]bool `json:"buttons"`
+	// LEDs is the status LED strip the firmware wrote, with the firmware's own segment names.
+	LEDs     LEDStatus     `json:"leds"`
+	Warnings []string      `json:"warnings"`
+	Error    *apperr.Error `json:"error,omitempty"`
+}
+
+// LEDStatus is the status LED strip: one "#rrggbb" per LED (the final pixel bytes, exactly as the
+// firmware wrote them) and the named LED index ranges the firmware declares. Both are empty (never
+// null) for a firmware without a leds channel.
+type LEDStatus struct {
+	Strip    []string         `json:"strip"`
+	Segments map[string][]int `json:"segments"`
 }
 
 // APIStatus describes the firmware's native API endpoint.

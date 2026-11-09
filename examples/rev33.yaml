@@ -1,5 +1,5 @@
 # Rev 3.3 bench firmware: four fan ports, RPM sensors and the three user buttons on the sim-bus.
-# 02-02 adds the status LEDs and 02-03 temperature and humidity.
+# 02-03 adds temperature and humidity.
 #
 # Identity is never hand-written here. `sil` (and the e2e harness) inject
 # sil_name / sil_mac / sil_port with `-s` and the API key via env SIL_API_KEY;
@@ -14,6 +14,15 @@ esphome:
   friendly_name: SiL ${sil_name}
   build_flags:
     - -static
+  # Board LED: blue pulse from boot until a real API client connects.
+  on_boot:
+    - then:
+        - lambda: |-
+            auto call = id(status_led).turn_on();
+            call.set_rgb(0.0, 0.0, 1.0);
+            call.set_brightness(0.5);
+            call.set_effect("pulse");
+            call.perform();
 
 host:
   mac_address: ${sil_mac}
@@ -26,6 +35,19 @@ api:
   reboot_timeout: 0s
   encryption:
     key: !env_var SIL_API_KEY
+  on_client_connected:
+    # sil's own readiness probe identifies itself as "sil" (internal/apiclient/probe.go); only a
+    # real client (Home Assistant, a test) turns the board LED static green.
+    - if:
+        condition:
+          lambda: 'return client_info != "sil";'
+        then:
+          - lambda: |-
+              auto call = id(status_led).turn_on();
+              call.set_rgb(0.0, 1.0, 0.0);
+              call.set_brightness(0.5);
+              call.set_effect("none");
+              call.perform();
 
 # The product repo switches this source to github://zeroflow/esphome-sil@vX.Y.
 external_components:
@@ -110,24 +132,84 @@ sensor:
     id: fan1_speed
     unit_of_measurement: RPM
     accuracy_decimals: 0
+    # Per-fan LED: green while the fan turns, off when it is stopped.
+    on_value:
+      - if:
+          condition:
+            lambda: 'return x > 0;'
+          then:
+            - light.turn_on:
+                id: fan1_led
+                red: 0%
+                green: 100%
+                blue: 0%
+                brightness: 50%
+          else:
+            - light.turn_off:
+                id: fan1_led
   - platform: sim_bus
     channel: port2.rpm
     name: "Fan 2 Speed"
     id: fan2_speed
     unit_of_measurement: RPM
     accuracy_decimals: 0
+    # Per-fan LED: green while the fan turns, off when it is stopped.
+    on_value:
+      - if:
+          condition:
+            lambda: 'return x > 0;'
+          then:
+            - light.turn_on:
+                id: fan2_led
+                red: 0%
+                green: 100%
+                blue: 0%
+                brightness: 50%
+          else:
+            - light.turn_off:
+                id: fan2_led
   - platform: sim_bus
     channel: port3.rpm
     name: "Fan 3 Speed"
     id: fan3_speed
     unit_of_measurement: RPM
     accuracy_decimals: 0
+    # Per-fan LED: green while the fan turns, off when it is stopped.
+    on_value:
+      - if:
+          condition:
+            lambda: 'return x > 0;'
+          then:
+            - light.turn_on:
+                id: fan3_led
+                red: 0%
+                green: 100%
+                blue: 0%
+                brightness: 50%
+          else:
+            - light.turn_off:
+                id: fan3_led
   - platform: sim_bus
     channel: port4.rpm
     name: "Fan 4 Speed"
     id: fan4_speed
     unit_of_measurement: RPM
     accuracy_decimals: 0
+    # Per-fan LED: green while the fan turns, off when it is stopped.
+    on_value:
+      - if:
+          condition:
+            lambda: 'return x > 0;'
+          then:
+            - light.turn_on:
+                id: fan4_led
+                red: 0%
+                green: 100%
+                blue: 0%
+                brightness: 50%
+          else:
+            - light.turn_off:
+                id: fan4_led
 
 # Buttons are levels; the click windows below are what makes a press short or long.
 binary_sensor:
@@ -168,3 +250,58 @@ binary_sensor:
         - script.execute:
             id: step_fans
             delta: -10
+
+# The 5-LED status strip as one addressable light; the stock partition lights carve it into the
+# board LED and one LED per fan. The segment names in `sil status` come from these partitions.
+light:
+  - platform: sim_bus
+    id: status_leds
+    name: "Status LEDs"
+    internal: true
+    channel: leds
+    num_leds: 5
+    segment_labels:
+      status_led: board
+  - platform: partition
+    name: "Board Status"
+    id: status_led
+    internal: true
+    segments:
+      - id: status_leds
+        from: 0
+        to: 0
+    effects:
+      - pulse:
+      - addressable_rainbow:
+  - platform: partition
+    name: "Fan 1 Status"
+    id: fan1_led
+    internal: true
+    segments:
+      - id: status_leds
+        from: 1
+        to: 1
+  - platform: partition
+    name: "Fan 2 Status"
+    id: fan2_led
+    internal: true
+    segments:
+      - id: status_leds
+        from: 2
+        to: 2
+  - platform: partition
+    name: "Fan 3 Status"
+    id: fan3_led
+    internal: true
+    segments:
+      - id: status_leds
+        from: 3
+        to: 3
+  - platform: partition
+    name: "Fan 4 Status"
+    id: fan4_led
+    internal: true
+    segments:
+      - id: status_leds
+        from: 4
+        to: 4

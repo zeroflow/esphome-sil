@@ -615,6 +615,7 @@ func (s *supervisor) Status(_ context.Context) (control.Status, error) {
 		Sim:      control.SimStatus{TimeS: snap.SimTime.Seconds(), TimeFactor: 1, EngineRestarts: engRestarts, BusProto: snap.BusProto},
 		Ports:    make([]control.PortStatus, 0, len(snap.Ports)),
 		Buttons:  make(map[string]bool, len(engine.ButtonIDs)),
+		LEDs:     control.LEDStatus{Strip: append([]string{}, snap.LEDs.Strip...), Segments: make(map[string][]int, len(snap.LEDs.Segments))},
 		Warnings: append([]string{}, snap.Warnings...),
 		Error:    failure,
 	}
@@ -623,6 +624,9 @@ func (s *supervisor) Status(_ context.Context) (control.Status, error) {
 	}
 	for _, id := range engine.ButtonIDs {
 		st.Buttons[id] = snap.Buttons[id]
+	}
+	for label, idx := range snap.LEDs.Segments {
+		st.LEDs.Segments[label] = append([]int{}, idx...)
 	}
 	return st, nil
 }

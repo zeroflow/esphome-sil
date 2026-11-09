@@ -32,8 +32,14 @@ type Hello struct {
 	T     int64
 }
 
-// Channel is one entry of the firmware's channel manifest.
-type Channel struct{ Ch, Dir, Type string }
+// Channel is one entry of the firmware's channel manifest. N and Seg are only
+// set for the pixel channel (type "rgb"): its LED count and its segment list
+// ("label:from:to,..."); every other channel leaves them zero.
+type Channel struct {
+	Ch, Dir, Type string
+	N             int64
+	Seg           string
+}
 
 // Handler receives the events of the active session. Calls are serialized and
 // arrive in the order the events happened on the wire; they must not block for
@@ -316,7 +322,10 @@ func (s *Server) read(c *conn, h Handler) (reason string, activated bool) {
 			}
 			dir, _ := f.GetStr("dir")
 			typ, _ := f.GetStr("type")
-			chans = append(chans, Channel{Ch: ch, Dir: dir, Type: typ})
+			entry := Channel{Ch: ch, Dir: dir, Type: typ}
+			entry.N, _ = f.GetInt("n")
+			entry.Seg, _ = f.GetStr("seg")
+			chans = append(chans, entry)
 		case "sync":
 			if manifest {
 				continue

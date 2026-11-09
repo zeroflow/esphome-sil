@@ -13,6 +13,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +32,26 @@ const (
 // ButtonIDs are the user buttons of the Rev 3.3 board, in snapshot order. They are also the names
 // of the sim-bus `in` channels that carry the button levels.
 var ButtonIDs = []string{"usr1", "usr2", "usr3"}
+
+// LEDChannel is the sim-bus channel of the status LED strip (direction out, type rgb).
+const LEDChannel = "leds"
+
+const (
+	ledMaxN     = 255         // a 4096-byte bus line holds at most 6 x 255 hex characters of pixels
+	ledMaxPxLen = 6 * ledMaxN // 1530
+)
+
+var ledLabelRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// LEDState is the status LED strip as the firmware wrote it: the final pixel bytes (brightness,
+// colour correction and effects already applied by ESPHome), and the segment names the firmware
+// declares through its partition lights. Both are empty for a firmware without a leds channel.
+type LEDState struct {
+	// Strip holds one "#rrggbb" (lowercase) per LED; the Go side never converts or rounds a pixel.
+	Strip []string
+	// Segments maps a segment label to the LED indexes it covers, from..to inclusive.
+	Segments map[string][]int
+}
 
 // Errors of the engine's operations. They are sentinels: compare with errors.Is.
 var (
@@ -77,7 +100,9 @@ type Snapshot struct {
 	Synced bool
 	Ports  []PortState
 	// Buttons is the level of every button in ButtonIDs (true = held); always all of them.
-	Buttons  map[string]bool
+	Buttons map[string]bool
+	// LEDs is the status LED strip; it keeps the last frame while the bus is down.
+	LEDs     LEDState
 	Warnings []string
 }
 
@@ -138,6 +163,12 @@ type Engine struct {
 	buttons map[string]bool
 	// btnAvail records the optional button channels of the current session's manifest.
 	btnAvail map[string]bool
+	// led* is the status LED strip. ledN is the manifest's LED count (0 until a valid manifest);
+	// ledStrip is empty until the first pixel frame or a valid manifest of the session. A new
+	// session (hello) starts them empty; a disconnect leaves them in place.
+	ledN     int
+	ledStrip []string
+	ledSegs  map[string][]int
 }
 
 type portRuntime struct {
@@ -188,7 +219,11 @@ func (e *Engine) publish() {
 		Synced:       e.synced,
 		Ports:        make([]PortState, len(e.ports)),
 		Buttons:      make(map[string]bool, len(e.buttons)),
+		LEDs:         LEDState{Strip: append([]string{}, e.ledStrip...), Segments: make(map[string][]int, len(e.ledSegs))},
 		Warnings:     append([]string{}, e.warnings...),
+	}
+	for label, idx := range e.ledSegs {
+		s.LEDs.Segments[label] = append([]int{}, idx...)
 	}
 	for i := range e.ports {
 		p := &e.ports[i]
@@ -312,6 +347,7 @@ func (e *Engine) handle(ev event) {
 		e.btnAvail = map[string]bool{}
 		e.proto = int(ev.hello.Proto)
 		e.warnings = nil
+		e.ledN, e.ledStrip, e.ledSegs = 0, nil, nil
 		ev.reply <- e.inSnapshot()
 	case evManifest:
 		e.synced = true
@@ -462,6 +498,8 @@ func (e *Engine) checkManifest(chs []bus.Channel) {
 		}
 	}
 	// Optional channels: their presence enables the matching operation; a missing one never warns.
+	known[LEDChannel] = true
+	e.checkLEDs(have[LEDChannel], have)
 	for _, id := range ButtonIDs {
 		known[id] = true
 		c, ok := have[id]
@@ -498,6 +536,10 @@ func (e *Engine) handleFrame(f bus.Frame) {
 		return
 	}
 	ch, _ := f.GetStr("ch")
+	if ch == LEDChannel {
+		e.handleLEDFrame(f)
+		return
+	}
 	matched := false
 	for i := range e.ports {
 		if e.ports[i].dutyCh != ch {
@@ -525,4 +567,113 @@ func (e *Engine) sendRPM(force bool) {
 		p.sent, p.sentOnce = v, true
 		e.send(bus.NewFrame("in").Str("ch", p.rpmCh).Num("v", float64(v)).Int("t", e.micros()))
 	}
+}
+
+// checkLEDs validates the optional leds channel of the manifest. A violation is one warning and
+// leaves the strip and the segments as they are; a valid LED count (re)sizes an empty strip to
+// black. have holds the first manifest entry per channel.
+func (e *Engine) checkLEDs(c bus.Channel, have map[string]bus.Channel) {
+	if _, ok := have[LEDChannel]; !ok {
+		e.ledN, e.ledStrip, e.ledSegs = 0, nil, nil
+		return
+	}
+	switch {
+	case c.Dir != "out":
+		e.warn(fmt.Sprintf("channel %s has direction %q, expected \"out\"", LEDChannel, c.Dir))
+		return
+	case c.Type != "rgb":
+		e.warn(fmt.Sprintf("channel %s has type %q, expected \"rgb\"", LEDChannel, c.Type))
+		return
+	case c.N < 1 || c.N > ledMaxN:
+		e.warn(fmt.Sprintf("channel %s declares n=%d LEDs, expected 1..%d", LEDChannel, c.N, ledMaxN))
+		return
+	}
+	e.ledN = int(c.N)
+	// A pixel frame of this session that arrived before the manifest (the firmware's replay
+	// precedes its sync) must fit the declared count.
+	if len(e.ledStrip) != 0 && len(e.ledStrip) != e.ledN {
+		e.warn(fmt.Sprintf("channel %s: pixel frame of %d LEDs does not match n=%d", LEDChannel, len(e.ledStrip), e.ledN))
+		e.ledStrip = nil
+	}
+	if len(e.ledStrip) == 0 {
+		e.ledStrip = make([]string, e.ledN)
+		for i := range e.ledStrip {
+			e.ledStrip[i] = "#000000"
+		}
+	}
+	segs, err := parseSegments(c.Seg, e.ledN)
+	if err != nil {
+		e.warn(fmt.Sprintf("channel %s has a bad seg %q: %v", LEDChannel, c.Seg, err))
+		return
+	}
+	e.ledSegs = segs
+}
+
+// parseSegments parses "label:from:to,..." against n LEDs. The empty string means no segments.
+func parseSegments(seg string, n int) (map[string][]int, error) {
+	out := map[string][]int{}
+	if seg == "" {
+		return out, nil
+	}
+	for _, part := range strings.Split(seg, ",") {
+		f := strings.Split(part, ":")
+		if len(f) != 3 {
+			return nil, fmt.Errorf("segment %q is not label:from:to", part)
+		}
+		if !ledLabelRE.MatchString(f[0]) {
+			return nil, fmt.Errorf("segment label %q does not match ^[a-z][a-z0-9_]*$", f[0])
+		}
+		if _, dup := out[f[0]]; dup {
+			return nil, fmt.Errorf("duplicate segment label %q", f[0])
+		}
+		from, err1 := strconv.Atoi(f[1])
+		to, err2 := strconv.Atoi(f[2])
+		if err1 != nil || err2 != nil || f[1] == "" || f[2] == "" || f[1][0] == '+' || f[2][0] == '+' || f[1][0] == '-' || f[2][0] == '-' {
+			return nil, fmt.Errorf("segment %q needs non-negative integer from and to", part)
+		}
+		if from > to || to >= n {
+			return nil, fmt.Errorf("segment %q must satisfy 0 <= from <= to < %d", part, n)
+		}
+		idx := make([]int, 0, to-from+1)
+		for i := from; i <= to; i++ {
+			idx = append(idx, i)
+		}
+		out[f[0]] = idx
+	}
+	return out, nil
+}
+
+// handleLEDFrame stores the pixels of an out frame on the leds channel. A bad frame is one warning
+// and keeps the previous strip. It is accepted before the manifest too.
+func (e *Engine) handleLEDFrame(f bus.Frame) {
+	px, ok := f.GetStr("px")
+	if !ok {
+		e.warn(fmt.Sprintf("channel %s carries pixels (px), not a number: wrong type, frame ignored", LEDChannel))
+		return
+	}
+	limit := ledMaxPxLen
+	if e.ledN > 0 {
+		limit = 6 * e.ledN
+	}
+	switch {
+	case len(px) == 0 || len(px)%6 != 0:
+		e.warn(fmt.Sprintf("channel %s: px of %d characters is not a multiple of 6, frame ignored", LEDChannel, len(px)))
+		return
+	case len(px) > limit || (e.ledN > 0 && len(px) != limit):
+		e.warn(fmt.Sprintf("channel %s: px of %d characters does not fit the strip (expected at most %d), frame ignored", LEDChannel, len(px), limit))
+		return
+	}
+	strip := make([]string, 0, len(px)/6)
+	for i := 0; i < len(px); i += 6 {
+		chunk := px[i : i+6]
+		for j := 0; j < 6; j++ {
+			c := chunk[j]
+			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+				e.warn(fmt.Sprintf("channel %s: px has a non-hex character, frame ignored", LEDChannel))
+				return
+			}
+		}
+		strip = append(strip, "#"+strings.ToLower(chunk))
+	}
+	e.ledStrip = strip
 }

@@ -69,10 +69,12 @@ void SimBus::try_connect_() {
   this->queue_(proto::encode(hello));
   for (auto *c : this->children_) {
     proto::Frame f;
-    f.str("k", "chan").str("ch", c->channel()).str("dir", c->direction()).str("type", "f32");
+    f.str("k", "chan").str("ch", c->channel()).str("dir", c->direction()).str("type", c->type());
+    if (c->pixels() > 0) f.i64("n", c->pixels()).str("seg", c->segments());
     this->queue_(proto::encode(f));
   }
   for (const auto &e : this->last_out_) this->send_out_(e.first, e.second);
+  for (const auto &e : this->last_px_) this->send_px_(e.first, e.second);
   proto::Frame sync;
   sync.str("k", "sync").i64("t", now_us());
   this->queue_(proto::encode(sync));
@@ -221,6 +223,30 @@ void SimBus::send_out_(const std::string &ch, float v) {
   proto::Frame f;
   f.str("k", "out").str("ch", ch).num("v", v).i64("t", now_us());
   this->queue_(proto::encode(f));
+}
+
+void SimBus::send_px_(const std::string &ch, const std::string &hex) {
+  proto::Frame f;
+  f.str("k", "out").str("ch", ch).str("px", hex).i64("t", now_us());
+  this->queue_(proto::encode(f));
+}
+
+void SimBus::set_out_px(const std::string &ch, const std::string &hex) {
+  for (auto &e : this->last_px_) {
+    if (e.first != ch) continue;
+    if (e.second == hex && this->fd_ >= 0) return;  // unchanged: nothing to send
+    e.second = hex;
+    if (this->fd_ >= 0) {
+      this->send_px_(ch, hex);
+      this->flush_();
+    }
+    return;
+  }
+  this->last_px_.emplace_back(ch, hex);
+  if (this->fd_ >= 0) {
+    this->send_px_(ch, hex);
+    this->flush_();
+  }
 }
 
 void SimBus::set_out(const std::string &ch, float v) {

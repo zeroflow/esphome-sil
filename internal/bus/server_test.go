@@ -337,9 +337,27 @@ func TestManifestAtSyncAndOutFramesInOrder(t *testing.T) {
 	if rec.count("manifest") != 1 {
 		t.Fatalf("manifest delivered %d times, want once", rec.count("manifest"))
 	}
-	want := []Channel{{"port1.duty", "out", "f32"}, {"port1.rpm", "in", "f32"}}
+	want := []Channel{{Ch: "port1.duty", Dir: "out", Type: "f32"}, {Ch: "port1.rpm", Dir: "in", Type: "f32"}}
 	if !reflect.DeepEqual(rec.manifest[0], want) {
 		t.Fatalf("manifest = %v, want %v", rec.manifest[0], want)
+	}
+}
+
+func TestManifestCarriesRGBChannel(t *testing.T) {
+	rec := &recorder{}
+	_, path := startServer(t, rec)
+	c := dial(t, path)
+	c.hello("fw", 2)
+	c.sendFrame(NewFrame("chan").Str("ch", "leds").Str("dir", "out").Str("type", "rgb").Int("n", 5).Str("seg", "board:0:0"))
+	c.sendFrame(NewFrame("chan").Str("ch", "port1.rpm").Str("dir", "in").Str("type", "f32"))
+	c.sendFrame(NewFrame("sync").Int("t", 1))
+	waitUntil(t, "the manifest", func() bool { return rec.count("manifest") == 1 })
+	want := []Channel{
+		{Ch: "leds", Dir: "out", Type: "rgb", N: 5, Seg: "board:0:0"},
+		{Ch: "port1.rpm", Dir: "in", Type: "f32"},
+	}
+	if !reflect.DeepEqual(rec.manifest[0], want) {
+		t.Fatalf("manifest = %v, want %v (n and seg only on the rgb channel)", rec.manifest[0], want)
 	}
 }
 
