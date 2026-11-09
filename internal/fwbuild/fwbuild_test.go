@@ -241,3 +241,47 @@ func TestMountRootRefusesBroadTrees(t *testing.T) {
 		t.Errorf("yaml in a subdirectory of $HOME: mount %q, %v; want %q", got, err, sub)
 	}
 }
+
+// TestClassifyCompileFailure: only a compiler diagnostic with exit 1 is the
+// user's firmware (compile_failed); toolchain, network, docker and kill
+// failures stay build_failed.
+func TestClassifyCompileFailure(t *testing.T) {
+	t.Parallel()
+	const (
+		gccLog      = "INFO Compiling app...\nsrc/main.cpp:12:5: error: 'foo' was not declared in this scope\nFAILED: src/main.cpp.o\nninja: build stopped: subcommand failed.\n"
+		fatalLog    = "/config/x.h:3:10: fatal error: nope.h: No such file or directory\n"
+		linkLog     = "ld: main.o: in function `setup': undefined reference to `bar'\ncollect2: error: ld returned 1 exit status\n"
+		ninjaLog    = "[1/9] c++ x.o\nFAILED: x.o\nc++ ...\n"
+		makeLog     = "*** [.pioenvs/dev/src/main.cpp.o] Error 1\n"
+		downloadLog = "Failed to download https://example/noise-c.tar.gz\nsrc/main.cpp:1:1: error: x\n"
+		httpLog     = "HTTPClientError: connection reset\n"
+		unknownPkg  = "UnknownPackageError: Could not find the package with 'esphome/noise-c' requirements\n"
+		dnsLog      = "ConnectionError: Temporary failure in name resolution\n"
+		diskLog     = "OSError: [Errno 28] No space left on device\n"
+	)
+	for _, tc := range []struct {
+		name string
+		exit int
+		log  string
+		want string
+	}{
+		{"gcc error", 1, gccLog, "compile_failed"},
+		{"gcc fatal error", 1, fatalLog, "compile_failed"},
+		{"link error", 1, linkLog, "compile_failed"},
+		{"ninja failure marker", 1, ninjaLog, "compile_failed"},
+		{"make failure marker", 1, makeLog, "compile_failed"},
+		{"download failure wins over a diagnostic", 1, downloadLog, "build_failed"},
+		{"http client error", 1, httpLog, "build_failed"},
+		{"unknown package offline", 1, unknownPkg, "build_failed"},
+		{"dns error", 1, dnsLog, "build_failed"},
+		{"disk full", 1, diskLog, "build_failed"},
+		{"empty log", 1, "", "build_failed"},
+		{"docker cannot run (125)", 125, gccLog, "build_failed"},
+		{"killed (137)", 137, gccLog, "build_failed"},
+		{"no exit status", -1, gccLog, "build_failed"},
+	} {
+		if got := classifyCompileFailure(tc.exit, []byte(tc.log)); got != tc.want {
+			t.Errorf("%s: exit %d => %q, want %q", tc.name, tc.exit, got, tc.want)
+		}
+	}
+}

@@ -286,15 +286,44 @@ func (b *builder) compile(ctx context.Context, network string) error {
 				msg += ": the one-time fetch of the noise-c/libsodium archives failed; the first build on this host needs network access"
 			}
 		}
+		exitCode := -1
 		var ee *exec.ExitError
-		if !download && errors.As(err, &ee) && ee.ExitCode() == 1 {
+		if errors.As(err, &ee) {
+			exitCode = ee.ExitCode()
+		}
+		details := map[string]any{"log": b.o.LogPath, "output_tail": tail, "error": err.Error()}
+		if classifyCompileFailure(exitCode, raw) == "compile_failed" {
 			// ESPHome ran and the compiler rejected the firmware: that is the
 			// code under test, so it is user-fixable, not bench infrastructure.
-			return apperr.Failed("compile_failed", msg, map[string]any{"log": b.o.LogPath, "output_tail": tail, "error": err.Error()})
+			return apperr.Failed("compile_failed", msg, details)
 		}
-		return apperr.Infra("build_failed", msg, map[string]any{"log": b.o.LogPath, "output_tail": tail, "error": err.Error()})
+		return apperr.Infra("build_failed", msg, details)
 	}
 	return nil
+}
+
+// compilerDiagnostic positively identifies a compiler or linker rejecting the
+// firmware: a gcc/ld "file:line:col: error:" line, a link failure, or the
+// failure marker of the make/ninja step that ran the compiler.
+var compilerDiagnostic = regexp.MustCompile(`(?m)^\S+:\d+(:\d+)?: (fatal )?error:|undefined reference to|collect2: error|^FAILED: |\*\*\* \[.*\] Error`)
+
+// classifyCompileFailure decides which code a failed `esphome compile` gets:
+// "compile_failed" (user-fixable) only when the process exited 1 and the log
+// carries a compiler diagnostic and no download failure; everything else
+// (docker's own 125-127, a kill, a toolcache or network problem, a torn build
+// directory) is "build_failed", bench infrastructure the user cannot fix by
+// editing the YAML.
+func classifyCompileFailure(exitCode int, log []byte) string {
+	if exitCode != 1 {
+		return "build_failed"
+	}
+	if bytes.Contains(log, []byte("Failed to download")) || bytes.Contains(log, []byte("HTTPClientError")) {
+		return "build_failed"
+	}
+	if compilerDiagnostic.Match(log) {
+		return "compile_failed"
+	}
+	return "build_failed"
 }
 
 // stageFailure maps a failed docker run of the config or generate stage: an
