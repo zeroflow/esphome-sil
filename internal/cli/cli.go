@@ -143,7 +143,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	}
 	setupLogging(stderr, env.quiet)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	env.context = ctx
 	if err := kctx.Run(); err != nil {

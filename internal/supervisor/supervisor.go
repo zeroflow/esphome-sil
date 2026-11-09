@@ -176,6 +176,21 @@ func Serve(ctx context.Context, name string) error {
 }
 
 func (s *supervisor) run(sigCtx context.Context) error {
+	// run.json is written before anything is started, so a `sil up` that dies
+	// meanwhile (SIGKILL) leaves a supervisor that `sil down` and the already
+	// running check can still find. The control socket does not exist yet;
+	// `sil down` then falls back to signalling the PID.
+	rf := instance.RunFile{
+		Schema: 1, Instance: s.id.Name, PID: os.Getpid(),
+		RunDir: s.paths.RunDir, APISock: s.paths.APISock(), BusSock: s.paths.BusSock(),
+	}
+	if err := instance.WriteRunFile(s.paths, rf); err != nil {
+		return apperr.Infra("run_file_failed", "cannot write run.json", map[string]any{"error": err.Error()})
+	}
+	// Registered before the shutdown defer so it runs after it: run.json goes
+	// away only once the firmware group is stopped, on every way out.
+	defer func() { _ = os.Remove(s.paths.RunJSON()) }()
+
 	// Whatever happens below, the firmware group must not outlive us.
 	defer s.shutdown()
 
@@ -202,15 +217,6 @@ func (s *supervisor) run(sigCtx context.Context) error {
 	srvDone := make(chan error, 1)
 	go func() { srvDone <- control.ServeListener(srvCtx, ln, control.NewHandler(s)) }()
 
-	// run.json only after the control socket accepts connections.
-	if err := instance.WriteRunFile(s.paths, instance.RunFile{
-		Schema: 1, Instance: s.id.Name, PID: os.Getpid(),
-		RunDir: s.paths.RunDir, APISock: s.paths.APISock(), BusSock: s.paths.BusSock(),
-	}); err != nil {
-		srvCancel()
-		<-srvDone
-		return apperr.Infra("run_file_failed", "cannot write run.json", map[string]any{"error": err.Error()})
-	}
 	s.log.Info("instance serving", "pid", os.Getpid(), "api_sock", s.paths.APISock())
 
 	loopErr := s.mainLoop(sigCtx)
