@@ -31,7 +31,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Two named instances run side by side, each with its own run dir, API port, MAC, device name and key. `sil up` on a taken port fails with exit code 2 and a JSON error. `sil down` stops both processes, killing the simulator leaves no orphaned firmware, and each new run starts with fresh preferences.
   5. Misconfigurations fail loudly before anything runs: a host-incompatible component (e.g. `wifi:`, `ledc`, `i2c`), a sim platform without `channel:`, an over-long sim-bus socket path, or an unknown key in `fan.toml` each stop the build or start with a message naming the problem.
 
-**Plans:** 12/13 plans executed
+**Plans:** 13/13 plans executed
 
 Plans:
 **Wave 1**
@@ -59,7 +59,7 @@ Plans:
 - [x] 01-12-PLAN.md — CLI contract: instance resolution, one JSON value per call, `--quiet`, client-only commands (wave 6)
 
 **Wave 7** *(blocked on Wave 6 completion)*
-- [ ] 01-13-PLAN.md — Exit-class registry, dependency tidy and the full Phase 1 acceptance run (wave 7)
+- [x] 01-13-PLAN.md — Exit-class registry, dependency tidy and the full Phase 1 acceptance run (wave 7)
 
 ### Phase 2: Full Rev 3.3 Bench
 
@@ -99,6 +99,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Closed-Loop Fan Skeleton | 12/13 | In Progress|  |
+| 1. Closed-Loop Fan Skeleton | 13/13 | In Progress|  |
 | 2. Full Rev 3.3 Bench | 0/TBD | Not started | - |
 | 3. Live Web UI | 0/TBD | Not started | - |

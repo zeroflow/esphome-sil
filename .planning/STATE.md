@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
-status: executing
-stopped_at: Completed 01-12-PLAN.md
-last_updated: "2026-11-09T03:20:55.300Z"
+status: verifying
+stopped_at: Completed 01-13-PLAN.md
+last_updated: "2026-11-09T03:28:55.000Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: 8ffe2043fe25550760f945672fa8b2d965ad3a5d
+state_head: 755a41db5dcbcc8f3d52f0e59ccdf1fcf7161cd7
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 12
+  completed_plans: 13
   percent: 0
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 
 Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
 Plan: 13 of 13
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-11-09 — Phase 1 execution started
 
 Progress: [░░░░░░░░░░] 0%
@@ -68,6 +68,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P10 | 27 min | 2 tasks | 13 files |
 | Phase 01 P11 | 13 min | 2 tasks | 7 files |
 | Phase 1 P12 | 25 min | 2 tasks | 5 files |
+| Phase 1 P13 | 15min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -108,6 +109,7 @@ Recent decisions affecting current work:
 - [Phase 01]: 01-11: sil down fallback is SIGTERM (5 s) then SIGKILL of the run.json pid, gated by /proc cmdline; instance.ReadRunFile now reports not_running for a dead/foreign pid (LoadRunFile is the raw read)
 - [Phase 01]: 01-11: last_exit.signal uses POSIX names via SignalName; firmware_crash_loop keeps exit class 1 in sil up through lifecycle.userClass
 - [Phase 1]: 01-12: sil status exits 0 whenever the control API answers (phase failed is data); --help goes to stderr; client dials its own run dir api.sock and refuses a non-private runtime base
+- [Phase 1]: apperr.Registry is the single list of 51 error codes with exit class 1 or 2; an AST scan of internal/ and cmd/ fails make check on unregistered, reclassified, dual-class, non-literal or stale codes
 
 ### Pending Todos
 
@@ -134,8 +136,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T03:20:55.267Z
-Stopped at: Completed 01-12-PLAN.md
+Last session: 2026-11-09T03:28:54.968Z
+Stopped at: Completed 01-13-PLAN.md
 Resume file: None
 
 ## Needs Human
