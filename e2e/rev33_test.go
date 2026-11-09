@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -717,5 +718,57 @@ func TestRev33Entities(t *testing.T) {
 	}
 	if _, ok := jget(st, "leds", "segments").(map[string]any); !ok {
 		t.Errorf("leds.segments = %v, want an object", jget(st, "leds", "segments"))
+	}
+}
+
+// r33LanHost is api.lan_host of a status or up object: "" when it is null or missing.
+func r33LanHost(v map[string]any) string {
+	s, _ := jget(v, "api", "lan_host").(string)
+	return s
+}
+
+// TestHAHint: a Home Assistant on another machine needs an address. `sil up` prints the hint on
+// stderr and both its JSON and `sil status` carry api.lan_host (null when the host has no default
+// route); api.host stays the loopback address.
+func TestHAHint(t *testing.T) {
+	const name = "e2e-r33-ha"
+	env := newEnv(t)
+	port := freePort(t)
+	t.Cleanup(func() { env.run(t, "down", name) })
+	out, code, stderr := env.Sil(t, "up", name, "--api-port", fmt.Sprint(port),
+		"--config", filepath.Join(repoRoot(t), "examples", "rev33.yaml"))
+	if code != 0 {
+		t.Fatalf("sil up %s: exit %d: %v\nstderr: %s", name, code, out, stderr)
+	}
+	if _, present := jget(out, "api").(map[string]any)["lan_host"]; !present {
+		t.Fatalf("up result api has no lan_host key (null expected when unknown): %v", out["api"])
+	}
+	lan := r33LanHost(out)
+	if lan != "" {
+		ip := net.ParseIP(lan)
+		if ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsUnspecified() {
+			t.Errorf("up api.lan_host = %q, want null or a non-loopback IPv4", lan)
+		}
+	}
+	if want := fmt.Sprintf("port %d", port); !strings.Contains(stderr, want) {
+		t.Errorf("stderr lacks %q:\n%s", want, stderr)
+	}
+	hint := "127.0.0.1"
+	if lan != "" {
+		hint = lan
+	}
+	if !strings.Contains(stderr, "host "+hint) {
+		t.Errorf("stderr lacks %q:\n%s", "host "+hint, stderr)
+	}
+
+	st := env.Status(t, name)
+	if got := r33LanHost(st); got != lan {
+		t.Errorf("status api.lan_host = %q, up result had %q", got, lan)
+	}
+	if _, present := jget(st, "api").(map[string]any)["lan_host"]; !present {
+		t.Errorf("status api has no lan_host key: %v", st["api"])
+	}
+	if h := jget(st, "api", "host"); h != "127.0.0.1" {
+		t.Errorf("status api.host = %v, want 127.0.0.1", h)
 	}
 }
