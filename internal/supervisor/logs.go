@@ -17,10 +17,13 @@ import (
 const (
 	// logPollEvery is how often a followed log file is looked at (no inotify: no new dependency).
 	logPollEvery = 200 * time.Millisecond
-	// logBlock is the block size of the backwards tail read and the longest line that is served
-	// whole; a longer line is cut.
+	// logBlock is the block size of the backwards tail read.
 	logBlock = 64 << 10
-	// logScanMax bounds how much of a file one tail request reads.
+	// logLineMax is the longest line that is served; a longer one is cut AFTER the key was
+	// redacted (cutting first could leave half a key in the served part).
+	logLineMax = 64 << 10
+	// logScanMax bounds how much of a file one tail request reads, and how long a line a follower
+	// holds while it waits for its newline.
 	logScanMax = 8 << 20
 	// logChunk is how much new data one follow poll reads at most.
 	logChunk = 1 << 20
@@ -51,7 +54,10 @@ func tailLines(path string, n int) ([]string, error) {
 }
 
 // readTail reads backwards in 64 KiB blocks until it holds n complete lines (or 8 MiB, or the
-// start of the file). A CR before the LF is dropped and a line longer than 64 KiB is cut.
+// start of the file). A CR before the LF is dropped. The lines are whole: cutting a long line is
+// clean's job, after the redaction. A first line that starts before the block read is never
+// served, not even when it is the only one: its beginning is missing, and with it possibly the
+// beginning of the API key.
 func readTail(path string, n int) (tailResult, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -97,18 +103,14 @@ func readTail(path string, n int) (tailResult, error) {
 		}
 	}
 	parts := bytes.Split(text, []byte{'\n'})
-	if pos > 0 && len(parts) > 1 {
-		parts = parts[1:] // the first one starts before the block
+	if pos > 0 {
+		parts = parts[1:] // the first one starts before what was read
 	}
 	if len(parts) > n {
 		parts = parts[len(parts)-n:]
 	}
 	for _, p := range parts {
-		p = bytes.TrimSuffix(p, []byte{'\r'})
-		if len(p) > logBlock {
-			p = p[:logBlock]
-		}
-		res.lines = append(res.lines, string(p))
+		res.lines = append(res.lines, string(bytes.TrimSuffix(p, []byte{'\r'})))
 	}
 	return res, nil
 }
@@ -131,14 +133,17 @@ func (s *supervisor) logSources(source string) []logSource {
 	return []logSource{fw, sim}
 }
 
-// clean makes one file line fit to be served: ANSI colour removed unless raw, the instance's API
-// key replaced by <redacted> always.
+// clean makes one whole file line fit to be served: ANSI colour removed unless raw, the
+// instance's API key replaced by <redacted> always, and only then a line over logLineMax cut.
 func (s *supervisor) clean(line string, raw bool) string {
 	if !raw {
 		line = stripANSI(line)
 	}
 	if s.id.Key != "" {
 		line = strings.ReplaceAll(line, s.id.Key, redacted)
+	}
+	if len(line) > logLineMax {
+		line = line[:logLineMax]
 	}
 	return line
 }
@@ -171,6 +176,9 @@ type follower struct {
 	logSource
 	off   int64
 	carry []byte // an unterminated line read so far
+	// skip: the current line outgrew logScanMax without a newline; the rest of it, up to the
+	// newline, is dropped unread.
+	skip bool
 }
 
 // poll reads what was appended since the last call and returns its complete lines. A file that
@@ -178,14 +186,14 @@ type follower struct {
 func (f *follower) poll() ([]string, error) {
 	fi, err := os.Stat(f.path)
 	if errors.Is(err, os.ErrNotExist) {
-		f.off, f.carry = 0, nil
+		f.off, f.carry, f.skip = 0, nil, false
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	if fi.Size() < f.off {
-		f.off, f.carry = 0, nil
+		f.off, f.carry, f.skip = 0, nil, false
 	}
 	if fi.Size() == f.off {
 		return nil, nil
@@ -209,17 +217,24 @@ func (f *follower) poll() ([]string, error) {
 		data = append(f.carry, data[:n]...)
 		f.off += int64(n)
 		f.carry = nil
+		if f.skip {
+			i := bytes.IndexByte(data, '\n')
+			if i < 0 {
+				data = nil
+			} else {
+				data, f.skip = data[i+1:], false
+			}
+		}
 		for {
 			i := bytes.IndexByte(data, '\n')
 			if i < 0 {
 				break
 			}
-			lines = append(lines, string(cutLine(bytes.TrimSuffix(data[:i], []byte{'\r'}))))
+			lines = append(lines, string(bytes.TrimSuffix(data[:i], []byte{'\r'})))
 			data = data[i+1:]
 		}
-		if len(data) > logBlock { // a line that long without a newline is served cut
-			lines = append(lines, string(cutLine(data)))
-			data = nil
+		if len(data) > logScanMax { // never served: a piece of a line could hold half the key
+			data, f.skip = nil, true
 		}
 		f.carry = append([]byte(nil), data...)
 		if n == 0 {
@@ -227,13 +242,6 @@ func (f *follower) poll() ([]string, error) {
 		}
 	}
 	return lines, nil
-}
-
-func cutLine(b []byte) []byte {
-	if len(b) > logBlock {
-		return b[:logBlock]
-	}
-	return b
 }
 
 // FollowLogs implements control.Control (CLI-04): the tail, then every new line as the files

@@ -46,15 +46,15 @@ func TestTailLines(t *testing.T) {
 		n       int
 		want    []string
 	}{
-		"trailing newline":    {"a\nb\nc\n", 2, []string{"b", "c"}},
-		"no trailing newline": {"a\nb\nc", 2, []string{"b", "c"}},
-		"n exceeds":           {"a\nb\n", 10, []string{"a", "b"}},
-		"exactly n":           {"a\nb\n", 2, []string{"a", "b"}},
-		"empty file":          {"", 5, nil},
-		"one line":            {"only", 3, []string{"only"}},
-		"blank lines kept":    {"a\n\nb\n", 3, []string{"a", "", "b"}},
-		"crlf":                {"a\r\nb\r\n", 2, []string{"a", "b"}},
-		"line cut at 64 KiB":  {"x\n" + long + "\ny\n", 3, []string{"x", long[:64<<10], "y"}},
+		"trailing newline":      {"a\nb\nc\n", 2, []string{"b", "c"}},
+		"no trailing newline":   {"a\nb\nc", 2, []string{"b", "c"}},
+		"n exceeds":             {"a\nb\n", 10, []string{"a", "b"}},
+		"exactly n":             {"a\nb\n", 2, []string{"a", "b"}},
+		"empty file":            {"", 5, nil},
+		"one line":              {"only", 3, []string{"only"}},
+		"blank lines kept":      {"a\n\nb\n", 3, []string{"a", "", "b"}},
+		"crlf":                  {"a\r\nb\r\n", 2, []string{"a", "b"}},
+		"long line stays whole": {"x\n" + long + "\ny\n", 3, []string{"x", long, "y"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			writeFile(t, path, tc.content)
@@ -84,6 +84,15 @@ func TestTailLines(t *testing.T) {
 			if want := fmt.Sprintf("line %05d ", 2000+i); !strings.HasPrefix(l, want) {
 				t.Fatalf("line %d is %q, want it to start with %q (a block seam broke a line)", i, l, want)
 			}
+		}
+	})
+	t.Run("a first line that starts before the block read is never served", func(t *testing.T) {
+		// One line of 200 KiB: the backwards read stops at 8 MiB or the start; here it reaches the
+		// start, so the line is whole. With a second line behind it and n = 1 only the last is read.
+		writeFile(t, path, strings.Repeat("k", 200<<10)+"\nlast\n")
+		got, err := tailLines(path, 1)
+		if err != nil || !reflect.DeepEqual(got, []string{"last"}) {
+			t.Fatalf("tailLines = %d lines (%v), want just the last", len(got), err)
 		}
 	})
 	t.Run("a directory is an error", func(t *testing.T) {
@@ -159,6 +168,53 @@ func TestLogsServesTailsCleanly(t *testing.T) {
 		if strings.Contains(l.Line, "BUILD SECRET") {
 			t.Fatalf("build.log leaked: %+v", l)
 		}
+	}
+}
+
+// The cut of a long line happens after the redaction: a key that straddles the 64 KiB cut is
+// never served in part, in a tail or in a follow.
+func TestLongLinesAreRedactedBeforeTheyAreCut(t *testing.T) {
+	s, clk := logSup(t)
+	// The key starts 20 bytes before the cut, so a cut-first implementation would serve its first 20 bytes.
+	long := strings.Repeat("a", logLineMax-20) + testKey + strings.Repeat("b", 100)
+	writeFile(t, s.paths.FirmwareLog(), "head\n"+long+"\n")
+	res, err := s.Logs(context.Background(), control.LogsRequest{Source: "firmware", Tail: 10})
+	if err != nil || len(res.Lines) != 2 {
+		t.Fatalf("Logs: %+v, %v", res, err)
+	}
+	got := res.Lines[1].Line
+	if len(got) > logLineMax || strings.Contains(got, testKey[:8]) {
+		t.Fatalf("served %d bytes ending %q: a piece of the key survived the cut", len(got), got[len(got)-30:])
+	}
+	if !strings.Contains(got, redacted) {
+		t.Fatalf("served line ends %q, want the key redacted", got[len(got)-30:])
+	}
+
+	f, _ := startFollow(t, s, control.LogsRequest{Source: "firmware", Tail: 1})
+	eventually(t, "the tail line", func() bool { return len(f.texts()) == 1 })
+	appendFile(t, s.paths.FirmwareLog(), long+"\n")
+	tick(clk)
+	eventually(t, "the followed long line", func() bool { return len(f.texts()) == 2 })
+	if line := f.texts()[1]; strings.Contains(line, testKey[:8]) {
+		t.Fatalf("followed line holds a piece of the key: ...%q", line[len(line)-40:])
+	}
+}
+
+// A line that outgrows what a follower holds is dropped up to its newline, never served in pieces.
+func TestFollowDropsAnOverlongLine(t *testing.T) {
+	s, _ := logSup(t)
+	path := s.paths.FirmwareLog()
+	writeFile(t, path, "")
+	f := &follower{logSource: logSource{"firmware", path}}
+	appendFile(t, path, strings.Repeat("x", logScanMax+10))
+	lines, err := f.poll()
+	if err != nil || len(lines) != 0 || !f.skip {
+		t.Fatalf("poll of an over-long unterminated line: %d lines, skip %v, %v, want nothing served", len(lines), f.skip, err)
+	}
+	appendFile(t, path, "tail of it\nnext line\n")
+	lines, err = f.poll()
+	if err != nil || !reflect.DeepEqual(lines, []string{"next line"}) || f.skip {
+		t.Fatalf("poll after the newline: %q skip %v %v, want only the next line", lines, f.skip, err)
 	}
 }
 
