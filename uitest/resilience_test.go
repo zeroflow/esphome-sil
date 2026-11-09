@@ -169,3 +169,31 @@ func TestErrorFrame(t *testing.T) {
 	b.waitCalls(t, "Watch", 2, 10*time.Second)
 	waitText(t, p, "#link", "LIVE", 10*time.Second)
 }
+
+// TestFailedInstanceSnapshotRenders (CR-01): the snapshot of a failed instance carries a top-level
+// "error" key (Status.Error is promoted by the embedded struct) and "k": "snapshot". It is not the
+// final {"error": ...} frame of a failed stream, which has no k: the page must render the state, show
+// LIVE and keep the one stream, not reconnect in a loop.
+func TestFailedInstanceSnapshotRenders(t *testing.T) {
+	b := newBench(t)
+	b.Mutate(func(st *control.Status) {
+		st.Phase = control.PhaseFailed
+		st.Error = apperr.Infra("firmware_crash_loop", "the firmware crashed 3 times in 10 s", nil)
+		st.Ports[0].RPM = 1234
+	})
+	base := newSite(t, b)
+	p := openPage(t, base)
+	waitText(t, p, "#link", "LIVE", 10*time.Second)
+	waitText(t, p, `[data-src="ports.0.rpm"]`, "1234", 5*time.Second)
+	// A reconnect loop would open a second stream within the first backoff (500 ms).
+	settle(t, 1500*time.Millisecond)
+	if n := len(b.callsOf("Watch")); n != 1 {
+		t.Errorf("Watch was called %d times, want 1: the snapshot of a failed instance made the page reconnect", n)
+	}
+	if got := textOf(t, p, "#link"); got != "LIVE" {
+		t.Errorf("LINK = %q, want LIVE", got)
+	}
+	if got := textOf(t, p, "#message"); got != "" {
+		t.Errorf("message line = %q, want it empty: the instance's failure is not a stream error", got)
+	}
+}

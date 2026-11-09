@@ -160,8 +160,10 @@ function onFrame(ws, data) {
     lost(ws);
     return;
   }
-  if (frame && frame.error) {
-    // The stream failed (for instance too_many_streams): its words, then the normal backoff.
+  if (frame && frame.k === undefined && frame.error) {
+    // The stream failed (for instance too_many_streams): its words, then the normal backoff. Only the
+    // server's final error frame has `error` and no `k`: the snapshot of a failed instance carries the
+    // status error as a top-level `error` too (the embedded Status is promoted), and it is state to show.
     showError(String(frame.error.message));
     lost(ws);
     return;

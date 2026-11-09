@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/clock"
 	"github.com/zeroflow/esphome-sil/internal/control"
 	"github.com/zeroflow/esphome-sil/internal/events"
@@ -387,5 +388,35 @@ func TestBrowserStreamCap(t *testing.T) {
 	waitFor(t, "a browser slot to free up", func() bool { return ctl.active.Load() == int32(maxBrowserStreams-1) })
 	if _, f, err := dialRead(t, wsURL(srv)); err != nil || !strings.Contains(f, `"snapshot"`) {
 		t.Fatalf("stream after one closed: %q (%v)", f, err)
+	}
+}
+
+// The snapshot of a failed instance carries the status error as a top-level "error" key next to
+// "k": "snapshot" (CR-01). The page tells it from the final error frame of a failed stream, which has
+// "error" and no "k", so this shape is pinned on both sides.
+func TestWSSnapshotOfFailedInstanceKeepsK(t *testing.T) {
+	st := keyControl{}.status()
+	st.Phase = control.PhaseFailed
+	st.Error = apperr.Infra("firmware_crash_loop", "the firmware crashed", nil)
+	ctl := &watchControl{script: func(_ context.Context, send func(any) error) error {
+		return send(control.SnapshotLine{K: "snapshot", Seq: 1, Status: st})
+	}}
+	srv := httptest.NewServer(NewHandler(ctl, Options{}))
+	defer srv.Close()
+	_, f, err := dialRead(t, wsURL(srv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fr struct {
+		K     *string `json:"k"`
+		Error *struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(f), &fr); err != nil {
+		t.Fatal(err)
+	}
+	if fr.K == nil || *fr.K != "snapshot" || fr.Error == nil || fr.Error.Code != "firmware_crash_loop" {
+		t.Fatalf("snapshot of a failed instance = %s, want k snapshot together with the status error", f)
 	}
 }
