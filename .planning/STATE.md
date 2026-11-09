@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
 status: executing
-stopped_at: Phase 3 UI-SPEC approved
-last_updated: "2026-11-09T00:40:09.020Z"
-last_activity: 2026-11-08
-last_activity_desc: Roadmap created (3 phases, 40/40 v1 requirements mapped)
-state_head: 7dc44b76a62226e71209c42caa1fad35d3d065bf
+stopped_at: Completed 01-01-PLAN.md
+last_updated: "2026-11-09T00:47:52.505Z"
+last_activity: 2026-11-09
+last_activity_desc: Phase 1 execution started
+state_head: 6b56e791a9a20372c536704712a0cd54f3111ad1
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 0
+  completed_plans: 1
   percent: 0
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-08)
 
 **Core value:** A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
-**Current focus:** Phase 1 - Closed-Loop Fan Skeleton
+**Current focus:** Phase 1 — Closed-Loop Fan Skeleton
 
 ## Current Position
 
-Phase: 1 (Closed-Loop Fan Skeleton) — READY TO EXECUTE
-Plan: 0 of TBD in current phase
+Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
+Plan: 2 of 13
 Status: Ready to execute
-Last activity: 2026-11-08 — Roadmap created (3 phases, 40/40 v1 requirements mapped)
+Last activity: 2026-11-09 — Phase 1 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -52,6 +52,11 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: -
 
 *Updated after each plan completion*
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 1 P01 | 12 min | 2 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -65,6 +70,8 @@ Recent decisions affecting current work:
 - [Init]: API encryption on with a stable per-instance key; isolated, parallel-safe instances from day one
 - [Init]: HIL contract entity names; status LEDs internal (not in HA), visible in CLI/UI only
 - [Roadmap]: Contract tests (TEST-01/02) live in Phase 2 next to the IO surface they guard, not in a separate final phase
+- [Phase 1]: ESPHOME_NOGITIGNORE=1 in the build container: read-only repo mount otherwise breaks esphome compile (write_gitignore)
+- [Phase 1]: fwbuild.Result.Cached stays false until 01-08 builds the hash-skip pipeline
 
 ### Pending Todos
 
@@ -90,9 +97,9 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-08T22:45:01.040Z
-Stopped at: Phase 3 UI-SPEC approved
-Resume file: .planning/phases/03-live-web-ui/03-UI-SPEC.md
+Last session: 2026-11-09T00:47:52.480Z
+Stopped at: Completed 01-01-PLAN.md
+Resume file: None
 
 ## Needs Human
 
