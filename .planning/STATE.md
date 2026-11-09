@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Full Rev 3.3 Bench
 status: executing
-stopped_at: Completed 02-03-PLAN.md
-last_updated: "2026-11-09T07:02:11.230Z"
+stopped_at: Completed 02-04-PLAN.md
+last_updated: "2026-11-09T07:08:40.525Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 2 execution started
-state_head: 907e1c6fc42cf6398ae08646668d52808a4223f2
+state_head: bdb27d286ddea1dc64f6dd2cb606ae2ba414bc32
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 21
-  completed_plans: 16
+  completed_plans: 17
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 2 (Full Rev 3.3 Bench) — EXECUTING
-Plan: 4 of 8
+Plan: 5 of 8
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 2 execution started
 
@@ -72,6 +72,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 02 P01 | 16 min | 2 tasks | 14 files |
 | Phase 02 P02 | 25 min | 2 tasks | 13 files |
 | Phase 02 P03 | 15 min | 2 tasks | 14 files |
+| Phase 02 P04 | 25min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -120,6 +121,7 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-02: segment names come only from the firmware's partition lights (light.py codegen, segment_labels override); final-validate rejects unknown label keys and invalid or duplicate labels
 - [Phase 02]: 02-03: each env value has its own 10 s re-send deadline; inputs live in the supervisor under inMu and seed every engine (sim restart keeps them, a set while the bus is down is accepted)
 - [Phase 02]: 02-03: sil set numbers are plain decimals only (no hex, separators, Inf/NaN, overflow); ranges temperature -40..125, humidity 0..100 (HDC1080, assumption A1 open)
+- [Phase 02]: 02-04: duplicate-channel message names a sim light by its user-written id, not the generated output_id; default_label() is the single partition-to-label mapping
 
 ### Pending Todos
 
@@ -146,8 +148,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T07:02:11.184Z
-Stopped at: Completed 02-03-PLAN.md
+Last session: 2026-11-09T07:08:40.481Z
+Stopped at: Completed 02-04-PLAN.md
 Resume file: None
 
 ## Needs Human

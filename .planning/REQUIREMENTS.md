@@ -25,9 +25,9 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 - [x] **BUS-04**: Wire format is pinned by golden vectors tested from both Go and C++
 - [x] **IO-01**: `sim_bus` float output platform delivers PWM duty for each of the 4 fan ports, so stock `fan: speed` works on top
 - [x] **IO-02**: `sim_bus` sensor platform delivers fan RPM per port as a 1 s windowed mean, published at `update_interval`
-- [ ] **IO-03**: `sim_bus` binary_sensor platform delivers buttons USR1-3 (short and long press)
-- [ ] **IO-04**: `sim_bus` addressable light platform carries the status LED strip so stock `light: partition` (board + per-fan status) works; frames are sent only on change and rate-capped
-- [ ] **IO-05**: `sim_bus` sensor platform delivers temperature and humidity (HDC1080 replacement)
+- [x] **IO-03**: `sim_bus` binary_sensor platform delivers buttons USR1-3 (short and long press)
+- [x] **IO-04**: `sim_bus` addressable light platform carries the status LED strip so stock `light: partition` (board + per-fan status) works; frames are sent only on change and rate-capped
+- [x] **IO-05**: `sim_bus` sensor platform delivers temperature and humidity (HDC1080 replacement)
 - [x] **IO-06**: Every sim platform is bound by a required `channel:` key (e.g. `port1.duty`), independent of the ESPHome `id:`
 
 ### Plant Model
@@ -133,9 +133,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | BUS-04 | Phase 1 | Complete |
 | IO-01 | Phase 1 | Complete |
 | IO-02 | Phase 1 | Complete |
-| IO-03 | Phase 2 | Pending |
-| IO-04 | Phase 2 | Pending |
-| IO-05 | Phase 2 | Pending |
+| IO-03 | Phase 2 | Complete |
+| IO-04 | Phase 2 | Complete |
+| IO-05 | Phase 2 | Complete |
 | IO-06 | Phase 1 | Complete |
 | MODEL-01 | Phase 1 | Complete |
 | MODEL-02 | Phase 1 | Complete |
