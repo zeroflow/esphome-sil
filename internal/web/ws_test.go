@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -146,12 +148,69 @@ func TestWSFramesEqualWatchLines(t *testing.T) {
 	}
 }
 
+// pingTap is a listener that closes pinged when the server writes its first ping frame (opcode 0x89
+// at the start of a write): from then on the library holds the connection's write lock for that frame.
+type pingTap struct {
+	net.Listener
+	pinged chan struct{}
+	once   sync.Once
+}
+
+func (l *pingTap) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return tapConn{Conn: c, l: l}, nil
+}
+
+type tapConn struct {
+	net.Conn
+	l *pingTap
+}
+
+func (c tapConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 && p[0] == 0x89 {
+		c.l.once.Do(func() { close(c.l.pinged) })
+	}
+	return n, err
+}
+
 // A browser that stops answering pings is closed 15 s + 10 s after its last sign of life, and both
 // the Watch slot and the browser slot come back.
+//
+// The manual clock jumps the library's own timeouts too: coder/websocket closes the connection hard
+// when the context of a write expires while the write is still in flight (its write timeout), and
+// then no going-away close frame is ever sent. The test therefore never advances time while a write
+// is in flight: the snapshot write is over once the script's send returned (sent), and the ping
+// write is over once a later frame, which needs the same write lock, has been sent (barrier).
 func TestWSPingReaps(t *testing.T) {
 	mc := clock.NewManual()
-	ctl := &watchControl{script: snapshotThenBlock}
-	srv := httptest.NewServer(NewHandler(ctl, Options{Clock: mc}))
+	sent := make(chan struct{})
+	barrier := make(chan chan struct{})
+	ctl := &watchControl{script: func(ctx context.Context, send func(any) error) error {
+		if err := send(control.SnapshotLine{K: "snapshot", Seq: 1}); err != nil {
+			return err
+		}
+		close(sent)
+		for {
+			select {
+			case done := <-barrier:
+				err := send(events.Event{K: "env", Seq: 2, ID: "temperature", V: 21.0})
+				close(done)
+				if err != nil {
+					return err
+				}
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}}
+	srv := httptest.NewUnstartedServer(NewHandler(ctl, Options{Clock: mc}))
+	tap := &pingTap{Listener: srv.Listener, pinged: make(chan struct{})}
+	srv.Listener = tap
+	srv.Start()
 	defer srv.Close()
 
 	// This client reads the snapshot and then never reads again, so it never answers a ping.
@@ -162,21 +221,46 @@ func TestWSPingReaps(t *testing.T) {
 	if got := ctl.active.Load(); got != 1 {
 		t.Fatalf("%d streams open, want 1", got)
 	}
+	ctx, cancel := within(5 * time.Second)
+	defer cancel()
+	await := func(what string, ch <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+	await("the snapshot write to finish", sent)
 
-	// The ping ticker is armed before the first frame is written; after the tick the ping arms its
-	// pong timer.
+	// The ping ticker is armed before the first frame is written. The ping arms its pong timer before
+	// it writes, so once the ping is on the wire the pong budget is running.
 	mc.Advance(wsPingEvery)
-	mc.BlockUntil(2)
+	await("the ping frame", tap.pinged)
+	done := make(chan struct{})
+	select {
+	case barrier <- done:
+	case <-ctx.Done():
+		t.Fatal("the script never took the barrier")
+	}
+	await("a frame behind the ping", done)
 	if got := ctl.active.Load(); got != 1 {
 		t.Fatalf("%d streams open right after the ping, want the pong budget to still run", got)
 	}
 	mc.Advance(wsPongBudget)
 
 	waitFor(t, "the stalled stream to be reaped", func() bool { return ctl.active.Load() == 0 })
-	ctx, cancel := within(5 * time.Second)
-	defer cancel()
-	if _, _, err := dead.Read(ctx); websocket.CloseStatus(err) != websocket.StatusGoingAway {
-		t.Fatalf("stalled client read = %v, want a going-away close", err)
+	// The client now reads what the server queued: the ping (answered by Read), the env frame, then the
+	// going-away close.
+	for {
+		_, _, err := dead.Read(ctx)
+		if err == nil {
+			continue
+		}
+		if websocket.CloseStatus(err) != websocket.StatusGoingAway {
+			t.Fatalf("stalled client read = %v, want a going-away close", err)
+		}
+		break
 	}
 
 	// Both slots are free: a full set of maxBrowserStreams streams fits again.
@@ -191,10 +275,12 @@ func TestWSPingReaps(t *testing.T) {
 func TestWSPingKeepsAnsweringClients(t *testing.T) {
 	mc := clock.NewManual()
 	fire := make(chan struct{})
+	sent := make(chan struct{})
 	ctl := &watchControl{script: func(ctx context.Context, send func(any) error) error {
 		if err := send(control.SnapshotLine{K: "snapshot", Seq: 1}); err != nil {
 			return err
 		}
+		close(sent)
 		for {
 			select {
 			case <-fire:
@@ -229,6 +315,12 @@ func TestWSPingKeepsAnsweringClients(t *testing.T) {
 	}()
 	if f := <-frames; !strings.Contains(f, `"snapshot"`) {
 		t.Fatalf("first frame = %q", f)
+	}
+	// Time jumps only once the snapshot write is over (see TestWSPingReaps).
+	select {
+	case <-sent:
+	case <-ctx.Done():
+		t.Fatal("the snapshot write never finished")
 	}
 	for i := 0; i < 3; i++ {
 		mc.Advance(wsPingEvery)
