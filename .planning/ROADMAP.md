@@ -13,7 +13,7 @@ Milestone 1 proves the plumbing end to end in three vertical slices. Phase 1 is 
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [ ] **Phase 1: Closed-Loop Fan Skeleton** - `sil up` builds static host firmware whose fan duty drives simulated fans over the sim-bus, with RPM flowing back; isolated, resilient, stoppable
-- [ ] **Phase 2: Full Rev 3.3 Bench** - Buttons, LED strip, temperature/humidity, full CLI vocabulary and Home Assistant control on the Rev 3.3 example, guarded by contract tests
+- [x] **Phase 2: Full Rev 3.3 Bench** - Buttons, LED strip, temperature/humidity, full CLI vocabulary and Home Assistant control on the Rev 3.3 example, guarded by contract tests (completed 2026-11-09)
 - [ ] **Phase 3: Live Web UI** - Embedded local page with live per-port plots, virtual LEDs, button and environment controls, and run info, all through the same API as the CLI
 
 ## Phase Details
@@ -74,7 +74,7 @@ Plans:
   4. The user adds a running instance to any Home Assistant using host:port and key from `sil status`, controls fan speed per port, and sees RPM, temperature, humidity and button states follow. Restarting the instance reuses the same HA device with no duplicates, and a second instance appears as a separate device.
   5. One command runs the contract test (builds and runs the example with the simulator; duty to RPM settles, a button press registers, a temperature change arrives) and the aioesphomeapi smoke test (HA-visible entity set, fan command round trip), and both pass.
 
-**Plans:** 8/8 plans executed
+**Plans:** 8/8 plans complete
 
 Plans:
 **Wave 1**
@@ -123,5 +123,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Closed-Loop Fan Skeleton | 13/13 | In Progress|  |
-| 2. Full Rev 3.3 Bench | 8/8 | In Progress|  |
+| 2. Full Rev 3.3 Bench | 8/8 | Complete    | 2026-11-09 |
 | 3. Live Web UI | 0/TBD | Not started | - |

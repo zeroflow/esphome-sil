@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 2
-current_phase_name: Full Rev 3.3 Bench
-status: executing
-stopped_at: Completed 02-08-PLAN.md
-last_updated: "2026-11-09T08:48:45.375Z"
+current_phase: 1
+current_phase_name: Closed-Loop Fan Skeleton
+status: planning
+stopped_at: Phase 2 complete, ready to plan Phase 1
+last_updated: "2026-11-09T09:36:07.398Z"
 last_activity: 2026-11-09
-last_activity_desc: Phase 2 execution started
-state_head: 11ecade31745cfc158dc6439e5a4d06c3e2ab35d
+last_activity_desc: Phase 2 complete, transitioned to Phase 1
+state_head: 90c241b444db8e3b98d05f3d207edd19f4e30f2f
 progress:
   total_phases: 3
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 21
   completed_plans: 21
-  percent: 0
+  percent: 33
 ---
 
 # Project State
@@ -27,17 +27,17 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 
 ## Current Position
 
-Phase: 2 (Full Rev 3.3 Bench) — EXECUTING
-Plan: 3 of 8
-Status: Ready to execute
-Last activity: 2026-11-09 — Phase 2 execution started
+Phase: 1 — Closed-Loop Fan Skeleton
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-11-09 — Phase 2 complete, transitioned to Phase 1
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [███░░░░░░░] 33%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
+- Total plans completed: 8
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -45,7 +45,7 @@ Progress: [░░░░░░░░░░] 0%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 2 | 8 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -161,7 +161,7 @@ Items acknowledged and deferred at milestone close, most recent first:
 ## Session Continuity
 
 Last session: 2026-11-09T08:48:45.329Z
-Stopped at: Completed 02-08-PLAN.md
+Stopped at: Phase 2 complete, ready to plan Phase 1
 Resume file: None
 
 ## Needs Human
@@ -197,3 +197,5 @@ Items recorded during the unattended `/gsd-autonomous --from 1 --to 3` run (2026
 | 2 | Unattended choices: HDC1080 bounds -40..125 °C / 0..100 % (A1); Noctua NF-A12x25 constants ASSUMED (A2); press presets in `control.ShortPress/LongPress`, HTTP API requires `hold_ms`; RPM events sampled once per sim second; logs default firmware/last 100; contract state in `~/.cache/sil-contract/state` with `ct-main`/`ct-second`; `lan_host` by default-route detection (A8) | 02-RESEARCH.md, plans | needs review |
 | 2 | Python test deps (aioesphomeapi 46.12.0, pytest 9.2.0, pytest-timeout 2.4.0) flagged SUS by package check; human review replaced by `make lock-check` hash diff against ../wifi-fancontroller/hil/uv.lock | 02-07-PLAN | needs review |
 | 2 | Live Home Assistant UAT (7-step checklist, HA on another machine) — automated proxy is aioesphomeapi only | 02-07/02-08 backstop truths | needs human |
+| 2 | Phase 2 verification accepted by user on automated evidence (4/5; criterion 4 HA-01/HA-02 proxied only). Live HA UAT still open — run `/gsd-verify-work 2` to close | 02-VERIFICATION.md, 02-UAT.md | needs human |
+| 2 | Review-fix concurrency changes need a human read: `Set`/`SimRestart` `engGap` flag (da1a9ca, e4f1046); iteration-3 fixes 8542d9d, b976a6c not re-reviewed (cap). 9 info findings IN-01..IN-09 open (IN-07 missing `<algorithm>` include is a latent compile risk) | 02-REVIEW-DISPOSITION.md, 02-UAT.md | needs review |

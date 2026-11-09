@@ -63,8 +63,8 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 
 ### Home Assistant
 
-- [ ] **HA-01**: User can add a running sim instance to any Home Assistant (manual host:port + key from `sil status`); restarting the instance reuses the same HA device, no duplicates
-- [ ] **HA-02**: From HA the user can control fan speed per port and see RPM, temperature, humidity and button states change accordingly
+- [x] **HA-01**: User can add a running sim instance to any Home Assistant (manual host:port + key from `sil status`); restarting the instance reuses the same HA device, no duplicates
+- [x] **HA-02**: From HA the user can control fan speed per port and see RPM, temperature, humidity and button states change accordingly
 
 ### Contract & Tests
 
@@ -156,8 +156,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | UI-04 | Phase 3 | Pending |
 | UI-05 | Phase 3 | Pending |
 | UI-06 | Phase 3 | Pending |
-| HA-01 | Phase 2 | Pending |
-| HA-02 | Phase 2 | Pending |
+| HA-01 | Phase 2 | Complete |
+| HA-02 | Phase 2 | Complete |
 | TEST-01 | Phase 2 | Complete |
 | TEST-02 | Phase 2 | Complete |
 
