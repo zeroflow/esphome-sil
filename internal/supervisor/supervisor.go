@@ -691,6 +691,8 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 
 	s.mu.Lock()
 	old := s.slot
+	// Counted when the old engine goes away: status shows it during the gap.
+	s.engRestarts++
 	s.mu.Unlock()
 	s.stopEngine(old)
 	s.log.Info("simulator engine stopped for a restart", "gap", gap)
@@ -715,7 +717,6 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 		return control.Status{}, errStopping()
 	}
 	s.slot = sl
-	s.engRestarts++
 	if s.failure != nil && s.failure.Code == "engine_failed" {
 		s.failure = nil
 	}
