@@ -112,7 +112,7 @@ Plans:
   4. The page shows sim time, the time factor (fixed at 1), whether the firmware is connected, and a warning when the simulator falls behind real time.
   5. An automated parity check confirms that every value the page displays and every action it performs is available through the CLI/API with the same JSON.
 
-**Plans:** 2/12 plans executed
+**Plans:** 3/12 plans executed
 **UI hint**: yes
 
 Plans:
@@ -121,7 +121,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [x] 03-02-PLAN.md — Live readouts (view.js) proven in headless Chrome: CDP harness recording HTTP requests and WebSocket connections, fake bench, `make test-ui`, offline load, reconnect and resync (wave 2)
-- [ ] 03-03-PLAN.md — LAN listener limits: connection cap, header deadline, keep-alives off, WS ping reaping and the 8-stream browser share (wave 2)
+- [x] 03-03-PLAN.md — LAN listener limits: connection cap, header deadline, keep-alives off, WS ping reaping and the 8-stream browser share (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 03-04-PLAN.md — Parity spine: `control.Operations` table behind both listeners and the CLI (D-19/D-20 by row), request/snapshot/displayed-value/page-state parity checks with a named UI-only allow-list, first-party asset scans (wave 3)
@@ -151,4 +151,4 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Closed-Loop Fan Skeleton | 13/13 | In Progress|  |
 | 2. Full Rev 3.3 Bench | 8/8 | Complete    | 2026-11-09 |
-| 3. Live Web UI | 2/12 | In Progress|  |
+| 3. Live Web UI | 3/12 | In Progress|  |
