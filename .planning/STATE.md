@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Live Web UI
 status: executing
-stopped_at: Completed 03-10-PLAN.md
-last_updated: "2026-11-09T14:53:31.392Z"
+stopped_at: Completed 03-11-PLAN.md
+last_updated: "2026-11-09T15:10:10.960Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 3 execution started
-state_head: 6ba40436fdcbc4c407ef33a6f93731d85f4ddb07
+state_head: c212af2f18e78c8621931bc00d90b101b4ac2883
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 33
-  completed_plans: 31
+  completed_plans: 32
   percent: 33
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 ## Current Position
 
 Phase: 3 (Live Web UI) — EXECUTING
-Plan: 11 of 12
+Plan: 12 of 12
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 3 execution started
 
@@ -87,6 +87,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 3 P08 | 10 min | 2 tasks | 13 files |
 | Phase 3 P09 | 10 min | 2 tasks | 6 files |
 | Phase 03 P10 | 15 min | 2 tasks | 12 files |
+| Phase 03 P11 | 13min | 2 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -164,6 +165,8 @@ Recent decisions affecting current work:
 - [Phase 3]: 03-09: LICENSE.uplot is listed in the VENDOR.md hash table, so TestVendorHashes covers the license text; vendor/ is skipped by TestNoExternalRefs and covered by hashes
 - [Phase 03]: 03-10: the history request starts after the snapshot so its seq is at least the snapshot's and no sample falls between history and stream; held samples with seq above the history's are replayed, a reconnect replaces the rings
 - [Phase 03]: 03-10: an unknown fan leaves the RPM scale unknown and hides the RPM trace rather than guess; the restart-gap null point at the new sample's own x breaks the line in real Chrome; style-src 'self' suffices for uPlot (no CSP fallback)
+- [Phase 03]: 03-11: a USR up is chained behind the answer to its down; a hold open when the link drops is released best-effort; the stale class applies only after the page has been LIVE once
+- [Phase 03]: 03-11: the page's own releasePointerCapture is tracked per pointer id (ownLoss); Chrome 157 fires no lostpointercapture for it, so the guard is tested with a synthetic event
 
 ### Pending Todos
 
@@ -189,8 +192,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T14:53:31.329Z
-Stopped at: Completed 03-10-PLAN.md
+Last session: 2026-11-09T15:10:10.902Z
+Stopped at: Completed 03-11-PLAN.md
 Resume file: None
 
 ## Needs Human
