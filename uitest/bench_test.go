@@ -40,6 +40,11 @@ type bench struct {
 	fail   map[string]error
 	drop   chan struct{} // closed by DropStreams; replaced by a fresh one
 	hold   chan struct{} // non-nil while the snapshot is held
+
+	inject map[chan events.Event]struct{} // the running Watch calls, for Inject
+
+	histHold chan struct{}                                      // non-nil while History answers are held
+	histFn   func(control.HistoryRequest) control.HistoryResult // replaces the broker's history when set
 }
 
 // benchKey is a fixed 44-character base64 string standing in for the API key.
@@ -142,6 +147,18 @@ func (b *bench) Watch(ctx context.Context, req control.WatchRequest, send func(v
 		return apperr.Failed("invalid_argument", err.Error(), nil)
 	}
 	defer sub.Close()
+	injected := make(chan events.Event, 16)
+	b.mu.Lock()
+	if b.inject == nil {
+		b.inject = map[chan events.Event]struct{}{}
+	}
+	b.inject[injected] = struct{}{}
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		delete(b.inject, injected)
+		b.mu.Unlock()
+	}()
 	if hold != nil {
 		select {
 		case <-hold:
@@ -168,6 +185,10 @@ func (b *bench) Watch(ctx context.Context, req control.WatchRequest, send func(v
 			if err := send(ev); err != nil {
 				return err
 			}
+		case ev := <-injected:
+			if err := send(ev); err != nil {
+				return err
+			}
 		case <-drop:
 			return apperr.Infra("control_unreachable", "the stream was dropped", nil)
 		case <-ctx.Done():
@@ -188,6 +209,20 @@ func (b *bench) Emit(ev events.Event, mutate func(*control.Status)) {
 		ev.T = int64(b.st.Sim.TimeS * 1e6)
 	}
 	b.broker.Publish(ev)
+}
+
+// Inject sends ev to every running Watch as it is, past the kind filter of its subscription: the
+// lagged marker of a real instance is made by the subscription itself, so it reaches a stream
+// whatever kinds it asked for, which Publish cannot imitate.
+func (b *bench) Inject(ev events.Event) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for ch := range b.inject {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
 }
 
 // Mutate changes the status without publishing an event: what a page sees only in its next snapshot.
@@ -232,6 +267,63 @@ func (b *bench) ReleaseSnapshot() {
 		close(b.hold)
 		b.hold = nil
 	}
+}
+
+// History implements control.Control: the sample events of the broker within the window, as the
+// instance serves them. The answer is computed when the request arrives and sent when
+// ReleaseHistory lets it go (at once when it is not held), so a held answer is stale by the samples
+// that arrive meanwhile, like a slow response on a real instance. SetHistory replaces the answer.
+func (b *bench) History(ctx context.Context, r control.HistoryRequest) (control.HistoryResult, error) {
+	if err := b.enter("History", r.WindowS); err != nil {
+		return control.HistoryResult{}, err
+	}
+	b.mu.Lock()
+	hold, fn := b.histHold, b.histFn
+	b.mu.Unlock()
+	var res control.HistoryResult
+	if fn != nil {
+		res = fn(r)
+	} else {
+		seq, samples := b.broker.History(time.Duration(r.WindowS * float64(time.Second)))
+		res = control.HistoryResult{Seq: seq, WindowS: r.WindowS, Samples: samples}
+		if n := len(samples); n > 0 {
+			res.T = samples[n-1].T
+		}
+	}
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return control.HistoryResult{}, ctx.Err()
+		}
+	}
+	return res, nil
+}
+
+// HoldHistory makes History answers wait until ReleaseHistory.
+func (b *bench) HoldHistory() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.histHold == nil {
+		b.histHold = make(chan struct{})
+	}
+}
+
+// ReleaseHistory lets the held History answers (and later ones) go.
+func (b *bench) ReleaseHistory() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.histHold != nil {
+		close(b.histHold)
+		b.histHold = nil
+	}
+}
+
+// SetHistory makes History answer with fn(request) instead of the broker's samples.
+func (b *bench) SetHistory(fn func(control.HistoryRequest) control.HistoryResult) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.histFn = fn
 }
 
 // Calls returns the recorded calls in order.

@@ -4,6 +4,7 @@
 // for a path the state does not hold, the element shows `--`, never a fake zero.
 
 import { initFanSelects, renderInputs } from "./inputs.js";
+import { initScopes, setLink as setScopeLink } from "./plot.js";
 
 const NONE = "--";
 
@@ -65,6 +66,11 @@ function shown(state, el) {
   const fmt = formats[el.dataset.fmt];
   return fmt ? fmt(v) : NONE;
 }
+
+// Until the first snapshot the page does not know how many ports there are; it shows the four of
+// the reference board as empty panels (every value `--`, every scope in its connecting state) so the
+// grid does not jump when the snapshot arrives.
+const PLACEHOLDER_PORTS = 4;
 
 let panelCount = 0;
 
@@ -191,18 +197,25 @@ function paintLeds(state) {
 }
 
 function paint(state, linkState) {
-  const n = state !== null && Array.isArray(state.ports) ? state.ports.length : 0;
+  let n = PLACEHOLDER_PORTS;
+  if (state !== null) {
+    n = Array.isArray(state.ports) ? state.ports.length : 0;
+  }
   if (n !== panelCount) {
     buildPanels(n);
   }
-  document.querySelectorAll("#ports .port").forEach((panel, i) => {
+  const panels = document.querySelectorAll("#ports .port");
+  panels.forEach((panel, i) => {
     // The channel colour is the port's own: ports 1..4 are yellow, green, blue, pink (D-03).
-    const port = state.ports[i].port;
+    const port = state !== null ? state.ports[i].port : i + 1;
     const ch = Number.isInteger(port) && port >= 1 ? ((port - 1) % 4) + 1 : 0;
     for (let c = 1; c <= 4; c++) {
       panel.classList.toggle("ch" + c, c === ch);
     }
+    panel.dataset.port = String(port);
   });
+  initScopes(panels);
+  setScopeLink(linkState);
   const leds = ledCount(state);
   if (leds !== lensCount) {
     buildLeds(leds);

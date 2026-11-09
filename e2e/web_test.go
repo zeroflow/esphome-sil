@@ -894,3 +894,111 @@ func TestWebFanSelect(t *testing.T) {
 		t.Errorf("%d POST requests from the page, want exactly one POST /api/v1/set: %v", posts, page.Requests())
 	}
 }
+
+// TestWebPlot (UI-02, UI-01, UI-06) proves the scope screen on a real Rev 3.3 instance: with port 1
+// driven to 40 % by the firmware's native API, the page (offline) draws port 1's scope from the
+// instance's history and live samples. Within 10 s the scope holds at least 50 non-null RPM points,
+// its last duty point is 40, its RPM axis ends at the Arctic fan's max_rpm from `sil fans`, the page
+// asked for one history per connection, and the console is empty.
+func TestWebPlot(t *testing.T) {
+	in := r33Up(t, "e2e-webplot")
+	in.setFan(t, 1, 40)
+	in.waitDuties(t, [4]float64{0.4, 0, 0, 0})
+	st := in.env.Status(t, in.name)
+	port := int(jget(st, "web", "port").(float64))
+
+	out, code, _ := in.env.Sil(t, "fans", "-i", in.name)
+	if code != 0 {
+		t.Fatalf("sil fans: exit %d: %v", code, out)
+	}
+	var maxRPM float64
+	for _, f := range jgetSlice(out, "fans") {
+		if jget(f, "id") == fansArctic {
+			maxRPM, _ = jget(f, "max_rpm").(float64)
+		}
+	}
+	if maxRPM == 0 {
+		t.Fatalf("sil fans = %v has no max_rpm for %s", out, fansArctic)
+	}
+
+	lctx, lcancel := clock.WithTimeout(context.Background(), sysClock, 60*time.Second)
+	defer lcancel()
+	b, err := cdptest.Launch(lctx, sysClock, cdptest.LaunchOptions{Offline: true, Width: 1280, Height: 720})
+	if errors.Is(err, cdptest.ErrNoChrome) {
+		t.Fatal("Chrome not found; install google-chrome or set SIL_CHROME")
+	}
+	if err != nil {
+		t.Fatalf("launch Chrome: %v", err)
+	}
+	defer b.Close()
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 60*time.Second)
+	defer cancel()
+	page, err := b.NewPage(ctx)
+	if err != nil {
+		t.Fatalf("new page: %v", err)
+	}
+	defer page.Close()
+	base := webBase(port) + "/"
+	if err := page.Navigate(ctx, base); err != nil {
+		t.Fatalf("navigate to %s: %v", base, err)
+	}
+	wait := func(what, pred string, budget time.Duration) {
+		t.Helper()
+		wctx, wcancel := clock.WithTimeout(context.Background(), sysClock, budget)
+		defer wcancel()
+		if err := page.WaitFor(wctx, pred); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	wait("LINK LIVE", `document.getElementById('link').textContent === 'LIVE'`, 15*time.Second)
+	if err := page.Eval(ctx, `(window.__plot = await import('/js/plot.js'), true)`, nil); err != nil {
+		t.Fatalf("importing plot.js: %v", err)
+	}
+	wait("50 non-null RPM points on scope 1", `__plot.ringFor(1).rpm.filter((v) => v !== null).length >= 50`, 10*time.Second)
+
+	var got struct {
+		Points  int     `json:"points"`
+		Duty    float64 `json:"duty"`
+		ScaleLo float64 `json:"lo"`
+		ScaleHi float64 `json:"hi"`
+		DutyMax float64 `json:"dutyMax"`
+		Drawn   int     `json:"drawn"`
+	}
+	const read = `(() => { const r = __plot.ringFor(1), u = __plot.scopeFor(1);
+	  return {points: r.rpm.filter((v) => v !== null).length, duty: r.duty[r.duty.length - 1],
+	    lo: u.scales.rpm.min, hi: u.scales.rpm.max, dutyMax: u.scales.duty.max, drawn: u.data[1].length}; })()`
+	wait("the scope drawn and scaled", `(() => { const u = __plot.scopeFor(1); return u && u.scales.rpm && u.scales.rpm.max !== null && u.data[1].length >= 50; })()`, 10*time.Second)
+	if err := page.Eval(ctx, read, &got); err != nil {
+		t.Fatalf("reading the scope: %v", err)
+	}
+	t.Logf("scope 1: %+v", got)
+	if got.Points < 50 {
+		t.Errorf("scope 1 holds %d non-null RPM points, want at least 50", got.Points)
+	}
+	if got.Duty < 39.999 || got.Duty > 40.001 {
+		t.Errorf("scope 1's last duty point = %v, want 40", got.Duty)
+	}
+	if got.ScaleLo != 0 || got.ScaleHi != maxRPM || got.DutyMax != 100 {
+		t.Errorf("scope 1 scales: rpm %v..%v, duty max %v; want rpm 0..%v (the %s max_rpm) and duty max 100", got.ScaleLo, got.ScaleHi, got.DutyMax, maxRPM, fansArctic)
+	}
+
+	history, sockets := 0, 0
+	for _, r := range page.Requests() {
+		u, err := url.Parse(r.URL)
+		if err != nil {
+			continue
+		}
+		switch {
+		case r.Kind == "http" && r.Method == http.MethodGet && u.Path == "/api/v1/history":
+			history++
+		case r.Kind == "ws" && u.Path == "/ws":
+			sockets++
+		}
+	}
+	if sockets == 0 || history != sockets {
+		t.Errorf("%d GET /api/v1/history requests for %d /ws connections, want one history per connection: %v", history, sockets, page.Requests())
+	}
+	if errs := page.ConsoleErrors(); len(errs) != 0 {
+		t.Errorf("console errors: %v", errs)
+	}
+}

@@ -181,7 +181,11 @@ func TestResyncFrames(t *testing.T) {
 
 	for i, frame := range []events.Event{{K: "sim", V: "restarted"}, {K: "lagged", Dropped: 3}} {
 		b.Mutate(func(st *control.Status) { st.Ports[1].RPM = float64(2000 + 100*i) })
-		b.Emit(frame, nil)
+		if frame.K == "lagged" {
+			b.Inject(frame)
+		} else {
+			b.Emit(frame, nil)
+		}
 		b.waitCalls(t, "Watch", i+2, 10*time.Second)
 		waitText(t, p, "#link", "LIVE", 10*time.Second)
 		want := []string{"2000", "2100"}[i]

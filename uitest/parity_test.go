@@ -26,8 +26,9 @@ import (
 
 // pageOps names the operations of control.Operations the page uses, by row name. The page watches
 // through its WebSocket, lists the fan library and sets values; plans that make the page do more
-// (press, history) append the rows they use and extend the session of TestParityRequests.
-var pageOps = []string{"watch.ws", "fans", "set"}
+// (press) append the rows they use and extend the session of TestParityRequests. The history is
+// requested on every (re)connect, so the session sees it without a step of its own.
+var pageOps = []string{"watch.ws", "fans", "set", "history"}
 
 // TestParityRequests (UI-06 check a): every request the page makes, HTTP and WebSocket alike, is
 // same-origin and is either a file of the embedded page or a row of control.Operations that the
@@ -107,6 +108,8 @@ type uiOnly struct{ selector, reason string }
 var uiOnlyText = []uiOnly{
 	{"#link", "link state of the page's own WebSocket (UI-SPEC copy)"},
 	{"#message", "API error text shown verbatim (D-17)"},
+	{".scope .empty-head", "fixed UI-SPEC empty-state copy, not an API value"},
+	{".scope .empty-body", "fixed UI-SPEC empty-state copy, not an API value"},
 }
 
 // fmtOracle is the UI-SPEC number format of kind, written independently of view.js, for the JSON
@@ -377,8 +380,8 @@ func TestParityDisplayedValues(t *testing.T) {
 		}
 		sels[i] = u.selector
 	}
-	if len(sels) != 2 || sels[0] != "#link" || sels[1] != "#message" {
-		t.Fatalf("uiOnlyText selectors = %v, want exactly #link and #message in this plan", sels)
+	if len(sels) != 4 || sels[0] != "#link" || sels[1] != "#message" || sels[2] != ".scope .empty-head" || sels[3] != ".scope .empty-body" {
+		t.Fatalf("uiOnlyText selectors = %v, want exactly #link, #message and the two scope empty-state texts in this plan", sels)
 	}
 	raw, _ := json.Marshal(sels)
 	if err := p.Eval(within(t, 10*time.Second), fmt.Sprintf(observerJS, raw), nil); err != nil {

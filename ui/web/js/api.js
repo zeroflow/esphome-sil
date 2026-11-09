@@ -4,6 +4,7 @@
 export const OPS = {
   fans: ["GET", "/api/v1/fans"],
   set: ["POST", "/api/v1/set"],
+  history: ["GET", "/api/v1/history"],
 };
 
 // ApiError is a response that was not a success. Its message is only what the server said: the
@@ -18,15 +19,17 @@ export class ApiError extends Error {
   }
 }
 
-// call performs the operation `name` of OPS, with an optional JSON body, and returns the parsed JSON
-// answer. A response that is not ok throws ApiError; a request that got no response at all rejects
-// with the browser's own error, which callers do not show (LINK reports the connection).
-export async function call(name, { body } = {}) {
+// call performs the operation `name` of OPS, with an optional JSON body and an optional query
+// object ({window_s: 62} becomes ?window_s=62), and returns the parsed JSON answer. A response
+// that is not ok throws ApiError; a request that got no response at all rejects with the browser's
+// own error, which callers do not show (LINK reports the connection).
+export async function call(name, { body, query } = {}) {
   const op = OPS[name];
   if (!op) {
     throw new TypeError("not an operation of the page: " + name);
   }
-  const [method, path] = op;
+  const [method, base] = op;
+  const path = query === undefined ? base : base + "?" + new URLSearchParams(query).toString();
   const init = { method, headers: {} };
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";

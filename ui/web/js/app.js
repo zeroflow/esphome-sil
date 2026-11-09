@@ -3,15 +3,32 @@
 import { ApiError, call } from "./api.js";
 import { initEnv, onFans } from "./inputs.js";
 import { showError } from "./message.js";
+import { loadHistory, pushSample, resetScopes, setFanMax } from "./plot.js";
 import { apply, getState } from "./store.js";
 import { render } from "./view.js";
 
 const RETRY_MIN_MS = 500;
 const RETRY_MAX_MS = 5000;
 
+// The kinds of `sil watch`, plus the opt-in plot samples.
+const KINDS = "duty,rpm,state,fan,button,env,leds,firmware,sim,sample";
+// The history to fetch on every (re)connect: the 60 s window plus a 2 s margin.
+const HISTORY_WINDOW_S = 62;
+// The most sample frames held back while the history request is out (5 minutes at 10 Hz, the
+// server's ring); a request that long has failed.
+const HELD_MAX = 3000;
+
 let socket = null;
 let delay = RETRY_MIN_MS;
 let linkState = "connecting";
+
+// fanList is the last GET /api/v1/fans list, or null before it was fetched and after a failed fetch.
+let fanList = null;
+
+// join is the history join of the current connection: sample frames are held in `held` until
+// GET /api/v1/history has answered, then the history is plotted, then the held samples above its
+// seq, then (done) every sample goes straight to the plot.
+let join = null;
 
 // refresh paints the current state and link state; every applied frame and every link change ends here.
 function refresh() {
@@ -24,14 +41,88 @@ function refresh() {
 async function loadFans() {
   try {
     const res = await call("fans");
+    fanList = res.fans;
     onFans(res.fans);
   } catch (err) {
+    fanList = null;
     onFans(null);
     if (err instanceof ApiError) {
       showError(err.message);
     }
   }
+  syncFanMax();
   refresh();
+}
+
+// syncFanMax gives every scope the max_rpm of the fan the status says is plugged on its port; a
+// port whose fan is not in the list (or no list) has an unknown scale.
+function syncFanMax() {
+  const state = getState();
+  if (state === null || !Array.isArray(state.ports)) {
+    return;
+  }
+  for (const p of state.ports) {
+    const fan = Array.isArray(fanList) ? fanList.find((f) => f.id === p.fan) : undefined;
+    setFanMax(p.port, fan === undefined ? null : fan.max_rpm);
+  }
+}
+
+// startJoin begins the history join of a connection. It runs after the snapshot, so the history's
+// seq is at least the snapshot's and no sample falls between the history and the stream.
+function startJoin(ws) {
+  const j = { ws, held: [], done: false };
+  join = j;
+  call("history", { query: { window_s: HISTORY_WINDOW_S } }).then(
+    (res) => finishJoin(j, res),
+    (err) => failJoin(j, err),
+  );
+}
+
+// finishJoin replaces the plot with the history, then plays the held samples the history does not
+// hold (seq above its own).
+function finishJoin(j, res) {
+  if (join !== j) {
+    return;
+  }
+  loadHistory(res);
+  for (const frame of j.held) {
+    if (frame.seq > res.seq) {
+      pushSample(frame);
+    }
+  }
+  j.held = [];
+  j.done = true;
+}
+
+// failJoin shows the server's words and carries on with live samples only, on empty screens.
+function failJoin(j, err) {
+  if (join !== j) {
+    return;
+  }
+  if (err instanceof ApiError) {
+    showError(err.message);
+  }
+  resetScopes();
+  for (const frame of j.held) {
+    pushSample(frame);
+  }
+  j.held = [];
+  j.done = true;
+}
+
+// onSample routes one sample frame of the connection ws: held during the join, plotted after.
+function onSample(ws, frame) {
+  if (join === null || join.ws !== ws) {
+    return;
+  }
+  if (!join.done) {
+    join.held.push(frame);
+    if (join.held.length > HELD_MAX) {
+      join.held.shift();
+    }
+    return;
+  }
+  pushSample(frame);
 }
 
 function setLink(next) {
@@ -47,6 +138,9 @@ function lost(ws) {
     return;
   }
   socket = null;
+  if (join !== null && join.ws === ws) {
+    join = null;
+  }
   try {
     ws.close();
   } catch (e) {
@@ -74,8 +168,16 @@ function onFrame(ws, data) {
     delay = RETRY_MIN_MS;
     linkState = "live";
   }
+  if (frame && frame.k === "sample") {
+    onSample(ws, frame);
+  }
+  if (frame && frame.k === "fan") {
+    syncFanMax();
+  }
   refresh();
   if (frame && frame.k === "snapshot") {
+    startJoin(ws);
+    syncFanMax();
     loadFans();
   }
   if (res.resync) {
@@ -85,7 +187,7 @@ function onFrame(ws, data) {
 
 function connect() {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(scheme + "//" + location.host + "/ws");
+  const ws = new WebSocket(scheme + "//" + location.host + "/ws?kind=" + KINDS);
   socket = ws;
   ws.onmessage = (ev) => onFrame(ws, ev.data);
   ws.onclose = () => lost(ws);
