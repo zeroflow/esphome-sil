@@ -9,7 +9,7 @@ The sim-bus connects the firmware (ESPHome `host:` build, component `sim_bus`) t
 | Golden vectors, read by both tests | `protocol/vectors/frames.tsv` |
 | Go test / C++ test | `internal/bus/codec_test.go` / `tests/cpp/test_protocol.cpp` |
 
-The protocol is internal while the project is `0.x`: it may change, but only together with both codecs and the vectors. The session part (hello, chan, snapshot, sync) is implemented by plans 01-07 (Go server, engine) and 01-10 (firmware hub); this file is what they implement.
+The protocol is internal while the project is `0.x`: it may change, but only together with both codecs and the vectors. The session part (hello, chan, snapshot, sync) is implemented by plans 01-07 (Go server, engine) and 01-10 (firmware hub); this file is what they implement. Phase 2 adds channels and the `rgb` type on top of version 1; the additions are backward compatible, so the version stays 1.
 
 ## Transport
 
@@ -65,25 +65,36 @@ Checks run in this order: length, structure and values while scanning, the end o
 
 ## Channels
 
-A channel is a named float32 signal. Names match `^[a-z0-9_]+(\.[a-z0-9_]+)*$` (checked by the ESPHome component schema, so a name on the wire never needs more than the two string escapes). Each sim platform in the firmware YAML binds to a channel with a required `channel:` key (IO-06).
+A channel is a named signal. Most are float32 (`type` `f32`, value in `v`); the LED strip is the one `rgb` channel (pixels in `px`). Names match `^[a-z0-9_]+(\.[a-z0-9_]+)*$` (checked by the ESPHome component schema, so a name on the wire never needs more than the two string escapes). Each sim platform in the firmware YAML binds to a channel with a required `channel:` key (IO-06).
 
-Phase 1 channels:
+Phase 1 channels (the ports; **required**):
 
 | Channel | Direction | Meaning |
 |---------|-----------|---------|
 | `portN.duty` (N = 1..4) | `out` (firmware to simulator) | PWM duty of fan port N, 0..1 |
 | `portN.rpm` (N = 1..4) | `in` (simulator to firmware) | tach speed of fan port N in RPM |
 
+Phase 2 channels (the rest of the Rev 3.3 IO surface; **optional**):
+
+| Channel | Direction | Type | Meaning |
+|---------|-----------|------|---------|
+| `usr1`, `usr2`, `usr3` | `in` | `f32` | button level, `0` released and `1` pressed. The simulator sends levels only; the firmware measures hold time itself |
+| `temperature` | `in` | `f32` | ambient temperature in degrees Celsius (default 22) |
+| `humidity` | `in` | `f32` | relative humidity in percent (default 45) |
+| `leds` | `out` | `rgb` | the addressable status strip: `n` LEDs, pixels in `px` instead of `v` |
+
+Required and optional channels: a firmware must declare the ports (`portN.duty` out, `portN.rpm` in) or the simulator warns `missing channel ...`. `usr1`..`usr3`, `temperature`, `humidity` and `leds` are optional: leaving one out never warns, it only means the matching operation (`sil press`, `sil set`, the LED strip in `sil status`) is unavailable for that firmware. A declared channel with the wrong direction or type, and any channel the simulator has no model for, is one warning in status (`channel X has direction ...`, `channel X has type ...`, `unknown channel X (ignored)`), never a failure. The hub on the firmware side likewise ignores an `in` frame for a channel it does not have.
+
 ## Messages
 
 | From | `k` | Fields |
 |------|-----|--------|
 | firmware | `hello` | `proto` (int, 1), `name` (string), `chans` (int N), `t` (int, firmware monotonic microseconds, diagnostics only) |
-| firmware | `chan` (N times) | `ch`, `dir` (`out` = firmware to simulator, `in` = simulator to firmware), `type` (`f32`) |
-| firmware | `out` (M times) then `sync` | `ch`, `v`, `t`: the last value of every out channel |
+| firmware | `chan` (N times) | `ch`, `dir` (`out` = firmware to simulator, `in` = simulator to firmware), `type` (`f32` or `rgb`). An `rgb` chan also carries `n` (int, pixel count 1..255) and `seg` (string, `label:from:to,...`); no other type carries them |
+| firmware | `out` (M times) then `sync` | `ch`, `v`, `t`: the last value of every f32 out channel, then one `px` frame for `leds` |
 | simulator | `welcome` | `proto` (int, 1), `t` (int, simulator microseconds of sim time) |
 | simulator | `in` (K times) then `sync` | `ch`, `v`, `t`: every in channel with a known value |
-| both | `out` / `in` | steady state, `ch`, `v`, `t` |
+| both | `out` / `in` | steady state, `ch`, `v`, `t`. An `out` frame on an `rgb` channel carries `px` (string) instead of `v` |
 | both | `sync` | `t`; ends a snapshot |
 | either | `err` | `msg` (string); the sender closes right after |
 | either | `bye` | no fields; orderly close |
@@ -98,8 +109,8 @@ Session:
 
 Order guarantees:
 
-- Firmware snapshot: `hello`, `chan` in registration order, `out` in first-write order, `sync`. A connection made before any output was written (the very first one, in `setup()`) carries no `out` frames in the snapshot; the first values follow as ordinary `out` frames.
-- Simulator snapshot: `welcome` first, then one `in` per port in port order 1..4, then `sync`. Any steady-state frame the simulator produces while it prepares the snapshot is held back and follows the `sync`.
+- Firmware snapshot: `hello`, `chan` in registration order, the f32 `out` frames in first-write order, the `px` out frame of `leds` (when the firmware has a strip), `sync`. A connection made before any output was written (the very first one, in `setup()`) carries no `out` frames in the snapshot; the first values follow as ordinary `out` frames.
+- Simulator snapshot: `welcome` first, then one `in` per port in port order 1..4 (`portN.rpm`), then temperature, humidity, usr1, usr2, usr3, then `sync`. The simulator sends an `in` frame for every input it knows, also when the firmware's manifest lacks the channel (the hub ignores channels it does not have); a button is sent at its current level, so a freshly connected firmware always sees released buttons as `0`. Any steady-state frame the simulator produces while it prepares the snapshot is held back and follows the `sync`.
 - The simulator answers a hello within the 2 s hello deadline (the firmware's first frame must arrive within 2 s of connecting) and accepts at most 1024 `chan` frames per session.
 - The firmware accepts `in` frames at any time after connecting; `welcome` only resets its reconnect backoff.
 
@@ -108,6 +119,15 @@ Reconnect (firmware): after a connection ends or fails it retries after 100 ms, 
 Session end reasons reported to status (`warnings`) by the simulator: `proto_mismatch`, `hello_timeout`, `no_hello`, `bad_hello`, `bad_frame: <class>`, `peer_error: <msg>`, `send_queue_full`; a plain close, `bye` and a replacement by a newer firmware are not warnings.
 
 Timestamps: the `t` of simulator frames is microseconds of **sim time** (the injectable clock, not the wall clock). The `t` of firmware frames is its monotonic microseconds and is recorded for diagnostics only.
+
+Environment re-send: `temperature` and `humidity` are re-sent every 10 s of sim time, each from its own deadline (a changed value is sent at once and re-arms only its own timer), so a firmware that consumes them as a sliding window or a watchdog keeps seeing fresh samples. Port rpm and button levels are sent on change only (plus the snapshot).
+
+LED frames (`leds`, type `rgb`):
+
+- `px` is lowercase hex, 6 characters per pixel in RGB byte order, so 6 x `n` characters for a full strip (`0000ff000000` is pixel 0 blue and pixel 1 off). The simulator stores the bytes exactly as sent and converts nothing.
+- `n` is at most 255 so that a full `px` line (1530 characters) stays far below the 4096-byte line cap. `seg` names the sub-ranges of the strip; each entry is `label:from:to` with `0 <= from <= to < n` (both inclusive), entries are comma separated, and labels match `^[a-z][a-z0-9_]*$` and are unique. The firmware derives `seg` at codegen time from the stock `partition` lights that sit on the sim light, so the YAML stays the single source of truth; a config that breaks these rules does not pass `esphome config`. A light that no partition uses sends an empty `seg`.
+- Dedupe and rate: the firmware sends a `px` frame only when the pixel content changed, and at least 50 ms apart by its own clock; a change inside the gap stays pending and is flushed from `loop()`.
+- Replay: after the f32 `out` snapshot and before `sync`, the firmware sends one `px` frame whose pixels are the strip state at reconnect. The hub stores the pixels also while the bus is down, so changes made during the gap are included; the frame equals the previous connection's last `px` only if the strip did not change in between. A new session starts with the simulator's LED state empty; a disconnect keeps the last frame.
 
 Dedupe: `out` and `in` are state frames. An identical consecutive value on a channel is not sent again, except inside a snapshot (`hello` replay, `welcome` replay), which always sends every channel so that either side restarting converges.
 
