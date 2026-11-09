@@ -31,7 +31,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Two named instances run side by side, each with its own run dir, API port, MAC, device name and key. `sil up` on a taken port fails with exit code 2 and a JSON error. `sil down` stops both processes, killing the simulator leaves no orphaned firmware, and each new run starts with fresh preferences.
   5. Misconfigurations fail loudly before anything runs: a host-incompatible component (e.g. `wifi:`, `ledc`, `i2c`), a sim platform without `channel:`, an over-long sim-bus socket path, or an unknown key in `fan.toml` each stop the build or start with a message naming the problem.
 
-**Plans:** 9/13 plans executed
+**Plans:** 10/13 plans executed
 
 Plans:
 **Wave 1**
@@ -52,7 +52,7 @@ Plans:
 - [x] 01-09-PLAN.md — Isolated instances: names, XDG paths, sticky ports, locks, fresh run dirs, real Noise handshake readiness (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 01-10-PLAN.md — Resync after restarts: HELLO manifest/snapshot session both sides, `sil sim restart [--gap]`, `sil fw restart` (wave 5)
+- [x] 01-10-PLAN.md — Resync after restarts: HELLO manifest/snapshot session both sides, `sil sim restart [--gap]`, `sil fw restart` (wave 5)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 01-11-PLAN.md — Supervised firmware: auto-restart, crash-loop guard, orphan-proof shutdown, `sil down` fallback (wave 6)
@@ -99,6 +99,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Closed-Loop Fan Skeleton | 9/13 | In Progress|  |
+| 1. Closed-Loop Fan Skeleton | 10/13 | In Progress|  |
 | 2. Full Rev 3.3 Bench | 0/TBD | Not started | - |
 | 3. Live Web UI | 0/TBD | Not started | - |

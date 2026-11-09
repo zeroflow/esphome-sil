@@ -19,9 +19,9 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 
 ### Sim-Bus & IO Components
 
-- [ ] **BUS-01**: Firmware and simulator talk over a Unix domain socket in the run dir using newline-delimited flat JSON; simulator listens, firmware connects
-- [ ] **BUS-02**: On every (re)connect both sides exchange HELLO (protocol version, channel manifest) and a full state snapshot; restarting either side recovers without manual steps
-- [ ] **BUS-03**: The `sim_bus` hub component is non-blocking in the ESPHome loop, reconnects with backoff, and validates the socket path length at codegen
+- [x] **BUS-01**: Firmware and simulator talk over a Unix domain socket in the run dir using newline-delimited flat JSON; simulator listens, firmware connects
+- [x] **BUS-02**: On every (re)connect both sides exchange HELLO (protocol version, channel manifest) and a full state snapshot; restarting either side recovers without manual steps
+- [x] **BUS-03**: The `sim_bus` hub component is non-blocking in the ESPHome loop, reconnects with backoff, and validates the socket path length at codegen
 - [x] **BUS-04**: Wire format is pinned by golden vectors tested from both Go and C++
 - [x] **IO-01**: `sim_bus` float output platform delivers PWM duty for each of the 4 fan ports, so stock `fan: speed` works on top
 - [x] **IO-02**: `sim_bus` sensor platform delivers fan RPM per port as a 1 s windowed mean, published at `update_interval`
@@ -127,9 +127,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | BUILD-05 | Phase 1 | Complete |
 | BUILD-06 | Phase 1 | Complete |
 | BUILD-07 | Phase 1 | Complete |
-| BUS-01 | Phase 1 | Pending |
-| BUS-02 | Phase 1 | Pending |
-| BUS-03 | Phase 1 | Pending |
+| BUS-01 | Phase 1 | Complete |
+| BUS-02 | Phase 1 | Complete |
+| BUS-03 | Phase 1 | Complete |
 | BUS-04 | Phase 1 | Complete |
 | IO-01 | Phase 1 | Complete |
 | IO-02 | Phase 1 | Complete |

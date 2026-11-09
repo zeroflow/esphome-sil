@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
 status: executing
-stopped_at: Completed 01-09-PLAN.md
-last_updated: "2026-11-09T02:18:56.394Z"
+stopped_at: Completed 01-10-PLAN.md
+last_updated: "2026-11-09T02:46:53.349Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: e77209a39e68078f0ecca9f9bc622a80141b19e3
+state_head: 0c6e39db3f66926a838336c308d98bcee03d39d7
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 9
+  completed_plans: 10
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
-Plan: 10 of 13
+Plan: 11 of 13
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 1 execution started
 
@@ -65,6 +65,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P07 | 15min | 2 tasks | 10 files |
 | Phase 01 P08 | 20min | 2 tasks | 15 files |
 | Phase 01 P09 | 15min | 2 tasks | 11 files |
+| Phase 01 P10 | 27 min | 2 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -98,6 +99,9 @@ Recent decisions affecting current work:
 - [Phase 01]: 01-08: mount root is RepoRoot when it contains the config, else the YAML's git top-level unless that is / or HOME, else the YAML dir
 - [Phase 01]: [Phase 01-09]: Instance readiness is a real Noise handshake with the instance key plus name/MAC match; plaintext or rejected answers fail at once, a taken sticky or explicit API port is port_in_use and never moved
 - [Phase 01]: [Phase 01-09]: sil up checks liveness before LoadOrCreate and runs pure checks (names, socket length, config, fan, run-dir parent) before taking the instance flock, so refused ups leave no state
+- [Phase 01]: 01-10: a connection becomes the active sim-bus session at its first valid hello, so stray clients never disturb a running session; a newer hello replaces the older (bye, close)
+- [Phase 01]: 01-10: Server.Send is held between a hello and the queued snapshot so welcome and the in-snapshot always precede steady frames; the hub's reconnect backoff is 100 ms to 2 s reset by welcome, TX cap 64 KiB
+- [Phase 01]: 01-10: sim restart keeps the monotonic sim clock (only the World is fresh); restarts, fw restart and shutdown serialize on one supervisor mutex while status never takes it
 
 ### Pending Todos
 
@@ -124,8 +128,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T02:18:56.365Z
-Stopped at: Completed 01-09-PLAN.md
+Last session: 2026-11-09T02:46:53.314Z
+Stopped at: Completed 01-10-PLAN.md
 Resume file: None
 
 ## Needs Human
