@@ -454,3 +454,39 @@ func TestHelpStaysOffStdout(t *testing.T) {
 		t.Fatalf("exit %d, stdout %q, stderr %q", exit, so.String(), se.String())
 	}
 }
+
+// TestUnsafeRuntimeBaseIsRefused covers the world-reachable /tmp fallback: a
+// runtime base that is not private is not trusted to name instances.
+func TestUnsafeRuntimeBaseIsRefused(t *testing.T) {
+	cliEnv(t)
+	liveInstance(t, "fan", &fakeControl{status: readyStatus("fan")})
+	base, err := runtimeBase()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range [][]string{{"status"}, {"status", "fan"}, {"fw", "restart", "fan"}} {
+		if r := run(t, cmd...); r.exit != 2 || r.errCode(t) != "unsafe_runtime_dir" {
+			t.Fatalf("sil %v: exit %d, %s", cmd, r.exit, r.stdout)
+		}
+	}
+}
+
+// TestRunFileDoesNotChooseTheSocket: run.json says whether an instance is live,
+// the client always dials the socket in the instance's own run dir.
+func TestRunFileDoesNotChooseTheSocket(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan")}
+	p := liveInstance(t, "fan", fc)
+	if err := instance.WriteRunFile(p, instance.RunFile{
+		Schema: 1, Instance: "fan", PID: supervisorProc(t, "fan"), RunDir: p.RunDir,
+		APISock: filepath.Join(t.TempDir(), "elsewhere.sock"), BusSock: p.BusSock(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r := run(t, "status", "fan"); r.exit != 0 || r.object(t)["instance"] != "fan" {
+		t.Fatalf("exit %d, %s", r.exit, r.stdout)
+	}
+}

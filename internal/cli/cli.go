@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -320,6 +321,9 @@ func connect(name string) (instance.Paths, *control.Client, error) {
 	if err != nil {
 		return instance.Paths{}, nil, err
 	}
+	if err := checkPrivateDir(filepath.Dir(p.RunDir)); err != nil {
+		return instance.Paths{}, nil, err
+	}
 	rf, err := instance.LoadRunFile(p)
 	if err != nil {
 		return instance.Paths{}, nil, err
@@ -328,5 +332,7 @@ func connect(name string) (instance.Paths, *control.Client, error) {
 		return instance.Paths{}, nil, apperr.Failed("not_running", "instance "+p.Name+" is not running (its supervisor is gone)",
 			map[string]any{"instance": p.Name, "phase": control.PhaseDead, "run_dir": p.RunDir})
 	}
-	return p, control.Dial(rf.APISock), nil
+	// Dial the socket of this instance's own run dir, not the path run.json
+	// names: run.json decides whether the instance is live, never where to connect.
+	return p, control.Dial(p.APISock()), nil
 }

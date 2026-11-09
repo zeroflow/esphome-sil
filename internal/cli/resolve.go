@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/instance"
@@ -58,6 +59,9 @@ func liveInstances() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkPrivateDir(base); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(base)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, apperr.Infra("runtime_dir_unreadable", "cannot list the instance runtime directory",
@@ -91,4 +95,27 @@ func runtimeBase() (string, error) {
 		return "", err
 	}
 	return filepath.Dir(p.RunDir), nil
+}
+
+// checkPrivateDir is the read-only counterpart of the check `sil up` makes when
+// it creates the runtime base: a directory that exists must be a real
+// directory (not a symlink) owned by this user with mode 0700. The /tmp/sil-$UID
+// fallback is world-reachable, and a run.json planted there by another user
+// must not steer the client. A missing directory is fine (nothing is running).
+func checkPrivateDir(dir string) error {
+	fi, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return apperr.Infra("runtime_dir_unreadable", "cannot inspect the instance runtime directory",
+			map[string]any{"path": dir, "error": err.Error()})
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !fi.IsDir() || !ok || int(st.Uid) != os.Getuid() || fi.Mode().Perm()&0o077 != 0 {
+		return apperr.Infra("unsafe_runtime_dir",
+			"the instance runtime directory must be a real directory owned by you with mode 0700; remove or fix it",
+			map[string]any{"path": dir})
+	}
+	return nil
 }
