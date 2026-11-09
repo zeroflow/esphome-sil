@@ -1107,8 +1107,14 @@ func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.Set
 	if s.isStopping() {
 		return control.SetResult{}, errStopping()
 	}
+	// A caller that is already gone changes nothing: the request fails before anything is recorded.
+	if err := ctx.Err(); err != nil {
+		return control.SetResult{}, err
+	}
 	s.inMu.Lock()
 	defer s.inMu.Unlock()
+	prevIn, prevFans := s.inputs, slices.Clone(s.fans)
+	rollback := func() { s.inputs, s.fans = prevIn, prevFans }
 	if change.Temperature != nil {
 		s.inputs.Temperature = *change.Temperature
 	}
@@ -1118,7 +1124,28 @@ func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.Set
 	for n, pc := range change.Fans {
 		s.fans[n-1] = pc
 	}
-	if err := s.currentEngine().Apply(ctx, change); err != nil && !errors.Is(err, engine.ErrStopped) {
+	// Once recorded, the change must reach the engine (or, in a restart gap, the next engine). A
+	// client that disconnects mid-way must not leave the record and the engine disagreeing (the
+	// event may already be queued), so Apply is cancelled only by a shutdown, not by ctx.
+	actx, acancel := s.withDown(context.WithoutCancel(ctx))
+	defer acancel()
+	switch err := s.currentEngine().Apply(actx, change); {
+	case err == nil:
+	case errors.Is(err, engine.ErrStopped):
+		// Between the old engine's stop and the new one's start the recorded values seed the new
+		// engine, so the Set stands. An engine that failed for good never takes them: say so.
+		s.mu.Lock()
+		failed := s.failure != nil && s.failure.Code == "engine_failed"
+		s.mu.Unlock()
+		if failed {
+			rollback()
+			return control.SetResult{}, apperr.Infra("engine_failed", "the simulator engine is not running; nothing was applied", nil)
+		}
+	case actx.Err() != nil:
+		// Only a shutdown cancels actx; the instance is going down.
+		return control.SetResult{}, errStopping()
+	default:
+		rollback()
 		return control.SetResult{}, err
 	}
 	return control.SetResult{Applied: applied}, nil

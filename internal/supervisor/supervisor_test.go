@@ -495,3 +495,44 @@ func TestFansListsTheLibrary(t *testing.T) {
 		t.Fatalf("Fans with a broken file: %v, want fan_toml_invalid naming it", err)
 	}
 }
+
+// WR-02: a Set whose caller is gone fails before anything is recorded, so the record and the
+// engine never disagree about a request that was reported as failed.
+func TestSetWithACancelledCallerRecordsNothing(t *testing.T) {
+	s := fanSupervisor(t)
+	s.inputs = engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity}
+	engineBefore := s.currentEngine().Snapshot().Env
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 20; i++ {
+		_, err := s.Set(ctx, control.SetRequest{Values: rawVals(map[string]string{"temperature": "31", "port2.fan": `"beta-fan"`})})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Set with a cancelled caller: %v, want context.Canceled", err)
+		}
+	}
+	if s.inputs.Temperature != DefaultTemperature || s.fans[1].FanID != "alpha-fan" {
+		t.Fatalf("record changed by a failed Set: inputs %+v, port2 fan %q", s.inputs, s.fans[1].FanID)
+	}
+	if e := s.currentEngine().Snapshot().Env; e != engineBefore {
+		t.Fatalf("engine changed by a failed Set: %+v, was %+v", e, engineBefore)
+	}
+}
+
+// WR-02: an engine that failed for good never takes a value, so Set reports engine_failed and keeps
+// the record equal to what is running. A restart gap (no failure) still accepts the value.
+func TestSetOnAFailedEngineFailsAndRollsBack(t *testing.T) {
+	s := fanSupervisor(t)
+	s.inputs = engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity}
+	s.stopEngine(s.slot)
+	s.mu.Lock()
+	s.failure = apperr.Infra("engine_failed", "the simulator engine did not start", nil)
+	s.mu.Unlock()
+
+	_, err := s.Set(context.Background(), control.SetRequest{Values: rawVals(map[string]string{"temperature": "31", "port1.fan": `"beta-fan"`})})
+	if errCode(err) != "engine_failed" {
+		t.Fatalf("Set on a failed engine: %v, want engine_failed", err)
+	}
+	if s.inputs.Temperature != DefaultTemperature || s.fans[0].FanID != "alpha-fan" {
+		t.Fatalf("record kept a value the engine never took: inputs %+v, port1 fan %q", s.inputs, s.fans[0].FanID)
+	}
+}
