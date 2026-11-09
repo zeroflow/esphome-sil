@@ -161,7 +161,9 @@ function onFrame(ws, data) {
     return;
   }
   if (frame && frame.error) {
+    // The stream failed (for instance too_many_streams): its words, then the normal backoff.
     showError(String(frame.error.message));
+    lost(ws);
     return;
   }
   const res = apply(frame);

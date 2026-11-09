@@ -176,6 +176,12 @@ func TestUSRTouchLeave(t *testing.T) {
 	}
 	b.waitCalls(t, "button.down", 1, 5*time.Second)
 	waitPressed(t, p, "usr1", "true", 5*time.Second)
+	// Letting go of the implicit capture must not end the hold that is starting (the lostpointercapture
+	// it causes is the page's own).
+	settle(t, 400*time.Millisecond)
+	if n := len(b.callsOf("button.up")); n != 0 || pressed(t, p, "usr1") != "true" {
+		t.Fatalf("%d ups and aria-pressed %q while the finger rests on the cap, want no up and a lit cap", n, pressed(t, p, "usr1"))
+	}
 	if err := p.Touch(ctx, "touchMove", x, y-300); err != nil {
 		t.Fatal(err)
 	}
@@ -190,6 +196,27 @@ func TestUSRTouchLeave(t *testing.T) {
 	settle(t, 300*time.Millisecond)
 	if n := len(b.callsOf("button.up")); n != 1 {
 		t.Errorf("%d ups after the finger lifted, want the one sent when it left the cap", n)
+	}
+
+	// A browser that reports the capture the page let go of (Chrome does not) must not end the new
+	// hold with it: the first lostpointercapture of the touch is the page's own, a second one is real.
+	evalOn(t, p, `(() => { window.__pid = null; document.querySelector('`+capSel("usr1")+`').addEventListener('pointerdown', (ev) => { window.__pid = ev.pointerId; }, true); return true; })()`, nil)
+	if err := p.Touch(ctx, "touchStart", x, y); err != nil {
+		t.Fatal(err)
+	}
+	b.waitCalls(t, "button.down", 2, 5*time.Second)
+	waitPressed(t, p, "usr1", "true", 5*time.Second)
+	lost := `(() => { document.querySelector('` + capSel("usr1") + `').dispatchEvent(new PointerEvent('lostpointercapture', {pointerId: window.__pid, bubbles: true})); return true; })()`
+	evalOn(t, p, lost, nil)
+	settle(t, 300*time.Millisecond)
+	if n := len(b.callsOf("button.up")); n != 1 {
+		t.Fatalf("%d ups after the page's own capture release was reported, want still 1", n)
+	}
+	evalOn(t, p, lost, nil)
+	b.waitCalls(t, "button.up", 2, 5*time.Second)
+	waitPressed(t, p, "usr1", "false", 5*time.Second)
+	if err := p.Touch(ctx, "touchEnd", x, y); err != nil {
+		t.Fatal(err)
 	}
 }
 

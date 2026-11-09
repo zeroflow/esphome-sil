@@ -61,6 +61,11 @@ export function apply(frame) {
       state.firmware.bus_connected = frame.v;
       return none;
     case "sim":
+      if (frame.v === "behind" || frame.v === "in_sync") {
+        state.sim = state.sim || {};
+        state.sim.behind_real_time = frame.v === "behind";
+        return none;
+      }
       return frame.v === "restarted" ? { resync: true } : none;
     case "lagged":
     case "stopped":

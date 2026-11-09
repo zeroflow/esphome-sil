@@ -156,6 +156,11 @@ func fmtOracle(kind string, v any) string {
 	case "pressed":
 		b, _ := v.(bool)
 		return strconv.FormatBool(b)
+	case "realtime":
+		if b, _ := v.(bool); b {
+			return "BEHIND"
+		}
+		return "IN SYNC"
 	}
 	return "<no oracle for data-fmt " + kind + ">"
 }
@@ -253,7 +258,7 @@ type sessionStep struct {
 }
 
 // sessionSteps are the bench events of the parity session: duty, rpm, state, fan, button, env,
-// leds and firmware. Each carries an explicit sim time (13.0 s, 13.1 s, ...) and sets the bench's
+// leds, firmware and the sim behind / in_sync pair. Each carries an explicit sim time (13.0 s, 13.1 s, ...) and sets the bench's
 // sim.time_s to the same value, because the page takes sim.time_s from the t of every frame.
 func sessionSteps() []sessionStep {
 	steps := []sessionStep{
@@ -269,6 +274,8 @@ func sessionSteps() []sessionStep {
 			}},
 		{"firmware down", events.Event{K: "firmware", V: false}, func(st *control.Status) { st.Firmware.BusConnected = false }},
 		{"firmware up", events.Event{K: "firmware", V: true}, func(st *control.Status) { st.Firmware.BusConnected = true }},
+		{"behind", events.Event{K: "sim", V: "behind"}, func(st *control.Status) { st.Sim.BehindRealTime = true }},
+		{"in sync", events.Event{K: "sim", V: "in_sync"}, func(st *control.Status) { st.Sim.BehindRealTime = false }},
 	}
 	for i := range steps {
 		steps[i].ev.T = 13_000_000 + int64(i)*100_000

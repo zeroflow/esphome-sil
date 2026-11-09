@@ -5,7 +5,7 @@
 
 import { renderButtons } from "./buttons.js";
 import { initFanSelects, renderInputs } from "./inputs.js";
-import { initScopes, setLink as setScopeLink } from "./plot.js";
+import { initScopes, setLink as setScopeLink, setStale } from "./plot.js";
 
 const NONE = "--";
 
@@ -38,6 +38,7 @@ const formats = {
   simtime,
   factor: (v) => "x" + v,
   firmware: (v) => (v ? "CONNECTED" : "DISCONNECTED"),
+  realtime: (v) => (v ? "BEHIND" : "IN SYNC"),
   hex: (v) => String(v),
   select: (v) => String(v),
   num: (v) => String(v),
@@ -197,6 +198,22 @@ function paintLeds(state) {
   });
 }
 
+let everLive = false;
+
+// paintRealTime marks the REAL TIME value (its text is set with the other data-src elements): BEHIND is
+// a warning chip with an accessible name, IN SYNC is plain text. Nothing is derived: the flag is the
+// engine's.
+function paintRealTime(state) {
+  const el = document.querySelector('[data-src="sim.behind_real_time"]');
+  const behind = state !== null && state.sim ? state.sim.behind_real_time === true : false;
+  el.classList.toggle("warn", behind);
+  if (behind) {
+    el.setAttribute("aria-label", "Simulator behind real time");
+  } else {
+    el.removeAttribute("aria-label");
+  }
+}
+
 function paint(state, linkState) {
   let n = PLACEHOLDER_PORTS;
   if (state !== null) {
@@ -230,6 +247,12 @@ function paint(state, linkState) {
   }
   renderInputs(state, linkState, (el) => shown(state, el));
   renderButtons(state, linkState);
+  paintRealTime(state);
+  // Stale is a lost WebSocket after the page has been live once; before that CONNECTING rules.
+  everLive = everLive || linkState === "live";
+  const stale = everLive && linkState !== "live";
+  document.body.classList.toggle("stale", stale);
+  setStale(stale);
   const instance = state !== null && typeof state.instance === "string" ? state.instance : "";
   paintLeds(state);
   document.title = instance === "" ? "sil" : "sil — " + instance;

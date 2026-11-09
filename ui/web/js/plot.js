@@ -353,8 +353,26 @@ function drawDirty() {
   }
 }
 
+// stale is true while the link is lost after having been live: the scopes keep their last picture
+// and draw nothing until the link is back.
+let stale = false;
+
+// setStale freezes (true) or thaws (false) the scopes. Thawing redraws what is pending.
+export function setStale(next) {
+  if (next === stale) {
+    return;
+  }
+  stale = next;
+  if (!stale) {
+    schedule(true);
+  }
+}
+
 function onFrame(ts) {
   scheduled = false;
+  if (stale) {
+    return;
+  }
   if (ts - lastDraw < DRAW_MIN_MS) {
     schedule(false);
     return;

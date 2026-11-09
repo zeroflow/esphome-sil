@@ -154,6 +154,10 @@ input {
   width: 152px;
 }
 
+.cell-realtime {
+  width: 112px;
+}
+
 .cell-link {
   width: 240px;
 }
@@ -179,6 +183,28 @@ input {
 .value.bad,
 .cell.bad .value {
   color: var(--error);
+}
+
+/* REAL TIME BEHIND: an orange chip on the value element itself (no child), distinct from port 1 yellow. */
+.value.warn {
+  align-self: flex-start;
+  padding: 0 8px;
+  background: var(--warn);
+  color: var(--screen);
+  font-weight: 600;
+  border-radius: 2px;
+}
+
+/* A lost WebSocket (D-10): the last values stay, dimmed; the lenses go grey; the plots freeze (plot.js)
+   and the controls are disabled by the render functions. FIRMWARE and LINK are not dimmed. */
+body.stale .readout .value,
+body.stale #leds,
+body.stale .scope .plot {
+  opacity: 0.4;
+}
+
+body.stale .lens {
+  filter: grayscale(1);
 }
 
 #message {

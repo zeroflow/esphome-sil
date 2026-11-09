@@ -10,8 +10,12 @@ export const MAX_HOLD_MS = 10000;
 
 // caps maps a button id to its cap: the element, `holding` (this page started a hold it has not
 // released), `seenHeld` (the server has reported that hold), `gen` (counts downs, so an answer to an
-// old down cannot touch a newer hold) and `downDone` (a promise of the last down's success).
+// old down cannot touch a newer hold), `downDone` (a promise of the last down's success) and
+// `ownLoss` (pointer ids whose capture this page let go of itself).
 const caps = new Map();
+
+// listening is true once the window and document listeners are installed.
+let listening = false;
 
 function say(err) {
   if (err instanceof ApiError) {
@@ -47,6 +51,7 @@ function release(cap) {
     return;
   }
   cap.holding = false;
+  cap.ownLoss.clear();
   cap.downDone.then((started) => {
     if (started) {
       call("button.up", { params: { id: cap.id } }).catch(say);
@@ -63,19 +68,88 @@ function onPointerDown(cap, ev) {
   }
   ev.preventDefault();
   if (cap.el.hasPointerCapture(ev.pointerId)) {
+    // The lostpointercapture this causes (browsers that fire it for an implicit capture; Chrome does
+    // not) is not a release of the hold that starts right here.
+    cap.ownLoss.add(ev.pointerId);
     cap.el.releasePointerCapture(ev.pointerId);
   }
   down(cap);
 }
 
+// onLostCapture releases the hold when the browser took the pointer away from the cap, except for
+// the loss the page caused itself in onPointerDown.
+function onLostCapture(cap, ev) {
+  if (cap.ownLoss.delete(ev.pointerId)) {
+    return;
+  }
+  release(cap);
+}
+
+// isHoldKey is true for the keys that hold a cap: Space and Enter.
+function isHoldKey(ev) {
+  return ev.key === " " || ev.key === "Enter";
+}
+
+// onKeyDown starts a hold on the first keydown of Space or Enter; a repeated keydown does nothing.
+function onKeyDown(cap, ev) {
+  if (!isHoldKey(ev)) {
+    return;
+  }
+  ev.preventDefault();
+  if (!ev.repeat) {
+    down(cap);
+  }
+}
+
+// onKeyUp ends the hold of Space or Enter (and keeps the browser from turning the key into a click).
+function onKeyUp(cap, ev) {
+  if (!isHoldKey(ev)) {
+    return;
+  }
+  ev.preventDefault();
+  release(cap);
+}
+
+// releaseAll ends every hold this page started.
+function releaseAll() {
+  for (const cap of caps.values()) {
+    release(cap);
+  }
+}
+
+
 // initButtons wires every USR cap under root.
 export function initButtons(root = document) {
   for (const el of root.querySelectorAll("button.usr")) {
-    const cap = { id: el.dataset.id, el, holding: false, seenHeld: false, gen: 0, downDone: Promise.resolve(false) };
+    const cap = {
+      id: el.dataset.id,
+      el,
+      holding: false,
+      seenHeld: false,
+      gen: 0,
+      downDone: Promise.resolve(false),
+      ownLoss: new Set(),
+    };
     caps.set(cap.id, cap);
     el.addEventListener("pointerdown", (ev) => onPointerDown(cap, ev));
-    el.addEventListener("pointerup", () => release(cap));
+    // Every way a pointer or the keyboard can end a hold, or stop being able to end it.
+    for (const type of ["pointerup", "pointercancel", "pointerleave", "blur"]) {
+      el.addEventListener(type, () => release(cap));
+    }
+    el.addEventListener("lostpointercapture", (ev) => onLostCapture(cap, ev));
+    el.addEventListener("keydown", (ev) => onKeyDown(cap, ev));
+    el.addEventListener("keyup", (ev) => onKeyUp(cap, ev));
     el.addEventListener("contextmenu", (ev) => ev.preventDefault());
+  }
+  if (!listening) {
+    listening = true;
+    // A window that loses focus or a tab that goes to the background cannot see the pointer come up.
+    window.addEventListener("blur", releaseAll);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        releaseAll();
+      }
+    });
   }
 }
 
@@ -102,7 +176,9 @@ export function onReleased(id) {
 
 // renderButtons paints the caps from the status mirror: aria-pressed is the server's held flag
 // (absent before the first snapshot and for a button the status does not hold), and every cap is
-// disabled unless the link is live.
+// disabled unless the link is live. A disabled cap can no longer see its pointer come up, so a hold
+// still open when the link is lost is released here (best effort; the engine's max hold is the
+// backstop).
 export function renderButtons(state, linkState) {
   for (const cap of caps.values()) {
     const v = state !== null && state.buttons ? state.buttons[cap.id] : undefined;
@@ -112,5 +188,8 @@ export function renderButtons(state, linkState) {
       cap.el.setAttribute("aria-pressed", String(v === true));
     }
     cap.el.disabled = linkState !== "live";
+    if (cap.el.disabled) {
+      release(cap);
+    }
   }
 }
