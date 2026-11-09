@@ -678,7 +678,6 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 
 	s.mu.Lock()
 	old := s.slot
-	s.engRestarts++
 	s.mu.Unlock()
 	s.stopEngine(old)
 	s.log.Info("simulator engine stopped for a restart", "gap", gap)
@@ -689,6 +688,11 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 	}
 	sl, err := s.startEngine()
 	if err != nil {
+		// The slot still holds the engine that was just stopped; record the
+		// failure so Status reports it instead of "starting" forever.
+		s.mu.Lock()
+		s.failure = apperr.AsError(err)
+		s.mu.Unlock()
 		return control.Status{}, err
 	}
 	s.mu.Lock()
@@ -698,6 +702,10 @@ func (s *supervisor) SimRestart(ctx context.Context, r control.SimRestartRequest
 		return control.Status{}, errStopping()
 	}
 	s.slot = sl
+	s.engRestarts++
+	if s.failure != nil && s.failure.Code == "engine_failed" {
+		s.failure = nil
+	}
 	s.mu.Unlock()
 
 	err = s.waitUntil(rctx, resyncBudget, func() (bool, error) {
