@@ -359,147 +359,17 @@ type errorBody struct {
 	Error *apperr.Error `json:"error"`
 }
 
-// NewHandler exposes c as GET /api/v1/status, POST /api/v1/down,
-// POST /api/v1/sim/restart, POST /api/v1/fw/restart and
-// POST /api/v1/buttons/{id}/press|down|up, POST /api/v1/set and GET /api/v1/fans. An
-// *apperr.Error becomes {"error":{...}} with HTTP 4xx (exit class 1) or 5xx
-// (exit class 2).
+// NewHandler exposes c over every row of Operations that has a handler: the control socket serves
+// the whole table (the ws row belongs to the web listener). An *apperr.Error becomes
+// {"error":{...}} with HTTP 4xx (exit class 1) or 5xx (exit class 2). Routes exist only as rows;
+// see operations.go.
 func NewHandler(c Control) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/status", func(w http.ResponseWriter, r *http.Request) {
-		st, err := c.Status(r.Context())
-		reply(w, st, err)
-	})
-	mux.HandleFunc("POST /api/v1/down", func(w http.ResponseWriter, r *http.Request) {
-		res, err := c.Down(r.Context())
-		reply(w, res, err)
-	})
-	mux.HandleFunc("POST /api/v1/sim/restart", func(w http.ResponseWriter, r *http.Request) {
-		var req SimRestartRequest
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-		if err != nil {
-			reply(w, nil, apperr.Failed("invalid_argument", "cannot read the request body: "+err.Error(), nil))
-			return
+	for _, op := range Operations {
+		if op.handler != nil {
+			mux.HandleFunc(op.Method+" "+op.Path, op.handler(c))
 		}
-		if len(bytes.TrimSpace(body)) > 0 {
-			dec := json.NewDecoder(bytes.NewReader(body))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(&req); err != nil {
-				reply(w, nil, apperr.Failed("invalid_argument", "bad request body: "+err.Error(), nil))
-				return
-			}
-		}
-		if err := req.Validate(); err != nil {
-			reply(w, nil, err)
-			return
-		}
-		st, err := c.SimRestart(r.Context(), req)
-		reply(w, st, err)
-	})
-	mux.HandleFunc("POST /api/v1/fw/restart", func(w http.ResponseWriter, r *http.Request) {
-		st, err := c.FwRestart(r.Context())
-		reply(w, st, err)
-	})
-	mux.HandleFunc("POST /api/v1/buttons/{id}/press", func(w http.ResponseWriter, r *http.Request) {
-		var req PressRequest
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-		if err != nil {
-			reply(w, nil, apperr.Failed("invalid_argument", "cannot read the request body: "+err.Error(), nil))
-			return
-		}
-		dec := json.NewDecoder(bytes.NewReader(body))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
-			reply(w, nil, apperr.Failed("invalid_argument", "bad request body, want {\"hold_ms\": N}: "+err.Error(), nil))
-			return
-		}
-		if err := req.Validate(); err != nil {
-			reply(w, nil, err)
-			return
-		}
-		res, err := c.Press(r.Context(), r.PathValue("id"), req)
-		reply(w, res, err)
-	})
-	mux.HandleFunc("POST /api/v1/buttons/{id}/down", func(w http.ResponseWriter, r *http.Request) {
-		res, err := c.SetButton(r.Context(), r.PathValue("id"), true)
-		reply(w, res, err)
-	})
-	mux.HandleFunc("POST /api/v1/buttons/{id}/up", func(w http.ResponseWriter, r *http.Request) {
-		res, err := c.SetButton(r.Context(), r.PathValue("id"), false)
-		reply(w, res, err)
-	})
-	mux.HandleFunc("POST /api/v1/set", func(w http.ResponseWriter, r *http.Request) {
-		var req SetRequest
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-		if err != nil {
-			reply(w, nil, apperr.Failed("invalid_argument", "cannot read the request body: "+err.Error(), nil))
-			return
-		}
-		dec := json.NewDecoder(bytes.NewReader(body))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
-			reply(w, nil, apperr.Failed("invalid_argument", "bad request body, want {\"values\": {\"key\": value}}: "+err.Error(), nil))
-			return
-		}
-		if req.Values == nil {
-			reply(w, nil, apperr.Failed("invalid_argument", "bad request body: values is missing or null", nil))
-			return
-		}
-		res, err := c.Set(r.Context(), req)
-		reply(w, res, err)
-	})
-	mux.HandleFunc("GET /api/v1/fans", func(w http.ResponseWriter, r *http.Request) {
-		res, err := c.Fans(r.Context())
-		reply(w, res, err)
-	})
-	mux.HandleFunc("GET /api/v1/watch", func(w http.ResponseWriter, r *http.Request) {
-		var req WatchRequest
-		if k := r.URL.Query().Get("kind"); k != "" {
-			req.Kinds = strings.Split(k, ",")
-		}
-		if err := req.Validate(); err != nil {
-			reply(w, nil, err)
-			return
-		}
-		streamNDJSON(w, func(send func(any) error) error { return c.Watch(r.Context(), req, send) })
-	})
-	mux.HandleFunc("GET /api/v1/logs", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		req := LogsRequest{Source: LogSourceFirmware, Tail: DefaultLogTail}
-		if v := q.Get("source"); v != "" {
-			req.Source = v
-		}
-		if v := q.Get("tail"); v != "" {
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				reply(w, nil, apperr.Failed("invalid_argument", fmt.Sprintf("tail needs an integer, got %q", v), map[string]any{"tail": v}))
-				return
-			}
-			req.Tail = n
-		}
-		flags := map[string]bool{}
-		for _, name := range []string{"raw", "follow"} {
-			switch v := q.Get(name); v {
-			case "", "0":
-			case "1":
-				flags[name] = true
-			default:
-				reply(w, nil, apperr.Failed("invalid_argument", fmt.Sprintf("%s must be 0 or 1, got %q", name, v), map[string]any{name: v}))
-				return
-			}
-		}
-		req.Raw = flags["raw"]
-		if err := req.Validate(); err != nil {
-			reply(w, nil, err)
-			return
-		}
-		if flags["follow"] {
-			streamNDJSON(w, func(send func(any) error) error { return c.FollowLogs(r.Context(), req, send) })
-			return
-		}
-		res, err := c.Logs(r.Context(), req)
-		reply(w, res, err)
-	})
+	}
 	return mux
 }
 

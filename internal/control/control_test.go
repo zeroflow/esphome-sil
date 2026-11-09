@@ -471,3 +471,170 @@ func TestClientLogsAndFollow(t *testing.T) {
 		t.Fatal("an invalid source reached the control")
 	}
 }
+
+// tableFake implements every Control method and counts the calls, so a handler built from the
+// operation table can be exercised for every row.
+type tableFake struct{ calls int }
+
+func (f *tableFake) Status(context.Context) (Status, error)   { f.calls++; return Status{}, nil }
+func (f *tableFake) Down(context.Context) (DownResult, error) { f.calls++; return DownResult{}, nil }
+func (f *tableFake) SimRestart(context.Context, SimRestartRequest) (Status, error) {
+	f.calls++
+	return Status{}, nil
+}
+func (f *tableFake) FwRestart(context.Context) (Status, error) { f.calls++; return Status{}, nil }
+func (f *tableFake) Press(context.Context, string, PressRequest) (PressResult, error) {
+	f.calls++
+	return PressResult{}, nil
+}
+func (f *tableFake) SetButton(context.Context, string, bool) (PressResult, error) {
+	f.calls++
+	return PressResult{}, nil
+}
+func (f *tableFake) Set(context.Context, SetRequest) (SetResult, error) {
+	f.calls++
+	return SetResult{}, nil
+}
+func (f *tableFake) Fans(context.Context) (FansResult, error) { f.calls++; return FansResult{}, nil }
+func (f *tableFake) Watch(_ context.Context, _ WatchRequest, send func(any) error) error {
+	f.calls++
+	return send(map[string]string{"k": "snapshot"})
+}
+func (f *tableFake) Logs(context.Context, LogsRequest) (LogsResult, error) {
+	f.calls++
+	return LogsResult{Lines: []LogLine{}}, nil
+}
+func (f *tableFake) FollowLogs(_ context.Context, _ LogsRequest, send func(any) error) error {
+	f.calls++
+	return send(LogLine{})
+}
+
+// tableRequest builds a valid request for the row.
+func tableRequest(op Operation) *http.Request {
+	body := ""
+	switch op.Name {
+	case "press":
+		body = `{"hold_ms":200}`
+	case "set":
+		body = `{"values":{"temperature":22}}`
+	}
+	path := strings.ReplaceAll(op.Path, "{id}", "usr1")
+	return httptest.NewRequest(op.Method, path, strings.NewReader(body))
+}
+
+func TestOperationsTable(t *testing.T) {
+	names := map[string]bool{}
+	patterns := map[string]bool{}
+	for _, op := range Operations {
+		pat := op.Method + " " + op.Path
+		if names[op.Name] || patterns[pat] {
+			t.Errorf("row %s (%s) is a duplicate", op.Name, pat)
+		}
+		names[op.Name], patterns[pat] = true, true
+		if op.CLI == "" {
+			t.Errorf("row %s has no CLI command", op.Name)
+		}
+		switch op.Transport {
+		case "json", "ndjson", "ws":
+		default:
+			t.Errorf("row %s has transport %q", op.Name, op.Transport)
+		}
+		if (op.handler == nil) != (op.Name == "watch.ws") {
+			t.Errorf("row %s: handler nil = %v, want nil exactly for watch.ws", op.Name, op.handler == nil)
+		}
+	}
+	for _, want := range []string{"status", "down", "sim.restart", "fw.restart", "press", "button.down", "button.up", "set", "fans", "watch", "logs", "watch.ws"} {
+		if _, ok := OperationByName(want); !ok {
+			t.Errorf("row %s is missing", want)
+		}
+	}
+	if _, ok := OperationByName("nope"); ok {
+		t.Error("OperationByName found a row that does not exist")
+	}
+
+	t.Run("socket handler serves every json and ndjson row", func(t *testing.T) {
+		for _, op := range Operations {
+			if op.Transport == "ws" {
+				continue
+			}
+			f := &tableFake{}
+			rec := httptest.NewRecorder()
+			NewHandler(f).ServeHTTP(rec, tableRequest(op))
+			if rec.Code != 200 || f.calls != 1 {
+				t.Errorf("%s: status %d, %d calls; body %s", op.Name, rec.Code, f.calls, rec.Body)
+			}
+		}
+	})
+
+	t.Run("no route outside the table", func(t *testing.T) {
+		for _, tc := range []struct{ method, path string }{
+			{"GET", "/ws"}, {"GET", "/api/v1/nope"}, {"GET", "/api/v1/down"}, {"POST", "/api/v1/status"},
+		} {
+			for name, h := range map[string]http.Handler{"socket": NewHandler(&tableFake{}), "lan": NewLANHandler(&tableFake{})} {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+				if rec.Code != 404 && rec.Code != 405 {
+					t.Errorf("%s handler: %s %s answered %d, want 404 or 405", name, tc.method, tc.path, rec.Code)
+				}
+			}
+		}
+	})
+
+	t.Run("lan handler serves LAN rows and refuses the others", func(t *testing.T) {
+		for _, op := range Operations {
+			if op.Transport == "ws" {
+				continue
+			}
+			f := &tableFake{}
+			rec := httptest.NewRecorder()
+			NewLANHandler(f).ServeHTTP(rec, tableRequest(op))
+			if op.LAN {
+				if rec.Code != 200 || f.calls != 1 {
+					t.Errorf("%s: LAN row answered %d with %d calls; body %s", op.Name, rec.Code, f.calls, rec.Body)
+				}
+				continue
+			}
+			var eb struct{ Error *apperr.Error }
+			if rec.Code != 403 || json.Unmarshal(rec.Body.Bytes(), &eb) != nil || eb.Error == nil || eb.Error.Code != "operation_not_allowed" {
+				t.Errorf("%s: socket-only row answered %d %s, want 403 operation_not_allowed", op.Name, rec.Code, rec.Body)
+				continue
+			}
+			if f.calls != 0 {
+				t.Errorf("%s: a refused row reached the Control (%d calls)", op.Name, f.calls)
+			}
+			if !strings.Contains(eb.Error.Message, "`sil "+op.CLI+"`") || eb.Error.Detail["operation"] != op.Name || eb.Error.Detail["cli"] != op.CLI {
+				t.Errorf("%s: refusal does not name its command: %+v", op.Name, eb.Error)
+			}
+		}
+		// The exact LAN set the plan fixes: nothing is exposed by accident.
+		var lan []string
+		for _, op := range Operations {
+			if op.LAN {
+				lan = append(lan, op.Name)
+			}
+		}
+		if got := strings.Join(lan, ","); got != "status,press,button.down,button.up,set,fans,watch,watch.ws" {
+			t.Errorf("LAN rows = %s", got)
+		}
+	})
+
+	t.Run("MatchOperation", func(t *testing.T) {
+		for _, tc := range []struct {
+			method, path, want string
+		}{
+			{"POST", "/api/v1/buttons/usr2/down", "button.down"},
+			{"POST", "/api/v1/buttons/usr1/press", "press"},
+			{"GET", "/ws", "watch.ws"},
+			{"GET", "/api/v1/status", "status"},
+			{"GET", "/api/v1/logs", "logs"},
+			{"GET", "/nope", ""},
+			{"POST", "/api/v1/status", ""},
+			{"GET", "/api/v1/buttons/usr1/press", ""},
+		} {
+			op, ok := MatchOperation(tc.method, tc.path)
+			if (tc.want == "") == ok || op.Name != tc.want {
+				t.Errorf("MatchOperation(%s, %s) = %q, %v; want %q", tc.method, tc.path, op.Name, ok, tc.want)
+			}
+		}
+	})
+}
