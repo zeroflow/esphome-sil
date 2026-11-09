@@ -1002,3 +1002,113 @@ func TestWebPlot(t *testing.T) {
 		t.Errorf("console errors: %v", errs)
 	}
 }
+
+// TestWebHold (UI-04, D-14, D-15) proves the USR caps on a real Rev 3.3 instance: holding USR1 on
+// the page for about 300 ms changes the firmware's duties exactly as `sil press usr1` does (TestPressTracer:
+// 0.4/0/0/0 to 0.5/0.1/0.1/0.1). The page sends one POST .../usr1/down whose body is
+// {"max_hold_ms": 10000} and one POST .../usr1/up; the cap lights from the instance's report
+// (`sil status` buttons.usr1 true) and goes dark after the release.
+func TestWebHold(t *testing.T) {
+	in := r33Up(t, "e2e-webhold")
+	in.setFan(t, 1, 40)
+	in.waitDuties(t, [4]float64{0.4, 0, 0, 0})
+	st := in.env.Status(t, in.name)
+	port := int(jget(st, "web", "port").(float64))
+
+	lctx, lcancel := clock.WithTimeout(context.Background(), sysClock, 60*time.Second)
+	defer lcancel()
+	b, err := cdptest.Launch(lctx, sysClock, cdptest.LaunchOptions{Offline: true, Width: 1280, Height: 720})
+	if errors.Is(err, cdptest.ErrNoChrome) {
+		t.Fatal("Chrome not found; install google-chrome or set SIL_CHROME")
+	}
+	if err != nil {
+		t.Fatalf("launch Chrome: %v", err)
+	}
+	defer b.Close()
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 60*time.Second)
+	defer cancel()
+	page, err := b.NewPage(ctx)
+	if err != nil {
+		t.Fatalf("new page: %v", err)
+	}
+	defer page.Close()
+	base := webBase(port) + "/"
+	if err := page.Navigate(ctx, base); err != nil {
+		t.Fatalf("navigate to %s: %v", base, err)
+	}
+	wait := func(what, pred string, budget time.Duration) {
+		t.Helper()
+		wctx, wcancel := clock.WithTimeout(context.Background(), sysClock, budget)
+		defer wcancel()
+		if err := page.WaitFor(wctx, pred); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	const cap = `document.querySelector('button.usr[data-id="usr1"]')`
+	wait("LINK LIVE", `document.getElementById('link').textContent === 'LIVE'`, 15*time.Second)
+	wait("the cap enabled and dark", `!`+cap+`.disabled && `+cap+`.getAttribute('aria-pressed') === 'false'`, 10*time.Second)
+
+	// The recorder keeps the bodies of the page's POST requests (the request log has none).
+	const record = `(() => { window.__posts = []; const f = window.fetch.bind(window);
+	  window.fetch = (u, init) => { if (init && init.method === 'POST') { __posts.push({url: String(u), body: init.body === undefined ? null : init.body}); } return f(u, init); };
+	  return true; })()`
+	if err := page.Eval(ctx, record, nil); err != nil {
+		t.Fatalf("installing the recorder: %v", err)
+	}
+
+	x, y, err := page.Center(ctx, `button.usr[data-id="usr1"]`)
+	if err != nil {
+		t.Fatalf("centre of USR1: %v", err)
+	}
+	if err := page.Mouse(ctx, "mousePressed", x, y); err != nil {
+		t.Fatalf("mouse press: %v", err)
+	}
+	in.env.WaitStatus(t, in.name, 5*time.Second, func(st map[string]any) bool {
+		level, _ := r33Buttons(st, "usr1")
+		return level
+	})
+	wait("the cap lit from the instance's report", cap+`.getAttribute('aria-pressed') === 'true'`, 5*time.Second)
+	if err := sysClock.Sleep(ctx, 300*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Mouse(ctx, "mouseReleased", x, y); err != nil {
+		t.Fatalf("mouse release: %v", err)
+	}
+
+	st = in.waitDuties(t, [4]float64{0.5, 0.1, 0.1, 0.1})
+	if level, ok := r33Buttons(st, "usr1"); !ok || level {
+		t.Errorf("buttons.usr1 = %v (present %v) after the release, want false", level, ok)
+	}
+	wait("the cap dark again", cap+`.getAttribute('aria-pressed') === 'false'`, 5*time.Second)
+
+	var posts []struct {
+		URL  string  `json:"url"`
+		Body *string `json:"body"`
+	}
+	if err := page.Eval(ctx, `__posts`, &posts); err != nil {
+		t.Fatalf("reading the recorder: %v", err)
+	}
+	if len(posts) != 2 {
+		t.Fatalf("the page made %d POST requests, want exactly a down and an up: %+v", len(posts), posts)
+	}
+	if posts[0].URL != "/api/v1/buttons/usr1/down" || posts[0].Body == nil {
+		t.Fatalf("first POST = %+v, want /api/v1/buttons/usr1/down with a body", posts[0])
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(*posts[0].Body), &body); err != nil || body["max_hold_ms"] != float64(10000) || len(body) != 1 {
+		t.Errorf("down body = %s (%v), want only max_hold_ms 10000", *posts[0].Body, err)
+	}
+	if posts[1].URL != "/api/v1/buttons/usr1/up" || posts[1].Body != nil {
+		t.Errorf("second POST = %+v, want /api/v1/buttons/usr1/up without a body", posts[1])
+	}
+	for _, r := range page.Requests() {
+		if r.Kind == "http" && r.Method == http.MethodPost {
+			if u, err := url.Parse(r.URL); err != nil || !strings.HasPrefix(u.Path, "/api/v1/buttons/usr1/") {
+				t.Errorf("unexpected POST %s", r.URL)
+			}
+		}
+	}
+	if errs := page.ConsoleErrors(); len(errs) != 0 {
+		t.Errorf("console errors: %v", errs)
+	}
+}

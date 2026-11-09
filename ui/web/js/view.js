@@ -3,6 +3,7 @@
 // dotted path into the status JSON) and data-fmt (the formatter); until the first snapshot, and
 // for a path the state does not hold, the element shows `--`, never a fake zero.
 
+import { renderButtons } from "./buttons.js";
 import { initFanSelects, renderInputs } from "./inputs.js";
 import { initScopes, setLink as setScopeLink } from "./plot.js";
 
@@ -221,12 +222,14 @@ function paint(state, linkState) {
     buildLeds(leds);
   }
   for (const el of document.querySelectorAll("[data-src]")) {
-    // Form controls show their value through inputs.js (options, dirty and focus rules).
-    if (el.tagName !== "INPUT" && el.tagName !== "SELECT") {
+    // Form controls show their value through inputs.js (options, dirty and focus rules), the USR caps
+    // through buttons.js (aria-pressed); the cap's text is its fixed name.
+    if (el.tagName !== "INPUT" && el.tagName !== "SELECT" && el.dataset.fmt !== "pressed") {
       el.textContent = shown(state, el);
     }
   }
   renderInputs(state, linkState, (el) => shown(state, el));
+  renderButtons(state, linkState);
   const instance = state !== null && typeof state.instance === "string" ? state.instance : "";
   paintLeds(state);
   document.title = instance === "" ? "sil" : "sil — " + instance;

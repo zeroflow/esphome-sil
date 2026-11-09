@@ -506,6 +506,32 @@ input.error {
   color: var(--text-dim);
 }
 
+/* The USR caps: press-and-hold softkeys, 48 px high, at least 72 px wide. A cap is lit only while
+   the server reports the button held (aria-pressed, set by buttons.js), never by the pointer. */
+#usr-group {
+  flex: none;
+}
+
+.caps {
+  display: flex;
+  gap: 8px;
+}
+
+button.usr {
+  height: 48px;
+  min-width: 72px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+button.usr[aria-pressed="true"] {
+  background: #d9dde2;
+  color: #15171a;
+  border: 1px solid #8d949c;
+}
+
 /* Below 1024 px: one column, the page scrolls, the header wraps to two rows (run info, then the
    message line and LINK) and the strip groups stack. */
 @media (max-width: 1023px) {

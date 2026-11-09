@@ -43,6 +43,8 @@ type bench struct {
 
 	inject map[chan events.Event]struct{} // the running Watch calls, for Inject
 
+	btnHold chan struct{} // non-nil while SetButton calls wait before they apply
+
 	histHold chan struct{}                                      // non-nil while History answers are held
 	histFn   func(control.HistoryRequest) control.HistoryResult // replaces the broker's history when set
 }
@@ -459,4 +461,78 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// SetButton implements control.Control the way the page needs it: the call is recorded as
+// button.down (args: id and the max hold in ms, 0 when none) or button.up (args: id), FailNext of
+// those names answers with the armed error, and otherwise the engine's strict rules apply (down on a
+// held button is button_busy, up on a released one button_not_held) before the button event is
+// published and the status changed.
+func (b *bench) SetButton(ctx context.Context, id string, down bool, r control.DownRequest) (control.PressResult, error) {
+	op := "button.up"
+	var maxHold int64
+	args := []any{id}
+	if down {
+		op = "button.down"
+		if r.MaxHoldMS != nil {
+			maxHold = *r.MaxHoldMS
+		}
+		args = append(args, maxHold)
+	}
+	if err := b.enter(op, args...); err != nil {
+		return control.PressResult{}, err
+	}
+	b.mu.Lock()
+	hold := b.btnHold
+	b.mu.Unlock()
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return control.PressResult{}, ctx.Err()
+		}
+	}
+	b.mu.Lock()
+	held, known := b.st.Buttons[id]
+	b.mu.Unlock()
+	switch {
+	case !known:
+		return control.PressResult{}, apperr.Failed("input_not_available", fmt.Sprintf("this bench has no button %s", id), map[string]any{"button": id})
+	case down && held:
+		return control.PressResult{}, apperr.Failed("button_busy", fmt.Sprintf("%s is already held", id), map[string]any{"button": id})
+	case !down && !held:
+		return control.PressResult{}, apperr.Failed("button_not_held", fmt.Sprintf("%s is not held", id), map[string]any{"button": id})
+	}
+	b.Emit(events.Event{K: "button", ID: id, V: down}, func(st *control.Status) { st.Buttons[id] = down })
+	action := "up"
+	if down {
+		action = "down"
+	}
+	return control.PressResult{Button: id, Action: action, Level: down, MaxHoldMS: maxHold}, nil
+}
+
+// AutoRelease is the engine's max-hold release of button id: a button event v false with reason
+// max_hold, and the status changed.
+func (b *bench) AutoRelease(id string) {
+	b.Emit(events.Event{K: "button", ID: id, V: false, Reason: "max_hold"}, func(st *control.Status) { st.Buttons[id] = false })
+}
+
+// HoldButtonEvents makes SetButton calls wait (after they are recorded) until ReleaseButtonEvents, so
+// a test can see what the page shows between its request and the server's report.
+func (b *bench) HoldButtonEvents() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.btnHold == nil {
+		b.btnHold = make(chan struct{})
+	}
+}
+
+// ReleaseButtonEvents lets the waiting SetButton calls (and later ones) go.
+func (b *bench) ReleaseButtonEvents() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.btnHold != nil {
+		close(b.btnHold)
+		b.btnHold = nil
+	}
 }

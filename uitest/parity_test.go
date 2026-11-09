@@ -28,7 +28,7 @@ import (
 // through its WebSocket, lists the fan library and sets values; plans that make the page do more
 // (press) append the rows they use and extend the session of TestParityRequests. The history is
 // requested on every (re)connect, so the session sees it without a step of its own.
-var pageOps = []string{"watch.ws", "fans", "set", "history"}
+var pageOps = []string{"watch.ws", "fans", "set", "history", "button.down", "button.up"}
 
 // TestParityRequests (UI-06 check a): every request the page makes, HTTP and WebSocket alike, is
 // same-origin and is either a file of the embedded page or a row of control.Operations that the
@@ -46,6 +46,14 @@ func TestParityRequests(t *testing.T) {
 	}
 	chooseFan(t, p, 1, noctua)
 	b.waitCalls(t, "Set", 1, 5*time.Second)
+	// A hold on USR2: one down and one up.
+	ux, uy := capCentre(t, p, "usr2")
+	mouse(t, p, "mousePressed", ux, uy)
+	b.waitCalls(t, "button.down", 1, 5*time.Second)
+	waitPressed(t, p, "usr2", "true", 5*time.Second)
+	mouse(t, p, "mouseReleased", ux, uy)
+	b.waitCalls(t, "button.up", 1, 5*time.Second)
+	waitPressed(t, p, "usr2", "false", 5*time.Second)
 	b.Emit(events.Event{K: "env", ID: "temperature", V: 24.5}, func(st *control.Status) { st.Env.Temperature = 24.5 })
 	b.DropStreams()
 	b.waitCalls(t, "Watch", 2, 10*time.Second)
@@ -145,6 +153,9 @@ func fmtOracle(kind string, v any) string {
 	case "select":
 		s, _ := v.(string)
 		return s
+	case "pressed":
+		b, _ := v.(bool)
+		return strconv.FormatBool(b)
 	}
 	return "<no oracle for data-fmt " + kind + ">"
 }
@@ -302,7 +313,8 @@ func sweepData(t *testing.T, p *cdptest.Page, base, when string) int {
 	status := getStatus(t, base)
 	var els []struct{ Src, Fmt, Text string }
 	const js = `[...document.querySelectorAll('[data-src]')].map((e) => ({Src: e.dataset.src, Fmt: e.dataset.fmt,
-	  Text: (e.tagName === 'INPUT' || e.tagName === 'SELECT' || e.tagName === 'TEXTAREA') ? e.value : e.textContent}))`
+	  Text: e.dataset.fmt === 'pressed' ? (e.getAttribute('aria-pressed') || '') :
+	    (e.tagName === 'INPUT' || e.tagName === 'SELECT' || e.tagName === 'TEXTAREA') ? e.value : e.textContent}))`
 	if err := p.Eval(within(t, 10*time.Second), js, &els); err != nil {
 		t.Fatalf("%s: reading the data-src elements: %v", when, err)
 	}

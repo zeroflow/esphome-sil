@@ -5,6 +5,8 @@ export const OPS = {
   fans: ["GET", "/api/v1/fans"],
   set: ["POST", "/api/v1/set"],
   history: ["GET", "/api/v1/history"],
+  "button.down": ["POST", "/api/v1/buttons/{id}/down"],
+  "button.up": ["POST", "/api/v1/buttons/{id}/up"],
 };
 
 // ApiError is a response that was not a success. Its message is only what the server said: the
@@ -19,16 +21,23 @@ export class ApiError extends Error {
   }
 }
 
-// call performs the operation `name` of OPS, with an optional JSON body and an optional query
-// object ({window_s: 62} becomes ?window_s=62), and returns the parsed JSON answer. A response
+// call performs the operation `name` of OPS, with an optional JSON body, an optional query object
+// ({window_s: 62} becomes ?window_s=62) and the values of the path's {name} parameters ({id: "usr1"}
+// fills {id}, percent-encoded), and returns the parsed JSON answer. A response
 // that is not ok throws ApiError; a request that got no response at all rejects with the browser's
 // own error, which callers do not show (LINK reports the connection).
-export async function call(name, { body, query } = {}) {
+export async function call(name, { body, query, params } = {}) {
   const op = OPS[name];
   if (!op) {
     throw new TypeError("not an operation of the page: " + name);
   }
-  const [method, base] = op;
+  const [method, template] = op;
+  const base = template.replace(/\{(\w+)\}/g, (_, key) => {
+    if (params === undefined || params[key] === undefined) {
+      throw new TypeError("missing path parameter " + key + " for " + name);
+    }
+    return encodeURIComponent(params[key]);
+  });
   const path = query === undefined ? base : base + "?" + new URLSearchParams(query).toString();
   const init = { method, headers: {} };
   if (body !== undefined) {

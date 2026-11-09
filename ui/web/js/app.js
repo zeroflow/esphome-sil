@@ -1,6 +1,7 @@
 // Wiring of the page: the WebSocket link to the instance and its reconnect loop. Frames are
 // `sil watch` lines; store.js folds them into the status mirror.
 import { ApiError, call } from "./api.js";
+import { initButtons, onHeld, onReleased } from "./buttons.js";
 import { initEnv, onFans } from "./inputs.js";
 import { showError } from "./message.js";
 import { loadHistory, pushSample, resetScopes, setFanMax } from "./plot.js";
@@ -174,6 +175,13 @@ function onFrame(ws, data) {
   if (frame && frame.k === "fan") {
     syncFanMax();
   }
+  if (frame && frame.k === "button") {
+    if (frame.v === true) {
+      onHeld(frame.id);
+    } else if (frame.v === false) {
+      onReleased(frame.id);
+    }
+  }
   refresh();
   if (frame && frame.k === "snapshot") {
     startJoin(ws);
@@ -195,5 +203,6 @@ function connect() {
 }
 
 initEnv();
+initButtons();
 refresh();
 connect();
