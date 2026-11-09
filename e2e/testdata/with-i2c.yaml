@@ -1,0 +1,104 @@
+# E2E fixture: examples/fan-skeleton.yaml plus host-incompatible blocks (see build_test.go).
+# Identity is injected by sil; the defaults only keep `esphome config` usable by hand.
+substitutions:
+  sil_name: dev
+  sil_mac: "02:00:00:00:00:01"
+  sil_port: "6054"
+
+esphome:
+  name: sil-${sil_name}
+  friendly_name: SiL ${sil_name}
+  build_flags:
+    - -static
+
+host:
+  mac_address: ${sil_mac}
+
+logger:
+  level: INFO
+
+api:
+  port: ${sil_port}
+  reboot_timeout: 0s
+  encryption:
+    key: !env_var SIL_API_KEY
+
+external_components:
+  - source:
+      type: local
+      path: ../../components
+    components: [sim_bus]
+
+sim_bus:
+  id: bus
+
+output:
+  - platform: sim_bus
+    id: pwm_fan1
+    channel: port1.duty
+  - platform: sim_bus
+    id: pwm_fan2
+    channel: port2.duty
+  - platform: sim_bus
+    id: pwm_fan3
+    channel: port3.duty
+  - platform: sim_bus
+    id: pwm_fan4
+    channel: port4.duty
+
+fan:
+  - platform: speed
+    output: pwm_fan1
+    name: "Fan 1"
+    id: fan1
+    speed_count: 100
+    restore_mode: ALWAYS_OFF
+  - platform: speed
+    output: pwm_fan2
+    name: "Fan 2"
+    id: fan2
+    speed_count: 100
+    restore_mode: ALWAYS_OFF
+  - platform: speed
+    output: pwm_fan3
+    name: "Fan 3"
+    id: fan3
+    speed_count: 100
+    restore_mode: ALWAYS_OFF
+  - platform: speed
+    output: pwm_fan4
+    name: "Fan 4"
+    id: fan4
+    speed_count: 100
+    restore_mode: ALWAYS_OFF
+
+sensor:
+  - platform: sim_bus
+    channel: port1.rpm
+    name: "Fan 1 Speed"
+    id: fan1_speed
+    unit_of_measurement: RPM
+    accuracy_decimals: 0
+  - platform: sim_bus
+    channel: port2.rpm
+    name: "Fan 2 Speed"
+    id: fan2_speed
+    unit_of_measurement: RPM
+    accuracy_decimals: 0
+  - platform: sim_bus
+    channel: port3.rpm
+    name: "Fan 3 Speed"
+    id: fan3_speed
+    unit_of_measurement: RPM
+    accuracy_decimals: 0
+  - platform: sim_bus
+    channel: port4.rpm
+    name: "Fan 4 Speed"
+    id: fan4_speed
+    unit_of_measurement: RPM
+    accuracy_decimals: 0
+
+# Rejected by `esphome config` itself on the host platform.
+i2c:
+  sda: 1
+  scl: 2
