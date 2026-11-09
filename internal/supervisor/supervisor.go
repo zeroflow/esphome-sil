@@ -276,7 +276,10 @@ func (s *supervisor) run(sigCtx context.Context) error {
 	go func() { srvDone <- control.ServeListener(srvCtx, ln, control.NewHandler(s)) }()
 	webDone := make(chan error, 1)
 	go func() {
-		webDone <- control.ServeListener(srvCtx, webLn, web.NewHandler(s, web.Options{Static: ui.FS(), Clock: s.clk, Log: s.log}))
+		// The LAN-facing listener is bounded (connection cap, header deadline, one request per
+		// connection); api.sock above is not.
+		webDone <- web.Serve(srvCtx, web.Limit(webLn, s.clk, web.ListenerOptions{}),
+			web.NewHandler(s, web.Options{Static: ui.FS(), Clock: s.clk, Log: s.log}))
 	}()
 
 	s.log.Info("instance serving", "pid", os.Getpid(), "api_sock", s.paths.APISock(), "web_port", s.id.WebPort)

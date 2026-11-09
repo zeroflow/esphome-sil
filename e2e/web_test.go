@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -238,6 +239,38 @@ func TestWebTracer(t *testing.T) {
 		}
 		webReadUntil(t, c, 5*time.Second, "an env frame for temperature 23.5", func(f map[string]any) bool {
 			return f["k"] == "env" && f["id"] == "temperature" && f["v"] == 23.5
+		})
+	})
+
+	// T-03-14: the web listener gives a connection 10 s to deliver its headers. A stalled client is
+	// closed; a /ws stream that sent its headers in time is not.
+	t.Run("ws_outlives_header_budget", func(t *testing.T) {
+		stalled, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stalled.Close()
+		if _, err := io.WriteString(stalled, "GET /api/v1/status HT"); err != nil {
+			t.Fatal(err)
+		}
+		c := webDial(t, port, "")
+		if f, err := webRead(t, c, 5*time.Second); err != nil || f["k"] != "snapshot" {
+			t.Fatalf("first frame = %v (%v), want the snapshot", f, err)
+		}
+		sctx, scancel := clock.WithTimeout(context.Background(), sysClock, 20*time.Second)
+		defer scancel()
+		if err := sysClock.Sleep(sctx, 11*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		_ = stalled.SetReadDeadline(sysClock.Deadline(5 * time.Second))
+		if _, err := io.Copy(io.Discard, stalled); err != nil {
+			t.Fatalf("the stalled connection is still open 11 s after it connected: %v", err)
+		}
+		if out, code := in.set(t, "humidity=51.5"); code != 0 {
+			t.Fatalf("sil set humidity=51.5: exit %d: %v", code, out)
+		}
+		webReadUntil(t, c, 5*time.Second, "an env frame for humidity 51.5 on a stream older than the header budget", func(f map[string]any) bool {
+			return f["k"] == "env" && f["id"] == "humidity" && f["v"] == 51.5
 		})
 	})
 
