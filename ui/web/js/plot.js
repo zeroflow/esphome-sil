@@ -245,7 +245,9 @@ export function initScopes(panels) {
       have.dirty = true;
     }
   }
-  schedule(false);
+  if ([...scopes.values()].some((sc) => sc.dirty)) {
+    schedule(false);
+  }
 }
 
 // setLink tells the scopes the link state (connecting, live or retrying): the empty-state body of
