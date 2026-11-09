@@ -296,9 +296,12 @@ func (s *supervisor) run(sigCtx context.Context) error {
 	webDone := make(chan error, 1)
 	go func() {
 		// The LAN-facing listener is bounded (connection cap, header deadline, one request per
-		// connection); api.sock above is not.
+		// connection) and guarded (Host allowlist, CSRF and websocket origin checks, security
+		// headers); api.sock above is neither: it is the 0600 socket of the owner.
 		webDone <- web.Serve(srvCtx, web.Limit(webLn, s.clk, web.ListenerOptions{}),
-			web.LimitBody(web.NewHandler(s, web.Options{Static: s.staticFS(), Clock: s.clk, Log: s.log}), s.clk, 0))
+			web.LimitBody(web.Guard(
+				web.NewHandler(s, web.Options{Static: s.staticFS(), Clock: s.clk, Log: s.log}),
+				web.GuardOptions{AllowHosts: s.spec.AllowHosts}), s.clk, 0))
 	}()
 
 	s.log.Info("instance serving", "pid", os.Getpid(), "api_sock", s.paths.APISock(), "web_port", s.id.WebPort)

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,11 +48,12 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// newSite serves the real web handler (the embedded page, /ws and the API) over c on 127.0.0.1 and
-// returns its base URL.
+// newSite serves the real web handler (the embedded page, /ws and the API) over c on 127.0.0.1,
+// behind the production guard (Host rules, CSRF and origin checks, and the Content-Security-Policy
+// every browser test therefore runs under), and returns its base URL.
 func newSite(t *testing.T, c control.Control) string {
 	t.Helper()
-	srv := httptest.NewServer(web.NewHandler(c, web.Options{Static: ui.FS(), Clock: sysClock}))
+	srv := httptest.NewServer(web.Guard(web.NewHandler(c, web.Options{Static: ui.FS(), Clock: sysClock}), web.GuardOptions{}))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
@@ -97,5 +99,46 @@ func waitText(t *testing.T, p *cdptest.Page, selector, want string, d time.Durat
 	pred := fmt.Sprintf("(document.querySelector(%q) || {}).textContent === %q", selector, want)
 	if err := p.WaitFor(within(t, d), pred); err != nil {
 		t.Fatalf("%s never showed %q (shows %q): %v", selector, want, textOf(t, p, selector), err)
+	}
+}
+
+// TestCSPIsEnforced: the guard's Content-Security-Policy is delivered to the browser and enforced,
+// so TestOfflineLoadAndLive's empty console means the page runs under it. An inline script is
+// blocked and shows up as a console error, which is how a violation by the page itself would.
+func TestCSPIsEnforced(t *testing.T) {
+	b := newBench(t)
+	base := newSite(t, b)
+	p := openPage(t, base)
+	waitText(t, p, "#link", "LIVE", 15*time.Second)
+
+	var policy string
+	if err := p.Eval(within(t, 10*time.Second), `fetch('/').then(r => r.headers.get('content-security-policy'))`, &policy); err != nil {
+		t.Fatalf("read the policy: %v", err)
+	}
+	host := strings.TrimPrefix(base, "http://")
+	for _, want := range []string{"default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self' ws://" + host, "frame-ancestors 'none'"} {
+		if !strings.Contains(policy, want) {
+			t.Errorf("Content-Security-Policy %q lacks %q", policy, want)
+		}
+	}
+	if errs := p.ConsoleErrors(); len(errs) != 0 {
+		t.Fatalf("console errors before the probe: %v", errs)
+	}
+
+	var ran bool
+	probe := `(() => { window.__inline = false; const s = document.createElement('script'); s.textContent = 'window.__inline = true'; document.head.appendChild(s); return window.__inline; })()`
+	if err := p.Eval(within(t, 10*time.Second), probe, &ran); err != nil || ran {
+		t.Fatalf("an inline script ran (%v, %v): the policy is not enforced", ran, err)
+	}
+	ctx := within(t, 5*time.Second)
+	for {
+		for _, e := range p.ConsoleErrors() {
+			if strings.Contains(e, "Content Security Policy") {
+				return
+			}
+		}
+		if err := sysClock.Sleep(ctx, 50*time.Millisecond); err != nil {
+			t.Fatalf("no CSP violation reached the console (errors %v): %v", p.ConsoleErrors(), err)
+		}
 	}
 }

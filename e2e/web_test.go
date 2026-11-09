@@ -606,4 +606,212 @@ func TestWebReach(t *testing.T) {
 		isoExpectError(t, env, 1, "invalid_argument", "up", "e2e-reach", "--listen", "localhost")
 		isoExpectError(t, env, 1, "invalid_argument", "up", "e2e-reach", "--allow-host", "bad_host!")
 	})
+
+	// The guard (D-08 cheap protections): one instance, started with --allow-host, serves the four
+	// subtests below in order; the last one stops it.
+	var guardPort int
+	var guardName = "e2e-reach"
+	parent := t
+	t.Run("guarded_up", func(t *testing.T) {
+		// The instance outlives this subtest, so its cleanup `sil down` belongs to the parent.
+		parent.Cleanup(func() { _, _, _ = env.run(parent, "down", guardName) })
+		up, exit, stderr := env.Sil(t, "up", guardName, "--listen", "127.0.0.1", "--allow-host", "Bench.Test")
+		if exit != 0 {
+			t.Fatalf("sil up --allow-host: exit %d: %v\n%s", exit, up, stderr)
+		}
+		guardPort = int(jget(up, "web", "port").(float64))
+		if guardPort != webPort {
+			t.Fatalf("web.port = %d, want the sticky %d", guardPort, webPort)
+		}
+	})
+
+	t.Run("host_guard", func(t *testing.T) {
+		for _, host := range []string{"evil.example", fmt.Sprintf("evil.example:%d", guardPort), fmt.Sprintf("127.0.0.1.evil.example:%d", guardPort), fmt.Sprintf("bench.test.:%d", guardPort)} {
+			code, hdr, raw := webReq(t, guardPort, http.MethodGet, "/api/v1/status", host, "")
+			if code != http.StatusForbidden || jget(webJSON(t, raw), "error", "code") != "host_rejected" {
+				t.Fatalf("GET /api/v1/status with Host %q = %d %s, want 403 host_rejected", host, code, raw)
+			}
+			if msg, _ := jget(webJSON(t, raw), "error", "message").(string); !strings.Contains(msg, "--allow-host") {
+				t.Fatalf("Host %q: message %q does not name --allow-host", host, msg)
+			}
+			if hdr.Get("X-Frame-Options") != "DENY" {
+				t.Fatalf("Host %q: the refusal lacks X-Frame-Options", host)
+			}
+		}
+		// The page and the stream are refused for a foreign Host too, not only the API.
+		for _, path := range []string{"/", "/js/app.js", "/ws"} {
+			if code, _, _ := webReq(t, guardPort, http.MethodGet, path, "evil.example", ""); code != http.StatusForbidden {
+				t.Fatalf("GET %s with Host evil.example = %d, want 403", path, code)
+			}
+		}
+		for _, host := range []string{
+			fmt.Sprintf("bench.test:%d", guardPort), fmt.Sprintf("Bench.Test:%d", guardPort),
+			fmt.Sprintf("127.0.0.1:%d", guardPort), fmt.Sprintf("localhost:%d", guardPort), fmt.Sprintf("[::1]:%d", guardPort),
+		} {
+			if code, _, raw := webReq(t, guardPort, http.MethodGet, "/api/v1/status", host, ""); code != 200 {
+				t.Fatalf("GET /api/v1/status with Host %q = %d %s, want 200", host, code, raw)
+			}
+		}
+		if code, _, _ := webReq(t, guardPort, http.MethodGet, "/", "bench.test", ""); code != 200 {
+			t.Fatalf("GET / with Host bench.test = %d, want 200", code)
+		}
+	})
+
+	t.Run("csrf", func(t *testing.T) {
+		temperature := func() float64 {
+			t.Helper()
+			v, _ := jget(env.Status(t, guardName), "env", "temperature").(float64)
+			return v
+		}
+		before := temperature()
+		target := before + 7
+		body := fmt.Sprintf(`{"values":{"temperature":"%g"}}`, target)
+		for name, hdr := range map[string][]string{
+			"foreign origin":  {"Origin", "http://evil.example"},
+			"cross-site":      {"Sec-Fetch-Site", "cross-site"},
+			"null origin":     {"Origin", "null"},
+			"sibling origin":  {"Origin", fmt.Sprintf("http://localhost:%d", guardPort)},
+			"press":           {"Origin", "http://evil.example"},
+			"foreign + fetch": {"Origin", "http://evil.example", "Sec-Fetch-Site", "cross-site"},
+		} {
+			path, payload := "/api/v1/set", body
+			if name == "press" {
+				path, payload = "/api/v1/buttons/usr1/press", `{}`
+			}
+			code, _, raw := webReq(t, guardPort, http.MethodPost, path, "", payload, hdr...)
+			if code != http.StatusForbidden || jget(webJSON(t, raw), "error", "code") != "origin_rejected" {
+				t.Fatalf("%s: POST %s = %d %s, want 403 origin_rejected", name, path, code, raw)
+			}
+		}
+		if got := temperature(); got != before {
+			t.Fatalf("temperature = %v after the refused requests, want unchanged %v", got, before)
+		}
+		// The page's own origin and a client that sends no browser headers are served.
+		for name, hdr := range map[string][]string{
+			"own origin":   {"Origin", fmt.Sprintf("http://127.0.0.1:%d", guardPort), "Sec-Fetch-Site", "same-origin"},
+			"no origin":    nil,
+			"curl-like ua": {"User-Agent", "curl/8"},
+		} {
+			code, _, raw := webReq(t, guardPort, http.MethodPost, "/api/v1/set", "", body, hdr...)
+			if code != 200 {
+				t.Fatalf("%s: POST /api/v1/set = %d %s, want 200", name, code, raw)
+			}
+			if got := temperature(); got != target {
+				t.Fatalf("%s: temperature = %v, want %v", name, got, target)
+			}
+			target++
+			body = fmt.Sprintf(`{"values":{"temperature":"%g"}}`, target)
+		}
+		// A foreign page cannot open the stream either.
+		ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 10*time.Second)
+		defer cancel()
+		c, res, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d/ws", guardPort),
+			&websocket.DialOptions{HTTPHeader: http.Header{"Origin": {"http://evil.example"}}})
+		if err == nil {
+			_ = c.CloseNow()
+			t.Fatal("a /ws upgrade with Origin http://evil.example succeeded, want it refused")
+		}
+		if res == nil || res.StatusCode != http.StatusForbidden {
+			t.Fatalf("foreign-origin upgrade: response %v, want 403", res)
+		}
+		c2, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d/ws", guardPort),
+			&websocket.DialOptions{HTTPHeader: http.Header{"Origin": {fmt.Sprintf("http://127.0.0.1:%d", guardPort)}}})
+		if err != nil {
+			t.Fatalf("a /ws upgrade from the page's own origin: %v", err)
+		}
+		_ = c2.CloseNow()
+	})
+
+	t.Run("headers", func(t *testing.T) {
+		for _, path := range []string{"/", "/js/app.js", "/api/v1/status"} {
+			code, hdr, _ := webReq(t, guardPort, http.MethodGet, path, "", "")
+			if code != 200 {
+				t.Fatalf("GET %s = %d, want 200", path, code)
+			}
+			csp := hdr.Get("Content-Security-Policy")
+			for _, want := range []string{
+				"default-src 'none'", "script-src 'self'", "style-src 'self'", "img-src 'self' data:",
+				fmt.Sprintf("connect-src 'self' ws://127.0.0.1:%d", guardPort),
+				"base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
+			} {
+				if !strings.Contains(csp, want) {
+					t.Fatalf("GET %s: Content-Security-Policy %q lacks %q", path, csp, want)
+				}
+			}
+			for k, v := range map[string]string{"X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"} {
+				if got := hdr.Get(k); got != v {
+					t.Fatalf("GET %s: %s = %q, want %q", path, k, got, v)
+				}
+			}
+		}
+	})
+
+	// The control socket is the owner's: no Host rule, no CSRF rule, no headers, and the full key.
+	t.Run("socket_untouched", func(t *testing.T) {
+		sock := filepath.Join(env.Runtime, "sil", guardName, "api.sock")
+		fi, err := os.Stat(sock)
+		if err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("api.sock: %v %v, want mode 0600", fi, err)
+		}
+		st := env.Status(t, guardName)
+		if key, _ := jget(st, "api", "key").(string); key == "" || key == "<redacted>" {
+			t.Fatalf("socket status api.key = %q, want the full key", key)
+		}
+		watched := make(chan string, 1)
+		go func() {
+			so, _, _ := isoRun(env, "watch", "--count", "1", "-i", guardName)
+			watched <- so
+		}()
+		ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 30*time.Second)
+		defer cancel()
+	waiting:
+		for n := 0; ; n++ {
+			select {
+			case so := <-watched:
+				lines := strings.Split(strings.TrimSpace(so), "\n")
+				if len(lines) != 2 || webJSON(t, []byte(lines[0]))["k"] != "snapshot" {
+					t.Fatalf("sil watch --count 1 printed %q, want a snapshot line and one event line", so)
+				}
+				break waiting
+			default:
+			}
+			if out, code, stderr := env.Sil(t, "set", fmt.Sprintf("humidity=%d", 30+n%40), "-i", guardName); code != 0 {
+				t.Fatalf("sil set: exit %d: %v\n%s", code, out, stderr)
+			}
+			if err := sysClock.Sleep(ctx, 300*time.Millisecond); err != nil {
+				t.Fatalf("sil watch --count 1 never finished: %v", err)
+			}
+		}
+		reachDown(t, env, guardName)
+	})
+}
+
+// webReq sends one request to the web listener on 127.0.0.1:port with an explicit Host header
+// (host "" keeps the address) and extra headers as key/value pairs.
+func webReq(t *testing.T, port int, method, path, host, body string, hdr ...string) (int, http.Header, []byte) {
+	t.Helper()
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, webBase(port)+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if host != "" {
+		req.Host = host
+	}
+	for i := 0; i+1 < len(hdr); i += 2 {
+		req.Header.Set(hdr[i], hdr[i+1])
+	}
+	tr := &http.Transport{DisableKeepAlives: true}
+	defer tr.CloseIdleConnections()
+	res, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		t.Fatalf("%s %s (Host %q): %v", method, path, host, err)
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("%s %s: read body: %v", method, path, err)
+	}
+	return res.StatusCode, res.Header, raw
 }
