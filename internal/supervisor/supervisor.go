@@ -451,8 +451,13 @@ func (s *supervisor) probeLoop(ctx context.Context, gen int) {
 		}
 		var pe *apiclient.ProbeError
 		if errors.As(err, &pe) {
-			if pe.Kind == apiclient.KindPlaintextAPI || pe.Kind == apiclient.KindHandshakeRejected {
-				s.setAPI(gen, false, apperr.Infra(pe.Kind, pe.Msg, map[string]any{"port": s.id.APIPort}))
+			// Literal codes at the call sites, so the registry scan (apperr/codes_test.go) sees them.
+			switch pe.Kind {
+			case apiclient.KindPlaintextAPI:
+				s.setAPI(gen, false, apperr.Infra("plaintext_api", pe.Msg, map[string]any{"port": s.id.APIPort}))
+				return
+			case apiclient.KindHandshakeRejected:
+				s.setAPI(gen, false, apperr.Infra("handshake_rejected", pe.Msg, map[string]any{"port": s.id.APIPort}))
 				return
 			}
 			last = err
