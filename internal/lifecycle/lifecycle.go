@@ -111,14 +111,21 @@ func isRepoRoot(dir string) bool {
 	return false
 }
 
-// Up builds and starts instance o.Name and waits until the firmware is on
-// the bus.
+// Up builds and starts instance o.Name and waits until the firmware is ready
+// (a real encrypted API handshake plus the bus connection).
+//
+// Order: name, paths and socket lengths (pure checks), config and run-dir
+// parent, the per-instance lock (held until Up returns), liveness, identity
+// and port, test-bind, fresh run dir, build, test-bind again, serve.
 func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 	if err := instance.ValidateName(o.Name); err != nil {
 		return UpResult{}, err
 	}
 	p, err := instance.PathsFor(o.Name)
 	if err != nil {
+		return UpResult{}, err
+	}
+	if err := p.CheckSocketPaths(); err != nil {
 		return UpResult{}, err
 	}
 	progress := o.Progress
@@ -130,18 +137,32 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 	if err != nil {
 		return UpResult{}, err
 	}
-	if rf, err := instance.ReadRunFile(p); err == nil && instance.Alive(rf.PID) {
-		return UpResult{}, apperr.Failed("already_running", "instance "+o.Name+" is already running; run `sil down` first",
-			map[string]any{"instance": o.Name, "pid": rf.PID})
+	// A rejected fan file must not leave an identity behind, so it is
+	// checked before anything is written.
+	fan := fanlib.DefaultFan
+	if _, err := fanlib.Load(fan); err != nil {
+		return UpResult{}, apperr.Failed("fan_toml_invalid", err.Error(), map[string]any{"fan": fan})
 	}
+	if err := instance.EnsureRunParent(p); err != nil {
+		return UpResult{}, err
+	}
+	release, err := instance.LockInstance(p)
+	if err != nil {
+		return UpResult{}, err
+	}
+	defer release()
 
+	// Liveness comes before LoadOrCreate: --api-port must not rewrite the
+	// identity of an instance that is running.
+	if err := checkNotRunning(ctx, p); err != nil {
+		return UpResult{}, err
+	}
 	id, err := instance.LoadOrCreate(p, o.APIPort)
 	if err != nil {
 		return UpResult{}, err
 	}
-	fan := fanlib.DefaultFan
-	if _, err := fanlib.Load(fan); err != nil {
-		return UpResult{}, apperr.Failed("fan_toml_invalid", err.Error(), map[string]any{"fan": fan})
+	if err := instance.TestBind(id.APIPort); err != nil {
+		return UpResult{}, err
 	}
 	if err := instance.ResetRunDir(p); err != nil {
 		return UpResult{}, err
@@ -173,6 +194,10 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 		return UpResult{}, err
 	}
 
+	// The build takes long enough for another process to take the port.
+	if err := instance.TestBind(id.APIPort); err != nil {
+		return UpResult{}, err
+	}
 	srv, err := startServe(p)
 	if err != nil {
 		return UpResult{}, err
@@ -193,6 +218,28 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 		RunDir: p.RunDir,
 		Build:  res,
 	}, nil
+}
+
+// checkNotRunning is Failed already_running when run.json names a live
+// `sil serve <name>` (PID alive and its command line matches). A missing
+// run.json, or one naming a dead or foreign PID, means not running: the run
+// dir is simply recreated.
+func checkNotRunning(ctx context.Context, p instance.Paths) error {
+	rf, err := instance.ReadRunFile(p)
+	if err != nil || !instance.ProcessAlive(rf, p.Name) {
+		return nil
+	}
+	detail := map[string]any{"instance": p.Name, "pid": rf.PID, "run_dir": rf.RunDir}
+	clk := clock.NewReal()
+	sctx, cancel := clock.WithTimeout(ctx, clk, time.Second)
+	defer cancel()
+	if st, err := control.Dial(rf.APISock).Status(sctx); err == nil {
+		detail["phase"] = st.Phase
+	} else {
+		detail["control_responding"] = false
+	}
+	return apperr.Failed("already_running",
+		fmt.Sprintf("instance %s is already running (pid %d); run `sil down %s` first", p.Name, rf.PID, p.Name), detail)
 }
 
 // resolveConfig returns the absolute firmware YAML and the directory mounted

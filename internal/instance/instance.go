@@ -2,8 +2,10 @@
 // the validated name, the XDG state/run/cache directories, the persistent
 // identity (API key, API port), and the run.json / spec.json files.
 //
-// Plan 01-09 hardens port allocation, validation and locking behind this
-// same API.
+// Names are strict (never normalised), directories are disjoint per name and
+// derived from absolute XDG variables only, the identity is created once and
+// never regenerated silently, and the API port is sticky and collision-free
+// across instances (port.go) under flock-based locks (lock.go).
 package instance
 
 import (
@@ -23,21 +25,50 @@ import (
 	"github.com/zeroflow/esphome-sil/internal/apperr"
 )
 
-// DefaultAPIPort is the first-time API port (6053 is the HIL supervisor port
-// and stays free).
-const DefaultAPIPort = 6054
+// API port range. DefaultAPIPort is the first-time port (6053 is the HIL
+// supervisor port and stays free); automatic allocation scans
+// DefaultAPIPort..DefaultAPIPort+PortScanSpan-1.
+const (
+	DefaultAPIPort = 6054
+	PortScanSpan   = 1000
+	MinAPIPort     = 1024
+	MaxAPIPort     = 65535
+)
 
 var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,25}[a-z0-9])?$`)
 
+// MaxNameLen is the longest instance name: "sil-" plus the name must stay
+// within ESPHome's 31 characters.
+const MaxNameLen = 27
+
 // ValidateName checks an instance name before it is used in any path, argv
-// or substitution.
+// or substitution. The name is never lower-cased or trimmed on the user's
+// behalf; the message names the rule that was broken.
 func ValidateName(name string) error {
-	if !nameRE.MatchString(name) {
-		return apperr.Failed("invalid_name",
-			"instance names are 1-27 characters of a-z, 0-9 and '-', starting and ending with a letter or digit",
-			map[string]any{"name": name})
+	if nameRE.MatchString(name) {
+		return nil
 	}
-	return nil
+	var why string
+	switch {
+	case name == "":
+		why = "the name is empty"
+	case len(name) > MaxNameLen:
+		why = fmt.Sprintf("the name has %d characters, the maximum is %d", len(name), MaxNameLen)
+	default:
+		why = ""
+		for _, r := range name {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+				why = fmt.Sprintf("the name contains %q; only a-z, 0-9 and '-' are allowed (no upper case, no underscore)", r)
+				break
+			}
+		}
+		if why == "" {
+			why = "the name must start and end with a letter or digit"
+		}
+	}
+	return apperr.Failed("invalid_name",
+		"invalid instance name: "+why+" (rule: 1-27 characters of a-z, 0-9 and '-', starting and ending with a letter or digit)",
+		map[string]any{"name": name})
 }
 
 // Paths are the directories of one instance.
@@ -71,6 +102,27 @@ func PathsFor(name string) (Paths, error) {
 		RunDir:   run,
 		CacheDir: filepath.Join(cache, "sil", "build", name),
 	}, nil
+}
+
+// StateRoot is the XDG state base that holds every instance's identity dir
+// (<root>/sil/<name>); the port allocator scans it.
+func (p Paths) StateRoot() string { return filepath.Dir(filepath.Dir(p.StateDir)) }
+
+// maxSocketPath is the longest AF_UNIX path (sun_path is 108 bytes with the
+// terminating NUL).
+const maxSocketPath = 107
+
+// CheckSocketPaths rejects a bus or control socket path longer than
+// sun_path allows, counted in bytes, before anything is built.
+func (p Paths) CheckSocketPaths() error {
+	for _, sock := range []string{p.BusSock(), p.APISock()} {
+		if n := len([]byte(sock)); n > maxSocketPath {
+			return apperr.Infra("socket_path_too_long",
+				fmt.Sprintf("socket path %s is %d bytes, the limit is %d; use a shorter XDG_RUNTIME_DIR or instance name", sock, n, maxSocketPath),
+				map[string]any{"path": sock, "bytes": n, "max": maxSocketPath})
+		}
+	}
+	return nil
 }
 
 // xdgDir is $env when it is an absolute path (the XDG rule), else
@@ -121,41 +173,94 @@ func MAC(name string) string {
 	return strings.Join(parts, ":")
 }
 
-// LoadOrCreate reads identity.json or creates it on first use (32 random
-// bytes as base64, mode 0600 in a 0700 dir). apiPort > 0 overrides and
-// stores the port; 0 keeps the stored port, else DefaultAPIPort.
-func LoadOrCreate(p Paths, apiPort int) (Identity, error) {
-	if apiPort < 0 || apiPort > 65535 {
-		return Identity{}, apperr.Failed("invalid_port", "the API port must be between 1 and 65535", map[string]any{"port": apiPort})
+// EqualMAC compares two MAC addresses ignoring case and colons, so ESPHome's
+// upper-case "02:AA:..." output and the Noise hello's "02aa..." match the
+// derived lower-case form.
+func EqualMAC(a, b string) bool {
+	norm := func(s string) string {
+		return strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(s, ":", ""), "-", ""))
 	}
-	var id Identity
-	raw, err := os.ReadFile(p.IdentityJSON())
-	switch {
-	case err == nil:
-		if err := json.Unmarshal(raw, &id); err != nil || id.Key == "" || id.APIPort == 0 {
-			return Identity{}, apperr.Infra("identity_invalid", "identity.json is unreadable; fix or delete it",
-				map[string]any{"path": p.IdentityJSON()})
-		}
-		if apiPort == 0 || apiPort == id.APIPort {
-			return id, nil
-		}
-		id.APIPort = apiPort
-	case errors.Is(err, os.ErrNotExist):
-		key := make([]byte, 32)
+	return norm(a) != "" && norm(a) == norm(b)
+}
+
+// LoadOrCreate returns the identity of p, creating it on first use (32
+// random bytes as base64, mode 0600 in a 0700 dir). It runs under the global
+// allocation lock so two instances created at the same time never receive the
+// same port. apiPort > 0 overrides and stores the port (invalid_argument
+// outside 1024-65535, port_claimed when another instance's identity holds
+// it); 0 keeps the stored port, else the lowest free port from 6054. A
+// stored identity that is malformed is identity_corrupt and is never
+// regenerated silently.
+func LoadOrCreate(p Paths, apiPort int) (Identity, error) {
+	if apiPort != 0 && (apiPort < MinAPIPort || apiPort > MaxAPIPort) {
+		return Identity{}, invalidPort(apiPort)
+	}
+	root := p.StateRoot()
+	release, err := LockAlloc(root)
+	if err != nil {
+		return Identity{}, err
+	}
+	defer release()
+
+	id, exists, err := readIdentity(p)
+	if err != nil {
+		return Identity{}, err
+	}
+	port, err := AllocatePort(root, p.Name, apiPort, func(port int) bool { return TestBind(port) == nil })
+	if err != nil {
+		return Identity{}, err
+	}
+	if exists && port == id.APIPort {
+		return id, nil
+	}
+	if !exists {
+		key := make([]byte, keyBytes)
 		if _, err := rand.Read(key); err != nil {
 			return Identity{}, apperr.Infra("identity_failed", "cannot generate the API key", map[string]any{"error": err.Error()})
 		}
-		id = Identity{Schema: 1, Name: p.Name, APIPort: DefaultAPIPort, Key: base64.StdEncoding.EncodeToString(key)}
-		if apiPort > 0 {
-			id.APIPort = apiPort
-		}
-	default:
-		return Identity{}, apperr.Infra("identity_failed", "cannot read identity.json", map[string]any{"path": p.IdentityJSON(), "error": err.Error()})
+		id = Identity{Schema: 1, Name: p.Name, Key: base64.StdEncoding.EncodeToString(key)}
 	}
+	id.APIPort = port
 	if err := writeJSON(p.IdentityJSON(), id, 0o700); err != nil {
 		return Identity{}, apperr.Infra("identity_failed", "cannot write identity.json", map[string]any{"path": p.IdentityJSON(), "error": err.Error()})
 	}
 	return id, nil
+}
+
+// keyBytes is the length of the Noise pre-shared key.
+const keyBytes = 32
+
+// readIdentity loads and validates identity.json. exists is false when the
+// file is absent (first use).
+func readIdentity(p Paths) (id Identity, exists bool, err error) {
+	raw, rerr := os.ReadFile(p.IdentityJSON())
+	if errors.Is(rerr, os.ErrNotExist) {
+		return Identity{}, false, nil
+	}
+	if rerr != nil {
+		return Identity{}, false, apperr.Infra("identity_failed", "cannot read identity.json", map[string]any{"path": p.IdentityJSON(), "error": rerr.Error()})
+	}
+	corrupt := func(why string) error {
+		return apperr.Infra("identity_corrupt",
+			fmt.Sprintf("identity.json is unusable (%s); delete %s to reset (Home Assistant must then re-add the device)", why, p.StateDir),
+			map[string]any{"path": p.IdentityJSON(), "hint": "delete " + p.StateDir + " to reset"})
+	}
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return Identity{}, true, corrupt("not valid JSON")
+	}
+	if id.Schema != 1 {
+		return Identity{}, true, corrupt("unknown schema")
+	}
+	if id.Name != p.Name {
+		return Identity{}, true, corrupt("name does not match the directory")
+	}
+	if key, kerr := base64.StdEncoding.DecodeString(id.Key); kerr != nil || len(key) != keyBytes {
+		return Identity{}, true, corrupt("key is missing or not 32 base64-encoded bytes")
+	}
+	if id.APIPort < MinAPIPort || id.APIPort > MaxAPIPort {
+		return Identity{}, true, corrupt("api_port is missing or out of range")
+	}
+	return id, true, nil
 }
 
 // writeJSON writes v to path through a temp file and rename, mode 0600, and
@@ -230,6 +335,27 @@ func notRunning(name string) error {
 	return apperr.Failed("not_running", "instance "+name+" is not running", map[string]any{"instance": name})
 }
 
+// ProcessAlive reports whether rf names a live `sil serve <name>` process:
+// the PID exists and /proc/<pid>/cmdline has the arguments "serve" and name.
+// A run.json that names a dead or foreign (reused) PID is treated as not
+// running.
+func ProcessAlive(rf RunFile, name string) bool {
+	if !Alive(rf.PID) {
+		return false
+	}
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(rf.PID) + "/cmdline")
+	if err != nil {
+		return false
+	}
+	args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "serve" && args[i+1] == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Alive reports whether a process with this PID exists.
 func Alive(pid int) bool {
 	if pid <= 0 {
@@ -270,7 +396,7 @@ func ReadSpec(p Paths) (Spec, error) {
 // (the /tmp/sil-$UID fallback is world-reachable) must be a real directory
 // owned by this user with no group or other permissions, else it is refused.
 func ResetRunDir(p Paths) error {
-	if err := ensurePrivateDir(filepath.Dir(p.RunDir)); err != nil {
+	if err := EnsureRunParent(p); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(p.RunDir); err != nil {
@@ -285,6 +411,13 @@ func ResetRunDir(p Paths) error {
 		}
 	}
 	return nil
+}
+
+// EnsureRunParent creates the directory above the run dir (the
+// /tmp/sil-$UID fallback or $XDG_RUNTIME_DIR/sil) if needed and insists that
+// it is safe; `sil up` calls it before anything is built.
+func EnsureRunParent(p Paths) error {
+	return ensurePrivateDir(filepath.Dir(p.RunDir))
 }
 
 // ensurePrivateDir creates dir (0700) if missing and then insists that it is
@@ -304,7 +437,7 @@ func ensurePrivateDir(dir string) error {
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !fi.IsDir() || !ok || int(st.Uid) != os.Getuid() || fi.Mode().Perm()&0o077 != 0 {
-		return apperr.Infra("run_dir_unsafe",
+		return apperr.Infra("unsafe_runtime_dir",
 			"the run directory parent must be a real directory owned by you with mode 0700; remove or fix it",
 			map[string]any{"path": dir})
 	}
