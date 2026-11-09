@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: Live Web UI
 status: executing
-stopped_at: Completed 03-04-PLAN.md
-last_updated: "2026-11-09T13:29:56.140Z"
+stopped_at: Completed 03-05-PLAN.md
+last_updated: "2026-11-09T13:49:25.932Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 3 execution started
-state_head: 4362b8ba8caab1155284d061d1750bc0e422ae70
+state_head: 818547412cb844b18fd913c91ba76a969f15ceba
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 33
-  completed_plans: 25
+  completed_plans: 26
   percent: 33
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 ## Current Position
 
 Phase: 3 (Live Web UI) — EXECUTING
-Plan: 5 of 12
+Plan: 6 of 12
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 3 execution started
 
@@ -81,6 +81,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 3 P02 | 25 min | 2 tasks | 8 files |
 | Phase 03 P03 | 40 min | 2 tasks | 6 files |
 | Phase 03 P04 | 35 min | 2 tasks | 9 files |
+| Phase 3 P05 | 17 min | 2 tasks | 15 files |
 
 ## Accumulated Context
 
@@ -146,6 +147,8 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-03: WS reap releases Watch and browser slots before the close handshake; browsers capped at 8 of 16 with the existing too_many_streams code
 - [Phase 03]: 03-04: control.Operations is the identity of the control API; the listener policy (socket all rows, LAN only LAN rows, others 403 operation_not_allowed) follows from the row's LAN flag
 - [Phase 03]: 03-04: logs (tail and follow) is socket-only on the web listener (D-20) and enforced by the table
+- [Phase 3]: 03-05: web.Guard sits inside LimitBody and outside NewHandler; Host allowlist, then security headers, then CrossOriginProtection; every non-GET row of control.Operations is covered by TestCSRFCoversEveryMutatingRoute and a GET row needs a reviewed read-only entry
+- [Phase 3]: 03-05: TestWSPingReaps flake was a test race (Manual clock jumped during an in-flight coder/websocket write, which closes the connection hard); fixed in the test, ws.go unchanged
 
 ### Pending Todos
 
@@ -171,8 +174,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T13:29:56.086Z
-Stopped at: Completed 03-04-PLAN.md
+Last session: 2026-11-09T13:49:25.868Z
+Stopped at: Completed 03-05-PLAN.md
 Resume file: None
 
 ## Needs Human
