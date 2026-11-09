@@ -32,6 +32,11 @@ const (
 	// sampleStep is the spacing of the plot samples (D-12): one sample event per 100 ms of sim
 	// time, stamped with the tick that produced it.
 	sampleStep = 100 * time.Millisecond
+	// behindLate is how late a tick may be handled, or how long after the previous tick, before the
+	// simulator counts as behind real time; behindClear is how long without such a tick it takes
+	// to count as in sync again (UIC-30, planner assumption A-03-05).
+	behindLate  = 50 * time.Millisecond
+	behindClear = 2 * time.Second
 )
 
 // RPMEventStep is how often a port's rpm is sampled for an rpm event, in sim time. The simulator
@@ -150,6 +155,8 @@ type Snapshot struct {
 	// LEDs is the status LED strip; it keeps the last frame while the bus is down.
 	LEDs     LEDState
 	Warnings []string
+	// BehindRealTime is true while the engine handles ticks late (see noteTick).
+	BehindRealTime bool
 	// Seq is the seq of the last event the engine emitted before this snapshot was taken (0 when
 	// there is no Emit): the state here includes every event up to it. SnapshotSync stamps the
 	// broker's seq instead (Config.Seq).
@@ -222,6 +229,9 @@ type Engine struct {
 	// by its first sample, which carries Gap.
 	nextSample time.Duration
 	sampled    bool
+	// behind is the behind-real-time flag; lastLate is the due time of the last late tick.
+	behind   bool
+	lastLate time.Duration
 	// env is the room; nextEnv[i] is when env value i (temperature, humidity) is sent next.
 	env     Env
 	nextEnv [2]time.Duration
@@ -296,16 +306,17 @@ func (e *Engine) publish() { e.snap.Store(e.build()) }
 // build is the current state as a new Snapshot.
 func (e *Engine) build() *Snapshot {
 	s := &Snapshot{
-		SimTime:      e.simNow,
-		BusConnected: e.connected,
-		BusProto:     e.proto,
-		Synced:       e.synced,
-		Ports:        make([]PortState, len(e.ports)),
-		Env:          e.env,
-		Buttons:      make(map[string]bool, len(e.buttons)),
-		LEDs:         LEDState{Strip: append([]string{}, e.ledStrip...), Segments: make(map[string][]int, len(e.ledSegs))},
-		Warnings:     append([]string{}, e.warnings...),
-		Seq:          e.lastSeq,
+		SimTime:        e.simNow,
+		BusConnected:   e.connected,
+		BusProto:       e.proto,
+		Synced:         e.synced,
+		BehindRealTime: e.behind,
+		Ports:          make([]PortState, len(e.ports)),
+		Env:            e.env,
+		Buttons:        make(map[string]bool, len(e.buttons)),
+		LEDs:           LEDState{Strip: append([]string{}, e.ledStrip...), Segments: make(map[string][]int, len(e.ledSegs))},
+		Warnings:       append([]string{}, e.warnings...),
+		Seq:            e.lastSeq,
 	}
 	for label, idx := range e.ledSegs {
 		s.LEDs.Segments[label] = append([]int{}, idx...)
@@ -366,6 +377,27 @@ func (e *Engine) emitRPM() {
 			p.evRPM = v
 			e.emit(events.Event{K: "rpm", Port: p.cfg.Port, V: float64(v)})
 		}
+	}
+}
+
+// noteTick keeps the behind-real-time flag (UI-05). A tick is late when it was handled more than
+// behindLate after its due time tickAt (handledAt is the clock when the engine got to it) or more
+// than behindLate after the previous tick (dt). A late tick sets the flag, publishing sim "behind"
+// on the edge; once behindClear of sim time has passed since the last late tick the flag clears
+// with sim "in_sync". A late tick inside the hold-off restarts it, so the flag does not flicker. On
+// a Manual clock every tick is delivered at its due time, so the flag never rises there.
+func (e *Engine) noteTick(tickAt, handledAt, dt time.Duration) {
+	if handledAt-tickAt > behindLate || dt > behindLate {
+		e.lastLate = tickAt
+		if !e.behind {
+			e.behind = true
+			e.emit(events.Event{K: "sim", V: "behind"})
+		}
+		return
+	}
+	if e.behind && tickAt-e.lastLate >= behindClear {
+		e.behind = false
+		e.emit(events.Event{K: "sim", V: "in_sync"})
 	}
 }
 
@@ -488,6 +520,7 @@ func (e *Engine) Run(ctx context.Context) error {
 			last = now
 			e.simNow = now
 			e.inTick = true
+			e.noteTick(now, clk.Now(), dt)
 			for i := range e.ports {
 				p := &e.ports[i]
 				p.state = model.Step(p.cfg.Fan, p.state, p.duty, dt)

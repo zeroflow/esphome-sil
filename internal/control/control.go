@@ -117,10 +117,13 @@ type Exit struct {
 
 // SimStatus describes the simulator.
 type SimStatus struct {
-	TimeS          float64 `json:"time_s"`
-	TimeFactor     int     `json:"time_factor"`
-	EngineRestarts int     `json:"engine_restarts"`
-	BusProto       int     `json:"bus_proto"`
+	TimeS      float64 `json:"time_s"`
+	TimeFactor int     `json:"time_factor"`
+	// BehindRealTime is true while the engine handles its ticks late (50 ms or more behind their
+	// due time, held for 2 s of sim time after the last late tick); always present.
+	BehindRealTime bool `json:"behind_real_time"`
+	EngineRestarts int  `json:"engine_restarts"`
+	BusProto       int  `json:"bus_proto"`
 }
 
 // PortStatus is one fan port.

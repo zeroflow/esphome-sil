@@ -718,7 +718,7 @@ func (s *supervisor) statusFrom(have *engine.Snapshot) control.Status {
 			Ready: apiReady, // Noise handshake with the instance key and name/MAC match
 		},
 		Firmware: control.FirmwareStatus{PID: pid, Running: running, BusConnected: snap.BusConnected, Restarts: restarts, LastExit: lastExit},
-		Sim:      control.SimStatus{TimeS: snap.SimTime.Seconds(), TimeFactor: 1, EngineRestarts: engRestarts, BusProto: snap.BusProto},
+		Sim:      control.SimStatus{TimeS: snap.SimTime.Seconds(), TimeFactor: 1, BehindRealTime: snap.BehindRealTime, EngineRestarts: engRestarts, BusProto: snap.BusProto},
 		Web: control.WebStatus{
 			Listen: s.webListen, Port: s.id.WebPort, URL: instance.WebURL(s.webListen, s.lanHost, s.id.WebPort),
 		},
