@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
 status: executing
-stopped_at: Completed 01-11-PLAN.md
-last_updated: "2026-11-09T03:01:17.934Z"
+stopped_at: Completed 01-12-PLAN.md
+last_updated: "2026-11-09T03:20:55.300Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: 58307c5784b19d42d2a694b2a629e403882e34a1
+state_head: 8ffe2043fe25550760f945672fa8b2d965ad3a5d
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 11
+  completed_plans: 12
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
-Plan: 12 of 13
+Plan: 13 of 13
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 1 execution started
 
@@ -67,6 +67,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P09 | 15min | 2 tasks | 11 files |
 | Phase 01 P10 | 27 min | 2 tasks | 13 files |
 | Phase 01 P11 | 13 min | 2 tasks | 7 files |
+| Phase 1 P12 | 25 min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -106,6 +107,7 @@ Recent decisions affecting current work:
 - [Phase 01]: 01-11: unrequested firmware exits restart via a goroutine under opMu that gives up if the process was replaced or the instance is stopping; restarts counts started processes
 - [Phase 01]: 01-11: sil down fallback is SIGTERM (5 s) then SIGKILL of the run.json pid, gated by /proc cmdline; instance.ReadRunFile now reports not_running for a dead/foreign pid (LoadRunFile is the raw read)
 - [Phase 01]: 01-11: last_exit.signal uses POSIX names via SignalName; firmware_crash_loop keeps exit class 1 in sil up through lifecycle.userClass
+- [Phase 1]: 01-12: sil status exits 0 whenever the control API answers (phase failed is data); --help goes to stderr; client dials its own run dir api.sock and refuses a non-private runtime base
 
 ### Pending Todos
 
@@ -132,8 +134,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T03:01:17.902Z
-Stopped at: Completed 01-11-PLAN.md
+Last session: 2026-11-09T03:20:55.267Z
+Stopped at: Completed 01-12-PLAN.md
 Resume file: None
 
 ## Needs Human
