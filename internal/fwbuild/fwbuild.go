@@ -307,11 +307,32 @@ func (b *builder) stageFailure(ctx context.Context, err error, what, output stri
 // docker runs the pinned image with the given esphome arguments. The API key
 // reaches the container only through the process environment.
 func (b *builder) docker(ctx context.Context, network string, stdout, stderr io.Writer, esphomeArgs ...string) error {
+	name := containerName(b.o)
+	// A container left behind by a build that was killed (SIGKILL of sil, a
+	// crash) would still compile into the shared build directory and make the
+	// --name below collide. Instances are serialised by the instance lock, so
+	// anything running under this name is such an orphan.
+	removeContainer(name)
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs(b.o, b.mount, b.buildDir, b.cacheDir, network, esphomeArgs...)...)
+	// Killing the docker client does not stop the container (it belongs to
+	// dockerd and SIGKILL cannot be proxied), so removing it is the cancellation.
+	cmd.Cancel = func() error {
+		removeContainer(name)
+		return cmd.Process.Kill()
+	}
 	cmd.Env = append(envWithout(os.Environ(), "SIL_API_KEY"), "SIL_API_KEY="+b.o.APIKey)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()
+}
+
+// containerName is the fixed name of the build container of an instance, so a
+// cancelled or orphaned build can be found and removed.
+func containerName(o Options) string { return "sil-build-" + o.Substitutions["sil_name"] }
+
+// removeContainer force-removes the named container; absence is not an error.
+func removeContainer(name string) {
+	_ = exec.Command("docker", "rm", "-f", name).Run()
 }
 
 func validate(o Options) error {
@@ -386,7 +407,7 @@ func within(root, path string) bool {
 // The repo mount is read-only so the working tree stays clean.
 func dockerArgs(o Options, mount, buildDir, cacheDir, network string, esphomeArgs ...string) []string {
 	args := []string{
-		"run", "--rm", "--network", network,
+		"run", "--rm", "--name", containerName(o), "--network", network,
 		"--user", strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()),
 		"-e", "HOME=/cache/home",
 		"-e", "ESPHOME_DATA_DIR=/build/data",

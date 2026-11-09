@@ -169,7 +169,7 @@ func TestDockerArgsSeparateInstances(t *testing.T) {
 		t.Fatalf("instances share a /build mount: %q vs %q", mounts(argsA), mounts(argsB))
 	}
 	joined := strings.Join(argsA, " ")
-	for _, want := range []string{"--network none", "ESPHOME_DATA_DIR=/build/data", "-e SIL_API_KEY ", ":ro"} {
+	for _, want := range []string{"--name sil-build-dev", "--network none", "ESPHOME_DATA_DIR=/build/data", "-e SIL_API_KEY ", ":ro"} {
 		if !strings.Contains(joined+" ", want) {
 			t.Fatalf("docker args lack %q: %s", want, joined)
 		}
