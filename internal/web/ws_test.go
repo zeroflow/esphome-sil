@@ -188,12 +188,13 @@ func (c tapConn) Write(p []byte) (int, error) {
 func TestWSPingReaps(t *testing.T) {
 	mc := clock.NewManual()
 	sent := make(chan struct{})
+	var sentOnce sync.Once // a second Watch call (e.g. a retried stream) must not close sent twice
 	barrier := make(chan chan struct{})
 	ctl := &watchControl{script: func(ctx context.Context, send func(any) error) error {
 		if err := send(control.SnapshotLine{K: "snapshot", Seq: 1}); err != nil {
 			return err
 		}
-		close(sent)
+		sentOnce.Do(func() { close(sent) })
 		for {
 			select {
 			case done := <-barrier:
@@ -276,11 +277,12 @@ func TestWSPingKeepsAnsweringClients(t *testing.T) {
 	mc := clock.NewManual()
 	fire := make(chan struct{})
 	sent := make(chan struct{})
+	var sentOnce sync.Once // a second Watch call must not close sent twice
 	ctl := &watchControl{script: func(ctx context.Context, send func(any) error) error {
 		if err := send(control.SnapshotLine{K: "snapshot", Seq: 1}); err != nil {
 			return err
 		}
-		close(sent)
+		sentOnce.Do(func() { close(sent) })
 		for {
 			select {
 			case <-fire:
