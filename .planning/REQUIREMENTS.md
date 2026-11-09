@@ -39,7 +39,7 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 
 ### Example Firmware
 
-- [ ] **FW-01**: The repo ships an example top-level host config mirroring the Rev 3.3 IO surface (4 fans, LED strip with partitions, USR1-3, temp/humidity), without `wifi:` (uses `api`/`on_boot` hooks instead of `wifi.on_connect`)
+- [x] **FW-01**: The repo ships an example top-level host config mirroring the Rev 3.3 IO surface (4 fans, LED strip with partitions, USR1-3, temp/humidity), without `wifi:` (uses `api`/`on_boot` hooks instead of `wifi.on_connect`)
 - [x] **FW-02**: Example entities use the HIL contract names (`Fan N`, `Fan N Speed`, `Temperature`, `Humidity`, `Button USRn`); status LEDs stay internal like the product
 - [ ] **FW-03**: The example consumes the components via `external_components:` the same way the product repo will (local path now, `github://zeroflow/esphome-sil@vX.Y` later)
 
@@ -68,8 +68,8 @@ Milestone 1: simulation running (ESPHome + linear fan model), interaction via Ho
 
 ### Contract & Tests
 
-- [ ] **TEST-01**: A contract test in this repo builds and runs the example firmware with the simulator and plays a short scripted interaction (duty → RPM settles, button press, temperature change)
-- [ ] **TEST-02**: An aioesphomeapi smoke test checks the HA-visible entity set and a fan command round trip
+- [x] **TEST-01**: A contract test in this repo builds and runs the example firmware with the simulator and plays a short scripted interaction (duty → RPM settles, button press, temperature change)
+- [x] **TEST-02**: An aioesphomeapi smoke test checks the HA-visible entity set and a fan command round trip
 
 ## v2 Requirements
 
@@ -141,7 +141,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | MODEL-02 | Phase 1 | Complete |
 | MODEL-03 | Phase 2 | Complete |
 | MODEL-04 | Phase 1 | Complete |
-| FW-01 | Phase 2 | Pending |
+| FW-01 | Phase 2 | Complete |
 | FW-02 | Phase 2 | Complete |
 | FW-03 | Phase 2 | Pending |
 | CLI-01 | Phase 2 | Complete |
@@ -158,8 +158,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | UI-06 | Phase 3 | Pending |
 | HA-01 | Phase 2 | Pending |
 | HA-02 | Phase 2 | Pending |
-| TEST-01 | Phase 2 | Pending |
-| TEST-02 | Phase 2 | Pending |
+| TEST-01 | Phase 2 | Complete |
+| TEST-02 | Phase 2 | Complete |
 
 **Coverage:**
 - v1 requirements: 40 total

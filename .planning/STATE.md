@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Full Rev 3.3 Bench
 status: executing
-stopped_at: Completed 02-06-PLAN.md
-last_updated: "2026-11-09T08:00:50.969Z"
+stopped_at: Completed 02-07-PLAN.md
+last_updated: "2026-11-09T08:22:38.897Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 2 execution started
-state_head: 8e9bfc23048ebcaae3669d8e1d031ba1c0ea3ae2
+state_head: 03d98ae9e4e6c85e8261b44f858053832317909d
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 21
-  completed_plans: 19
+  completed_plans: 20
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 2 (Full Rev 3.3 Bench) — EXECUTING
-Plan: 7 of 8
+Plan: 2 of 8
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 2 execution started
 
@@ -75,6 +75,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 02 P04 | 25min | 2 tasks | 5 files |
 | Phase 02 P05 | 21min | 2 tasks | 13 files |
 | Phase 02 P06 | 28 min | 2 tasks | 17 files |
+| Phase 02 P07 | 26 min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -128,6 +129,8 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-05: engine.Apply publishes its snapshot before replying, so a status read after sil set returned never shows the old fan
 - [Phase 02]: 02-06: watch joins the engine through SnapshotSync (snapshot built on the engine goroutine, stamped with the broker seq) so no change is lost or repeated at the snapshot/stream join
 - [Phase 02]: 02-06: log lines are cleaned whole (ANSI strip, key redaction) before the 64 KiB cut; lines whose beginning was not read are never served
+- [Phase 02]: 02-07: test-contract depends on lock-check so dependencies are never installed without the hash diff against the product HIL lock
+- [Phase 02]: 02-07: contract state root persists in ~/.cache/sil-contract/state (0700); ct-main/ct-second reserved; warm contract session 22 s (budget 60 s)
 
 ### Pending Todos
 
@@ -154,8 +157,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T08:00:50.922Z
-Stopped at: Completed 02-06-PLAN.md
+Last session: 2026-11-09T08:22:38.851Z
+Stopped at: Completed 02-07-PLAN.md
 Resume file: None
 
 ## Needs Human
