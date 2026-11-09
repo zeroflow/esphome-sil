@@ -4,14 +4,17 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/zeroflow/esphome-sil/internal/control"
 )
 
 // TestEmbedContents: the page files every test and the server rely on are in the embedded tree.
 func TestEmbedContents(t *testing.T) {
-	for _, name := range []string{"index.html", "app.css", "js/app.js", "js/store.js", "js/view.js"} {
+	for _, name := range []string{"index.html", "app.css", "js/app.js", "js/store.js", "js/view.js", "js/api.js", "js/inputs.js", "js/message.js"} {
 		b, err := fs.ReadFile(FS(), name)
 		if err != nil {
 			t.Errorf("%s is not embedded: %v", name, err)
@@ -130,5 +133,49 @@ func TestNoUnsafeDOM(t *testing.T) {
 	}
 	if len(found) != 4 {
 		t.Errorf("self-check: scan found %v, want 4 hits in js/a.js and js/b.js only", found)
+	}
+}
+
+// opPairRE matches a ["METHOD", "/path"] pair of the page's operation table.
+var opPairRE = regexp.MustCompile(`\[\s*"(GET|POST|PUT|PATCH|DELETE)"\s*,\s*"(/[^"]*)"\s*\]`)
+
+// paramRE matches a path parameter such as {id}.
+var paramRE = regexp.MustCompile(`\{[^}]*\}`)
+
+// unmatchedOps lists the pairs of src that are not a LAN row of control.Operations, and how many
+// pairs src holds.
+func unmatchedOps(src string) (bad []string, n int) {
+	for _, m := range opPairRE.FindAllStringSubmatch(src, -1) {
+		n++
+		op, ok := control.MatchOperation(m[1], paramRE.ReplaceAllString(m[2], "sample"))
+		switch {
+		case !ok:
+			bad = append(bad, fmt.Sprintf("%s %s is not a row of control.Operations", m[1], m[2]))
+		case !op.LAN:
+			bad = append(bad, fmt.Sprintf("%s %s is row %s, which the LAN does not serve", m[1], m[2], op.Name))
+		}
+	}
+	return bad, n
+}
+
+// TestJSOpsInOperations (UI-06): every [method, path] pair of the OPS table in js/api.js is a
+// control.Operations row with LAN true, so the page cannot call an operation the CLI does not have.
+// The scan is checked against a table with a stray pair, so it cannot pass by finding nothing.
+func TestJSOpsInOperations(t *testing.T) {
+	src, err := fs.ReadFile(FS(), "js/api.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad, n := unmatchedOps(string(src))
+	if n == 0 {
+		t.Fatal("no [method, path] pair found in js/api.js")
+	}
+	for _, b := range bad {
+		t.Error(b)
+	}
+
+	bad, n = unmatchedOps(`const OPS = { a: ["GET", "/api/v1/fans"], b: ["POST", "/api/v1/down"], c: ["GET", "/api/v1/nowhere"], d: ["POST", "/api/v1/buttons/{id}/press"] };`)
+	if n != 4 || len(bad) != 2 {
+		t.Errorf("self-check: %d pairs, problems %v, want 4 pairs and the two stray ones (down is not LAN, nowhere is no row)", n, bad)
 	}
 }
