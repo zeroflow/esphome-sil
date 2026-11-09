@@ -420,3 +420,70 @@ func TestWSSnapshotOfFailedInstanceKeepsK(t *testing.T) {
 		t.Fatalf("snapshot of a failed instance = %s, want k snapshot together with the status error", f)
 	}
 }
+
+// openLANWatch opens GET /api/v1/watch and returns the response after its status line; the body is
+// read by the caller. The stream ends with cancel.
+func openLANWatch(t *testing.T, srv *httptest.Server) (*http.Response, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/watch", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		cancel()
+		t.Fatalf("GET /api/v1/watch: %v", err)
+	}
+	t.Cleanup(func() { cancel(); resp.Body.Close() })
+	return resp, cancel
+}
+
+// GET /api/v1/watch on the web listener draws on the same budget as /ws (WR-01): together they hold
+// at most maxBrowserStreams Watch slots, whichever route a client takes, and the refused client never
+// reaches Watch. A slot given back is reusable.
+func TestLANWatchSharesTheBrowserBudget(t *testing.T) {
+	ctl := &watchControl{script: snapshotThenBlock}
+	srv := httptest.NewServer(NewHandler(ctl, Options{}))
+	// Cleanups run last in, first out: the open LAN watches are cancelled before the server closes.
+	t.Cleanup(srv.Close)
+
+	var cancels []context.CancelFunc
+	for i := 0; i < maxBrowserStreams/2; i++ {
+		resp, cancel := openLANWatch(t, srv)
+		line, err := bufio.NewReader(resp.Body).ReadString('\n')
+		if resp.StatusCode != http.StatusOK || err != nil || !strings.Contains(line, `"snapshot"`) {
+			t.Fatalf("LAN watch %d: status %d, line %q (%v)", i+1, resp.StatusCode, line, err)
+		}
+		cancels = append(cancels, cancel)
+		if _, f, err := dialRead(t, wsURL(srv)); err != nil || !strings.Contains(f, `"snapshot"`) {
+			t.Fatalf("browser %d: %q (%v)", i+1, f, err)
+		}
+	}
+
+	// Eight streams are open (four of each kind): the next of either kind is refused.
+	resp, _ := openLANWatch(t, srv)
+	var eb struct {
+		Error struct {
+			Code   string         `json:"code"`
+			Detail map[string]any `json:"detail"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&eb); err != nil || eb.Error.Code != "too_many_streams" || eb.Error.Detail["limit"] != float64(maxBrowserStreams) {
+		t.Fatalf("9th stream (LAN watch): status %d, error %+v (%v), want too_many_streams with limit %d", resp.StatusCode, eb.Error, err, maxBrowserStreams)
+	}
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("9th stream status = %d, want 500 (exit class 2)", resp.StatusCode)
+	}
+	_, f, err := dialRead(t, wsURL(srv))
+	if err != nil || !strings.Contains(f, `"too_many_streams"`) {
+		t.Fatalf("9th stream (browser): %q (%v), want the too_many_streams error frame", f, err)
+	}
+	if got := ctl.calls.Load(); got != int32(maxBrowserStreams) {
+		t.Fatalf("Watch called %d times, want %d: a refused stream must not reach it", got, maxBrowserStreams)
+	}
+
+	// One LAN watch ends; the slot is free again, for a browser as well as for another LAN watch.
+	cancels[0]()
+	waitFor(t, "a slot to free up", func() bool { return ctl.active.Load() == int32(maxBrowserStreams-1) })
+	if _, f, err := dialRead(t, wsURL(srv)); err != nil || !strings.Contains(f, `"snapshot"`) {
+		t.Fatalf("browser after a LAN watch ended: %q (%v)", f, err)
+	}
+}

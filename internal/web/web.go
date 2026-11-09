@@ -43,8 +43,11 @@ func NewHandler(c control.Control, o Options) http.Handler {
 	mux := http.NewServeMux()
 	// The API is the LAN rows of the control.Operations table: a row with LAN false (D-19, D-20) is
 	// refused there with operation_not_allowed and never reaches the Control.
-	mux.Handle("/api/v1/", control.NewLANHandler(rc))
-	mux.Handle("GET /ws", newWS(rc, o))
+	// GET /api/v1/watch and /ws draw on one budget of web streams (maxBrowserStreams); the control
+	// socket is not behind this handler, so `sil watch` and `sil logs --follow` keep their slots.
+	budget := &streamBudget{}
+	mux.Handle("/api/v1/", control.NewLANHandler(cappedWatch{Control: rc, budget: budget}))
+	mux.Handle("GET /ws", newWS(rc, o, budget))
 	mux.Handle("/", staticHandler(o.Static))
 	return mux
 }

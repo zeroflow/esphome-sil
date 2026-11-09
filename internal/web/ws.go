@@ -22,8 +22,9 @@ import (
 const wsWriteBudget = 10 * time.Second
 
 // Liveness and sharing of the stream slots (T-03-15). A browser that does not answer a ping within
-// wsPongBudget is closed; browsers together may hold maxBrowserStreams of the instance's 16 Watch
-// slots, so `sil watch` and `sil logs --follow` always keep the rest.
+// wsPongBudget is closed; web clients together (browsers on /ws and the LAN's GET /api/v1/watch) may
+// hold maxBrowserStreams of the instance's 16 Watch slots, so `sil watch` and `sil logs --follow`
+// on the machine always keep the rest.
 const (
 	wsPingEvery       = 15 * time.Second
 	wsPongBudget      = 10 * time.Second
@@ -35,15 +36,52 @@ type errorFrame struct {
 	Error *apperr.Error `json:"error"`
 }
 
+// streamBudget is the share of the instance's Watch slots that web clients may hold together:
+// browsers on /ws and clients of the LAN's GET /api/v1/watch alike (the web listener serves both,
+// and a client on it is limited no matter which route it chose). The control socket is not counted.
+type streamBudget struct{ n atomic.Int32 }
+
+// acquire takes a slot and reports whether there was one (a CAS loop like supervisor.acquireStream).
+func (b *streamBudget) acquire() bool {
+	for {
+		n := b.n.Load()
+		if n >= maxBrowserStreams {
+			return false
+		}
+		if b.n.CompareAndSwap(n, n+1) {
+			return true
+		}
+	}
+}
+
+func (b *streamBudget) release() { b.n.Add(-1) }
+
+// cappedWatch is the Control the LAN API talks to: Watch takes a slot of the web budget first, so
+// GET /api/v1/watch on the web listener cannot use the Watch slots that /ws leaves to `sil watch` and
+// `sil logs --follow` on the machine. Everything else passes through.
+type cappedWatch struct {
+	control.Control
+	budget *streamBudget
+}
+
+func (c cappedWatch) Watch(ctx context.Context, req control.WatchRequest, send func(v any) error) error {
+	if !c.budget.acquire() {
+		return errTooManyBrowsers()
+	}
+	defer c.budget.release()
+	return c.Control.Watch(ctx, req, send)
+}
+
 // errPongTimeout is the cause of a stream context that ended because the browser stopped
 // answering pings.
 var errPongTimeout = errors.New("the browser did not answer a ping")
 
-// errTooManyBrowsers is the final frame of the browser stream that does not fit under
-// maxBrowserStreams. The code is the one the instance's 17th stream gets (exit class 2).
+// errTooManyBrowsers is the final frame of the browser stream (or the error of the LAN watch) that
+// does not fit under maxBrowserStreams. The code is the one the instance's 17th stream gets (exit
+// class 2).
 func errTooManyBrowsers() *apperr.Error {
 	return apperr.Infra("too_many_streams",
-		fmt.Sprintf("this bench already serves %d browser pages; close one", maxBrowserStreams),
+		fmt.Sprintf("this bench already serves %d streams on its web port (pages and watch clients); close one", maxBrowserStreams),
 		map[string]any{"limit": maxBrowserStreams})
 }
 
@@ -51,22 +89,11 @@ func errTooManyBrowsers() *apperr.Error {
 // every later frame is one event line or the stopped line, each encoded exactly like a `sil watch`
 // line without its newline. `kind=` selects event kinds like `sil watch --kind`.
 //
-// A browser holds one of maxBrowserStreams slots (counted here, like the instance's CAS loop in
-// supervisor.acquireStream) on top of the Watch slot, and is pinged every wsPingEvery: one that
-// does not answer within wsPongBudget is closed, which gives both slots back.
-func newWS(c control.Control, o Options) http.Handler {
-	var browsers atomic.Int32
-	acquire := func() bool {
-		for {
-			n := browsers.Load()
-			if n >= maxBrowserStreams {
-				return false
-			}
-			if browsers.CompareAndSwap(n, n+1) {
-				return true
-			}
-		}
-	}
+// A browser holds one of maxBrowserStreams slots of budget (shared with the LAN watch) on top of
+// the Watch slot, and is pinged every wsPingEvery: one that does not answer within wsPongBudget is
+// closed, which gives both slots back.
+func newWS(c control.Control, o Options, budget *streamBudget) http.Handler {
+	acquire := budget.acquire
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req control.WatchRequest
 		if k := r.URL.Query().Get("kind"); k != "" {
@@ -113,7 +140,7 @@ func newWS(c control.Control, o Options) http.Handler {
 			return
 		}
 		var once sync.Once
-		release := func() { once.Do(func() { browsers.Add(-1) }) }
+		release := func() { once.Do(budget.release) }
 		defer release()
 
 		// The ticker is armed before the first frame so that the first ping is always due wsPingEvery
