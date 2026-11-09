@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -46,26 +47,71 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "e2e: pinned image %s is not present locally (the tests never pull it): %v\n%s\n", fwbuild.Image, err, out)
 		os.Exit(2)
 	}
-	os.Exit(m.Run())
+	binDir, err := os.MkdirTemp("", "sil-bin-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: temp dir for the sil binary: %v\n", err)
+		os.Exit(2)
+	}
+	if err := buildSil(ctx, binDir); err != nil {
+		_ = os.RemoveAll(binDir)
+		fmt.Fprintf(os.Stderr, "e2e: building cmd/sil failed: %v\n", err)
+		os.Exit(2)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(binDir)
+	os.Exit(code)
 }
 
-// repoRoot walks up from the test directory to the directory holding go.mod.
-func repoRoot(t testing.TB) string {
-	t.Helper()
+// silBin is the sil binary built by TestMain.
+var silBin string
+
+// buildSil compiles ./cmd/sil into dir (go from PATH, which the Makefile
+// extends with ~/.local/bin).
+func buildSil(ctx context.Context, dir string) error {
+	root, err := findRepoRoot()
+	if err != nil {
+		return err
+	}
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		return fmt.Errorf("go is not on PATH: %w", err)
+	}
+	silBin = filepath.Join(dir, "sil")
+	cmd := exec.CommandContext(ctx, goBin, "build", "-o", silBin, "./cmd/sil")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w\n%s", err, out)
+	}
+	return nil
+}
+
+// findRepoRoot walks up from the test directory to the directory holding go.mod.
+func findRepoRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		return "", err
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
+			return dir, nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatalf("no go.mod above the test directory")
+			return "", errors.New("no go.mod above the test directory")
 		}
 		dir = parent
 	}
+}
+
+// repoRoot is findRepoRoot for tests.
+func repoRoot(t testing.TB) string {
+	t.Helper()
+	dir, err := findRepoRoot()
+	if err != nil {
+		t.Fatalf("repo root: %v", err)
+	}
+	return dir
 }
 
 // cacheRoot is the e2e cache root: SIL_E2E_CACHE when set, else
@@ -391,4 +437,159 @@ func (p *busPeer) Send(t testing.TB, line string) {
 	if _, err := p.conn.Write(append([]byte(line), '\n')); err != nil {
 		t.Fatalf("bus send: %v", err)
 	}
+}
+
+// Env is an isolated sil environment: its own XDG state, runtime and (per
+// worktree) cache directories, driving the real sil binary built by TestMain.
+type Env struct {
+	State, Runtime, Cache, Repo, Bin string
+	// Extra is appended (KEY=VALUE) to the environment of every sil call.
+	Extra []string
+
+	ports map[string]int
+}
+
+// newEnv returns a fresh Env. The runtime dir is short so socket paths stay
+// far below the 107-byte sun_path limit; the cache is shared with the other
+// e2e tests of this worktree so firmware builds are reused.
+func newEnv(t *testing.T) *Env {
+	t.Helper()
+	return &Env{
+		State:   t.TempDir(),
+		Runtime: shortTempDir(t),
+		Cache:   cacheRoot(t),
+		Repo:    repoRoot(t),
+		Bin:     silBin,
+		ports:   map[string]int{},
+	}
+}
+
+// environ is the process environment with the Env overrides applied.
+func (e *Env) environ() []string {
+	drop := map[string]bool{
+		"XDG_STATE_HOME": true, "XDG_RUNTIME_DIR": true, "XDG_CACHE_HOME": true,
+		"SIL_REPO": true, "SIL_INSTANCE": true, "SIL_API_KEY": true,
+	}
+	var env []string
+	for _, kv := range os.Environ() {
+		if k, _, ok := strings.Cut(kv, "="); ok && drop[k] {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env,
+		"XDG_STATE_HOME="+e.State,
+		"XDG_RUNTIME_DIR="+e.Runtime,
+		"XDG_CACHE_HOME="+e.Cache,
+		"SIL_REPO="+e.Repo,
+	)
+	return append(env, e.Extra...)
+}
+
+// run executes sil and returns its raw stdout, stderr and exit code.
+func (e *Env) run(t *testing.T, args ...string) (stdout, stderr string, exit int) {
+	t.Helper()
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 25*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, e.Bin, args...)
+	cmd.Env = e.environ()
+	var so, se bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &so, &se
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			t.Fatalf("run sil %v: %v", args, err)
+		}
+		exit = ee.ExitCode()
+	}
+	return so.String(), se.String(), exit
+}
+
+// Sil runs sil and decodes stdout, which must be exactly one JSON object.
+func (e *Env) Sil(t *testing.T, args ...string) (out map[string]any, exit int, stderr string) {
+	t.Helper()
+	so, se, exit := e.run(t, args...)
+	dec := json.NewDecoder(strings.NewReader(so))
+	if err := dec.Decode(&out); err != nil {
+		t.Fatalf("sil %v printed no JSON object on stdout (exit %d): %v\nstdout: %q\nstderr: %s", args, exit, err, so, se)
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		t.Fatalf("sil %v printed more than one JSON value on stdout: %q", args, so)
+	}
+	return out, exit, se
+}
+
+// Up runs `sil up name` with a free API port picked once per name and reused
+// on later Ups of that name (down/up flows keep their build cache and HA
+// entry), unless extra carries its own --api-port. It fails the test on a
+// non-zero exit and registers a cleanup `sil down`.
+func (e *Env) Up(t *testing.T, name string, extra ...string) map[string]any {
+	t.Helper()
+	hasPort := false
+	for _, a := range extra {
+		if a == "--api-port" || strings.HasPrefix(a, "--api-port=") {
+			hasPort = true
+		}
+	}
+	if !hasPort {
+		port, ok := e.ports[name]
+		if !ok {
+			port = freePort(t)
+			e.ports[name] = port
+		}
+		extra = append([]string{"--api-port", fmt.Sprint(port)}, extra...)
+	}
+	return e.UpAutoPort(t, name, extra...)
+}
+
+// UpAutoPort runs `sil up name extra...` without injecting a port (tests of
+// sil's own allocation). It fails the test on a non-zero exit and registers a
+// cleanup `sil down`.
+func (e *Env) UpAutoPort(t *testing.T, name string, extra ...string) map[string]any {
+	t.Helper()
+	t.Cleanup(func() {
+		so, se, code := e.run(t, "down", name)
+		if code != 0 {
+			t.Logf("cleanup sil down %s: exit %d\nstdout: %s\nstderr: %s", name, code, so, se)
+		}
+	})
+	out, code, stderr := e.Sil(t, append([]string{"up", name}, extra...)...)
+	if code != 0 {
+		t.Fatalf("sil up %s: exit %d: %v\nstderr: %s", name, code, out, stderr)
+	}
+	return out
+}
+
+// Status returns `sil status name`, failing the test on a non-zero exit.
+func (e *Env) Status(t *testing.T, name string) map[string]any {
+	t.Helper()
+	out, code, stderr := e.Sil(t, "status", name)
+	if code != 0 {
+		t.Fatalf("sil status %s: exit %d: %v\nstderr: %s", name, code, out, stderr)
+	}
+	return out
+}
+
+// WaitStatus polls `sil status` every 200 ms until pred holds and returns that
+// status; it fails the test after timeout.
+func (e *Env) WaitStatus(t *testing.T, name string, timeout time.Duration, pred func(map[string]any) bool) map[string]any {
+	t.Helper()
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, timeout)
+	defer cancel()
+	for {
+		st := e.Status(t, name)
+		if pred(st) {
+			return st
+		}
+		if err := sysClock.Sleep(ctx, 200*time.Millisecond); err != nil {
+			t.Fatalf("timed out after %s waiting for a status condition; last status: %v", timeout, st)
+		}
+	}
+}
+
+// APIClient runs e2e/api_client.py against the firmware API on port.
+func (e *Env) APIClient(t *testing.T, port int, key string, args ...string) (map[string]any, int) {
+	t.Helper()
+	return runAPIClient(t, port, key, args...)
 }

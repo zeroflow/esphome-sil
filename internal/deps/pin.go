@@ -7,7 +7,6 @@
 package deps
 
 import (
-	_ "github.com/alecthomas/kong"
 	_ "github.com/flynn/noise"
 	_ "go.yaml.in/yaml/v3"
 )

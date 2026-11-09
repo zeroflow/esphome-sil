@@ -6,3 +6,4 @@ build/
 reports/
 secrets.yaml
 *_dev.yaml
+/bin/
