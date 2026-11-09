@@ -21,11 +21,11 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
-	"runtime"
+	"runtime/debug"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -69,6 +69,7 @@ type engineSlot struct {
 
 // fwProc is one firmware process.
 type fwProc struct {
+	proc      Process
 	pid       int
 	gone      chan struct{} // closed once the process has been reaped
 	recorded  chan struct{} // closed once its exit has been recorded
@@ -76,9 +77,8 @@ type fwProc struct {
 }
 
 type fwExit struct {
-	proc  *fwProc
-	state *os.ProcessState
-	err   error
+	proc *fwProc
+	info ExitInfo
 }
 
 type supervisor struct {
@@ -89,7 +89,15 @@ type supervisor struct {
 	log    *slog.Logger
 	engCfg engine.Config
 
-	fwExits chan fwExit // Wait results, consumed by the supervisor loop
+	starter Starter     // launches firmware processes (ExecStarter, a fake in tests)
+	guard   *CrashGuard // counts unrequested firmware exits (D-03)
+	// probe runs the readiness probe of one generation; Serve sets probeLoop.
+	probe func(ctx context.Context, gen int)
+
+	fwExits  chan fwExit // Wait results, consumed by the supervisor loop
+	loopDone chan struct{}
+	engDied  chan error // an engine that was up has returned on its own
+	starts   int        // firmware launches so far (guarded by mu)
 
 	stopOnce sync.Once
 	stopped  chan struct{} // closed when stopAll has finished
@@ -152,10 +160,15 @@ func Serve(ctx context.Context, name string) error {
 		paths: p, id: id, spec: spec, clk: clk, log: log,
 		engCfg: engine.Config{Clock: clk, BusPath: p.BusSock(), Ports: ports, Log: log},
 
-		fwExits: make(chan fwExit, 8),
-		stopped: make(chan struct{}),
-		downReq: make(chan struct{}),
+		starter:  ExecStarter{},
+		guard:    NewCrashGuard(clk),
+		fwExits:  make(chan fwExit, 8),
+		loopDone: make(chan struct{}),
+		engDied:  make(chan error, 1),
+		stopped:  make(chan struct{}),
+		downReq:  make(chan struct{}),
 	}
+	s.probe = s.probeLoop
 
 	sigCtx, stopSignals := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stopSignals()
@@ -200,25 +213,45 @@ func (s *supervisor) run(sigCtx context.Context) error {
 	}
 	s.log.Info("instance serving", "pid", os.Getpid(), "api_sock", s.paths.APISock())
 
-loop:
-	for {
-		select {
-		case <-sigCtx.Done():
-			s.log.Info("shutdown requested by signal")
-			s.shutdown()
-			break loop
-		case <-s.stopped:
-			break loop
-		case ex := <-s.fwExits:
-			s.recordExit(ex)
-		}
-	}
+	loopErr := s.mainLoop(sigCtx)
 
+	// Every way out of the loop (down, signal, engine failure, panic) stops
+	// the firmware group before run.json and the sockets go away (Pitfall 7).
+	s.shutdown()
 	_ = os.Remove(s.paths.RunJSON())
 	srvCancel()
 	<-srvDone
 	s.log.Info("instance stopped")
-	return nil
+	return loopErr
+}
+
+// mainLoop reacts to signals, firmware exits and an engine that died on its
+// own until the instance is stopped. A panic is logged and ends the loop like
+// any other failure, so the caller still runs the orderly shutdown.
+func (s *supervisor) mainLoop(sigCtx context.Context) (err error) {
+	defer close(s.loopDone)
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("supervisor loop panicked", "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+			err = apperr.Infra("supervisor_panic", "the supervisor loop panicked", map[string]any{"panic": fmt.Sprint(r)})
+		}
+	}()
+	for {
+		select {
+		case <-sigCtx.Done():
+			s.log.Info("shutdown requested by signal")
+			return nil
+		case <-s.stopped:
+			return nil
+		case ee := <-s.engDied:
+			s.log.Error("the simulator engine stopped on its own", "error", ee)
+			return apperr.Infra("engine_failed", "the simulator engine stopped unexpectedly", map[string]any{"error": fmt.Sprint(ee)})
+		case ex := <-s.fwExits:
+			if s.recordExit(ex) {
+				go s.autoRestart(ex.proc)
+			}
+		}
+	}
 }
 
 // startEngine builds a fresh engine (a new World, D-02), runs it and waits
@@ -227,12 +260,21 @@ func (s *supervisor) startEngine() (*engineSlot, error) {
 	eng := engine.New(s.engCfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	sl := &engineSlot{eng: eng, cancel: cancel, done: make(chan struct{})}
+	var up atomic.Bool // set once the engine listens
 	go func() {
 		sl.err = eng.Run(ctx)
+		// An engine that was up and returns without being cancelled is a failure.
+		if up.Load() && ctx.Err() == nil {
+			select {
+			case s.engDied <- sl.err:
+			default:
+			}
+		}
 		close(sl.done)
 	}()
 	select {
 	case <-eng.Ready():
+		up.Store(true)
 		return sl, nil
 	case <-sl.done:
 		cancel()
@@ -250,44 +292,45 @@ func (s *supervisor) stopEngine(sl *engineSlot) {
 	<-sl.done
 }
 
-// startFirmware starts the firmware from a dedicated goroutine that locks
-// its OS thread and never unlocks: Pdeathsig is tied to the spawning thread,
-// and Go may retire unlocked threads. It makes the new process the current one.
-func (s *supervisor) startFirmware() error {
-	logf, err := os.OpenFile(s.paths.FirmwareLog(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return apperr.Infra("firmware_start_failed", "cannot open firmware.log", map[string]any{"error": err.Error()})
-	}
-	p := &fwProc{gone: make(chan struct{}), recorded: make(chan struct{})}
-	started := make(chan error, 1)
-	go func() {
-		runtime.LockOSThread() // never unlocked: the thread lives as long as the child
-		defer logf.Close()
-		cmd := exec.Command(s.spec.Program)
-		cmd.Dir = s.paths.RunDir
-		cmd.Env = append(os.Environ(),
+// startSpec is the launch description of the firmware: always the same
+// program, preferences and environment, so a restart is a reboot of the same
+// device.
+func (s *supervisor) startSpec(n int) StartSpec {
+	return StartSpec{
+		Program: s.spec.Program,
+		Env: append(os.Environ(),
 			"ESPHOME_PREFDIR="+s.paths.PrefsDir(),
 			"SIL_BUS="+s.paths.BusSock(),
-		)
-		cmd.Stdout, cmd.Stderr = logf, logf
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
-		if err := cmd.Start(); err != nil {
-			close(p.gone)
-			started <- err
-			return
-		}
-		p.pid = cmd.Process.Pid
-		s.mu.Lock()
-		s.fw, s.fwPID, s.fwRunning = p, p.pid, true
-		s.mu.Unlock()
-		started <- nil
-		err := cmd.Wait()
-		s.fwExits <- fwExit{proc: p, state: cmd.ProcessState, err: err}
-		close(p.gone)
-	}()
-	if err := <-started; err != nil {
+		),
+		LogPath: s.paths.FirmwareLog(),
+		Dir:     s.paths.RunDir,
+		Start:   n,
+	}
+}
+
+// startFirmware launches the firmware through the Starter, makes the new
+// process the current one and watches it until it is reaped.
+func (s *supervisor) startFirmware() error {
+	s.mu.Lock()
+	s.starts++
+	n := s.starts
+	s.mu.Unlock()
+	proc, err := s.starter.Start(s.startSpec(n))
+	if err != nil {
 		return apperr.Infra("firmware_start_failed", "cannot start the firmware program", map[string]any{"program": s.spec.Program, "error": err.Error()})
 	}
+	p := &fwProc{proc: proc, pid: proc.PID(), gone: make(chan struct{}), recorded: make(chan struct{})}
+	s.mu.Lock()
+	s.fw, s.fwPID, s.fwRunning = p, p.pid, true
+	s.mu.Unlock()
+	go func() {
+		info := proc.Wait()
+		close(p.gone)
+		select {
+		case s.fwExits <- fwExit{proc: p, info: info}:
+		case <-s.loopDone:
+		}
+	}()
 	return nil
 }
 
@@ -303,14 +346,14 @@ func (s *supervisor) stopProc(p *fwProc) {
 		return
 	default:
 	}
-	_ = syscall.Kill(-p.pid, syscall.SIGTERM)
+	_ = p.proc.SignalGroup(syscall.SIGTERM)
 	timer := s.clk.NewTimer(stopGrace)
 	select {
 	case <-p.gone:
 		timer.Stop()
 	case <-timer.C():
 		s.log.Warn("firmware ignored SIGTERM, killing its process group", "pid", p.pid)
-		_ = syscall.Kill(-p.pid, syscall.SIGKILL)
+		_ = p.proc.SignalGroup(syscall.SIGKILL)
 		<-p.gone
 	}
 }
@@ -360,7 +403,7 @@ func (s *supervisor) startProbe() {
 	s.mu.Unlock()
 	go func() {
 		defer s.probeWG.Done()
-		s.probeLoop(ctx, gen)
+		s.probe(ctx, gen)
 	}()
 }
 
@@ -451,41 +494,71 @@ func mismatch(h apiclient.Hello, id instance.Identity) *apperr.Error {
 		})
 }
 
-// recordExit classifies a firmware exit. An exit nobody asked for is
-// unexpected: phase failed (01-11 adds auto-restart here).
-func (s *supervisor) recordExit(ex fwExit) {
+// recordExit records a firmware exit: last_exit, and for an unrequested exit
+// the crash guard. It reports whether the firmware should be started again
+// (D-03); the caller then runs autoRestart. An exit nobody asked for that
+// trips the guard marks the instance failed with firmware_crash_loop and does
+// not restart.
+func (s *supervisor) recordExit(ex fwExit) (restart bool) {
 	defer close(ex.proc.recorded)
-	exit := &control.Exit{AtS: s.clk.Now().Seconds()}
-	if ex.state != nil {
-		if ws, ok := ex.state.Sys().(syscall.WaitStatus); ok {
-			if ws.Signaled() {
-				exit.Signal = ws.Signal().String()
-			} else {
-				code := ws.ExitStatus()
-				exit.Code = &code
-			}
-		}
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	info := ex.info
+	info.Requested = s.stopping || ex.proc.requested
+	exit := &control.Exit{Kind: Classify(info), Code: info.Code, Signal: info.Signal, AtS: s.clk.Now().Seconds()}
 	if s.fw == ex.proc {
 		s.fwRunning = false
 	}
-	requested := s.stopping || ex.proc.requested
-	switch {
-	case requested:
-		exit.Kind = "requested"
-	case exit.Code != nil && *exit.Code == 0:
-		exit.Kind = "rebooted"
-	default:
-		exit.Kind = "crashed"
-	}
 	s.lastExit = exit
-	if !requested {
-		s.failure = apperr.Infra("firmware_exited", "the firmware process exited unexpectedly",
-			map[string]any{"kind": exit.Kind, "code": exit.Code, "signal": exit.Signal})
-		s.log.Error("firmware exited unexpectedly", "kind", exit.Kind, "code", exit.Code, "signal", exit.Signal)
+	if info.Requested {
+		return false
 	}
+	s.log.Error("firmware exited unexpectedly", "kind", exit.Kind, "code", exit.Code, "signal", exit.Signal)
+	if s.guard.Record() {
+		s.failure = apperr.Failed("firmware_crash_loop",
+			fmt.Sprintf("the firmware exited %d times within %s; not restarting it", crashLimit, crashWindow),
+			map[string]any{"last_exit": exit, "window_s": int(crashWindow / time.Second), "limit": crashLimit})
+		s.log.Error("firmware crash loop, giving up", "limit", crashLimit, "window", crashWindow)
+		return false
+	}
+	s.restarting = true // hides the gap until the new process exists
+	return true
+}
+
+// autoRestart starts the firmware again after an unrequested exit and
+// re-runs the readiness probe. It serializes with FwRestart and shutdown on
+// opMu and gives up when the exited process is no longer the current one (a
+// restart got there first) or the instance is going down.
+func (s *supervisor) autoRestart(old *fwProc) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	clearRestarting := func() {
+		s.mu.Lock()
+		s.restarting = false
+		s.mu.Unlock()
+	}
+	s.mu.Lock()
+	skip := s.stopping || s.fw != old
+	s.mu.Unlock()
+	if skip || isDown(s.downReq) {
+		clearRestarting()
+		return
+	}
+	s.mu.Lock()
+	s.restarts++
+	s.apiReady, s.apiFailure = false, nil
+	s.mu.Unlock()
+	if err := s.startFirmware(); err != nil {
+		s.mu.Lock()
+		s.failure = apperr.AsError(err)
+		s.restarting = false
+		s.mu.Unlock()
+		s.log.Error("cannot restart the firmware", "error", err)
+		return
+	}
+	s.startProbe()
+	clearRestarting()
+	s.log.Info("firmware restarted after an unrequested exit", "restarts", s.restartCount())
 }
 
 // Status implements control.Control.
@@ -667,6 +740,7 @@ func (s *supervisor) isStopping() bool {
 
 // FwRestart implements control.Control (D-05): SIGTERM (SIGKILL after the
 // grace period), then the same program with the same environment and prefs.
+// The stop is requested, so it never counts towards the crash guard.
 func (s *supervisor) FwRestart(ctx context.Context) (control.Status, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -676,46 +750,9 @@ func (s *supervisor) FwRestart(ctx context.Context) (control.Status, error) {
 	rctx, rcancel := s.withDown(ctx)
 	defer rcancel()
 
-	s.mu.Lock()
-	old := s.fw
-	s.restarting = true
-	s.apiReady, s.apiFailure, s.failure = false, nil, nil
-	if old != nil {
-		old.requested = true
-	}
-	s.mu.Unlock()
-	// restarting hides the gap between the old exit and the new start from the
-	// phase; it is cleared as soon as the new process exists (or the restart fails).
-	clearRestarting := func() {
-		s.mu.Lock()
-		s.restarting = false
-		s.mu.Unlock()
-	}
-	defer clearRestarting()
-
-	s.stopProc(old)
-	if old != nil {
-		// Wait for the main loop to record the exit (last_exit.kind requested).
-		tm := s.clk.NewTimer(5 * time.Second)
-		select {
-		case <-old.recorded:
-			tm.Stop()
-		case <-tm.C():
-			s.log.Warn("the exit of the old firmware was not recorded in time")
-		}
-	}
-	if s.isStopping() || isDown(s.downReq) {
-		return control.Status{}, errStopping()
-	}
-	s.mu.Lock()
-	s.restarts++
-	s.mu.Unlock()
-	if err := s.startFirmware(); err != nil {
+	if err := s.cycleFirmware(); err != nil {
 		return control.Status{}, err
 	}
-	s.startProbe()
-	clearRestarting()
-	s.log.Info("firmware restarted", "restarts", s.restartCount())
 
 	var last control.Status
 	err := s.waitUntil(rctx, readyBudget, func() (bool, error) {
@@ -741,6 +778,54 @@ func (s *supervisor) FwRestart(ctx context.Context) (control.Status, error) {
 		return control.Status{}, err
 	}
 	return last, nil
+}
+
+// cycleFirmware stops the current firmware on request and starts the next
+// one with a fresh readiness probe. The caller holds opMu.
+func (s *supervisor) cycleFirmware() error {
+	s.mu.Lock()
+	old := s.fw
+	s.restarting = true
+	s.apiReady, s.apiFailure, s.failure = false, nil, nil
+	if old != nil {
+		old.requested = true
+	}
+	s.mu.Unlock()
+	// restarting hides the gap between the old exit and the new start from the
+	// phase; it is cleared as soon as the new process exists (or the restart fails).
+	clearRestarting := func() {
+		s.mu.Lock()
+		s.restarting = false
+		s.mu.Unlock()
+	}
+	defer clearRestarting()
+
+	s.stopProc(old)
+	if old != nil {
+		// Wait for the main loop to record the exit (last_exit.kind requested).
+		tm := s.clk.NewTimer(5 * time.Second)
+		select {
+		case <-old.recorded:
+			tm.Stop()
+		case <-s.downReq:
+			tm.Stop()
+		case <-tm.C():
+			s.log.Warn("the exit of the old firmware was not recorded in time")
+		}
+	}
+	if s.isStopping() || isDown(s.downReq) {
+		return errStopping()
+	}
+	s.mu.Lock()
+	s.restarts++
+	s.mu.Unlock()
+	if err := s.startFirmware(); err != nil {
+		return err
+	}
+	s.startProbe()
+	clearRestarting()
+	s.log.Info("firmware restarted", "restarts", s.restartCount())
+	return nil
 }
 
 func (s *supervisor) restartCount() int {
