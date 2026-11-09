@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>sil</title>
+<link rel="icon" href="data:,">
+<script type="module" src="/js/app.js"></script>
+</head>
+<body>
+<header id="header">
+  <div class="cell"><span data-src="instance" data-fmt="text">--</span></div>
+  <div class="cell"><span class="label">SIM TIME</span><span data-src="sim.time_s" data-fmt="simtime">--</span></div>
+  <div class="cell"><span class="label">TIME FACTOR</span><span data-src="sim.time_factor" data-fmt="factor">--</span></div>
+  <div class="cell"><span class="label">FIRMWARE</span><span data-src="firmware.bus_connected" data-fmt="firmware">--</span></div>
+  <div id="message" role="status" aria-live="polite" data-ui-only></div>
+  <div class="cell"><span class="label">LINK</span><span id="link" data-ui-only>CONNECTING</span></div>
+</header>
+<main id="ports"></main>
+<template id="port-panel">
+  <section class="port">
+    <div class="row">
+      <span class="chip" data-src="ports.{i}.port" data-fmt="chip">--</span>
+      <span class="fan" data-src="ports.{i}.fan" data-fmt="text">--</span>
+      <span class="readout"><span class="value" data-src="ports.{i}.rpm" data-fmt="rpm">--</span><span class="unit">RPM</span></span>
+      <span class="readout"><span class="value" data-src="ports.{i}.duty" data-fmt="pct">--</span><span class="unit">% DUTY</span></span>
+    </div>
+  </section>
+</template>
+</body>
+</html>

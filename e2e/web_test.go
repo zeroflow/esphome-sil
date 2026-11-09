@@ -1,0 +1,272 @@
+//go:build sil_e2e
+
+package e2e
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/zeroflow/esphome-sil/internal/clock"
+)
+
+// webBase is the page origin of the web listener on the local machine.
+func webBase(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
+// webDo sends one request to the web listener and returns the status, the headers and the body.
+func webDo(t *testing.T, port int, method, path string) (int, http.Header, []byte) {
+	t.Helper()
+	return webDoBody(t, port, method, path, "")
+}
+
+func webDoBody(t *testing.T, port int, method, path, body string) (int, http.Header, []byte) {
+	t.Helper()
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, webBase(port)+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	tr := &http.Transport{DisableKeepAlives: true}
+	defer tr.CloseIdleConnections()
+	res, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("%s %s: read body: %v", method, path, err)
+	}
+	return res.StatusCode, res.Header, raw
+}
+
+// webJSON decodes one JSON object.
+func webJSON(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("not a JSON object: %v\n%s", err, raw)
+	}
+	return m
+}
+
+// webDial opens /ws (query is the raw query string without "?", may be empty).
+func webDial(t *testing.T, port int, query string) *websocket.Conn {
+	t.Helper()
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 10*time.Second)
+	defer cancel()
+	url := fmt.Sprintf("ws://127.0.0.1:%d/ws", port)
+	if query != "" {
+		url += "?" + query
+	}
+	c, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("dial %s: %v", url, err)
+	}
+	t.Cleanup(func() { _ = c.CloseNow() })
+	return c
+}
+
+// webRead reads one text frame as a JSON object within budget.
+func webRead(t *testing.T, c *websocket.Conn, budget time.Duration) (map[string]any, error) {
+	t.Helper()
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, budget)
+	defer cancel()
+	typ, raw, err := c.Read(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if typ != websocket.MessageText {
+		t.Fatalf("frame type = %v, want text", typ)
+	}
+	if strings.HasSuffix(string(raw), "\n") {
+		t.Fatalf("frame ends in a newline: %q", raw)
+	}
+	return webJSON(t, raw), nil
+}
+
+// webReadUntil reads frames until match accepts one (returned) or the budget ends.
+func webReadUntil(t *testing.T, c *websocket.Conn, budget time.Duration, what string, match func(map[string]any) bool) map[string]any {
+	t.Helper()
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, budget)
+	defer cancel()
+	for {
+		typ, raw, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("waiting for %s: %v", what, err)
+		}
+		if typ != websocket.MessageText {
+			t.Fatalf("frame type = %v, want text", typ)
+		}
+		f := webJSON(t, raw)
+		if match(f) {
+			return f
+		}
+	}
+}
+
+// TestWebTracer proves the web front door end to end on a real Rev 3.3 instance: the sticky web
+// port, the embedded page, the /ws stream whose frames are `sil watch` lines, and the firmware key
+// kept off the network listener. The subtests share one instance and run in order.
+func TestWebTracer(t *testing.T) {
+	in := r33Up(t, "e2e-web")
+	start := sysClock.Now()
+	st := in.env.Status(t, in.name)
+	port := int(jget(st, "web", "port").(float64))
+	t.Logf("web port %d", port)
+
+	t.Run("status_web", func(t *testing.T) {
+		if got := jget(st, "web", "listen"); got != "0.0.0.0" {
+			t.Fatalf("web.listen = %v, want 0.0.0.0", got)
+		}
+		if port < 8054 || port > 9053 {
+			t.Fatalf("web.port = %d, want within 8054..9053", port)
+		}
+		if url, _ := jget(st, "web", "url").(string); !strings.HasSuffix(url, fmt.Sprintf(":%d/", port)) {
+			t.Fatalf("web.url = %q, want it to end with :%d/", url, port)
+		}
+		raw, err := os.ReadFile(filepath.Join(in.env.State, "sil", in.name, "identity.json"))
+		if err != nil {
+			t.Fatalf("identity.json: %v", err)
+		}
+		id := webJSON(t, raw)
+		if got, _ := id["web_port"].(float64); int(got) != port {
+			t.Fatalf("identity.json web_port = %v, want %d", id["web_port"], port)
+		}
+		if got, _ := id["api_port"].(float64); int(got) != in.port {
+			t.Fatalf("identity.json api_port = %v, want %d", id["api_port"], in.port)
+		}
+	})
+
+	t.Run("page", func(t *testing.T) {
+		code, hdr, body := webDo(t, port, http.MethodGet, "/")
+		if code != 200 || !strings.HasPrefix(hdr.Get("Content-Type"), "text/html") {
+			t.Fatalf("GET / = %d %q, want 200 text/html", code, hdr.Get("Content-Type"))
+		}
+		if !strings.Contains(string(body), "/js/app.js") {
+			t.Fatalf("GET / does not reference /js/app.js:\n%s", body)
+		}
+		for _, p := range []string{"/js/app.js", "/js/store.js"} {
+			code, hdr, _ := webDo(t, port, http.MethodGet, p)
+			if ct := hdr.Get("Content-Type"); code != 200 || !strings.Contains(ct, "javascript") {
+				t.Fatalf("GET %s = %d %q, want 200 with a javascript content type", p, code, ct)
+			}
+		}
+		if code, _, _ := webDo(t, port, http.MethodPost, "/"); code != http.StatusMethodNotAllowed {
+			t.Fatalf("POST / = %d, want 405", code)
+		}
+	})
+
+	t.Run("status_redacted", func(t *testing.T) {
+		code, _, raw := webDo(t, port, http.MethodGet, "/api/v1/status")
+		if code != 200 {
+			t.Fatalf("GET /api/v1/status = %d: %s", code, raw)
+		}
+		tcp := webJSON(t, raw)
+		if got := jget(tcp, "api", "key"); got != "<redacted>" {
+			t.Fatalf("TCP api.key = %v, want <redacted>", got)
+		}
+		sock := in.env.Status(t, in.name)
+		key, _ := jget(sock, "api", "key").(string)
+		if dec, err := base64.StdEncoding.DecodeString(key); err != nil || len(dec) != 32 {
+			t.Fatalf("socket api.key does not decode to 32 bytes: %q (%v)", key, err)
+		}
+		for _, path := range [][]any{{"instance"}, {"api", "port"}, {"api", "mac"}, {"web"}} {
+			if a, b := jget(tcp, path...), jget(sock, path...); !reflect.DeepEqual(a, b) {
+				t.Fatalf("%v differs: tcp %v, socket %v", path, a, b)
+			}
+		}
+		for i := range jgetSlice(sock, "ports") {
+			if a, b := jget(tcp, "ports", i, "fan"), jget(sock, "ports", i, "fan"); !reflect.DeepEqual(a, b) {
+				t.Fatalf("ports[%d].fan differs: tcp %v, socket %v", i, a, b)
+			}
+		}
+	})
+
+	t.Run("ws_snapshot", func(t *testing.T) {
+		c := webDial(t, port, "")
+		f, err := webRead(t, c, 5*time.Second)
+		if err != nil {
+			t.Fatalf("first frame: %v", err)
+		}
+		if f["k"] != "snapshot" {
+			t.Fatalf("first frame k = %v, want snapshot: %v", f["k"], f)
+		}
+		if seq, ok := f["seq"].(float64); !ok || seq != float64(int64(seq)) {
+			t.Fatalf("seq = %v, want an integer", f["seq"])
+		}
+		if f["instance"] != in.name {
+			t.Fatalf("instance = %v, want %s", f["instance"], in.name)
+		}
+		if n := len(jgetSlice(f, "ports")); n != 4 {
+			t.Fatalf("ports = %d, want 4", n)
+		}
+		if got := jget(f, "sim", "time_factor"); got != float64(1) {
+			t.Fatalf("sim.time_factor = %v, want 1", got)
+		}
+		if _, ok := jget(f, "firmware", "bus_connected").(bool); !ok {
+			t.Fatalf("firmware.bus_connected = %v, want a boolean", jget(f, "firmware", "bus_connected"))
+		}
+		if got := jget(f, "api", "key"); got != "<redacted>" {
+			t.Fatalf("snapshot api.key = %v, want <redacted>", got)
+		}
+	})
+
+	t.Run("ws_live", func(t *testing.T) {
+		c := webDial(t, port, "")
+		if f, err := webRead(t, c, 5*time.Second); err != nil || f["k"] != "snapshot" {
+			t.Fatalf("first frame = %v (%v), want the snapshot", f, err)
+		}
+		if out, code := in.set(t, "temperature=23.5"); code != 0 {
+			t.Fatalf("sil set temperature=23.5: exit %d: %v", code, out)
+		}
+		webReadUntil(t, c, 5*time.Second, "an env frame for temperature 23.5", func(f map[string]any) bool {
+			return f["k"] == "env" && f["id"] == "temperature" && f["v"] == 23.5
+		})
+	})
+
+	t.Run("ws_bad_kind", func(t *testing.T) {
+		ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 10*time.Second)
+		defer cancel()
+		c, res, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d/ws?kind=nope", port), nil)
+		if err == nil {
+			_ = c.CloseNow()
+			t.Fatal("dial with kind=nope succeeded, want a refused upgrade")
+		}
+		if res == nil || res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("response = %v, want 400", res)
+		}
+		raw, _ := io.ReadAll(res.Body)
+		if code := jget(webJSON(t, raw), "error", "code"); code != "invalid_argument" {
+			t.Fatalf("error code = %v, want invalid_argument: %s", code, raw)
+		}
+	})
+
+	t.Run("stopped_on_down", func(t *testing.T) {
+		c := webDial(t, port, "")
+		if f, err := webRead(t, c, 5*time.Second); err != nil || f["k"] != "snapshot" {
+			t.Fatalf("first frame = %v (%v), want the snapshot", f, err)
+		}
+		if out, code, stderr := in.env.Sil(t, "down", in.name); code != 0 {
+			t.Fatalf("sil down: exit %d: %v\n%s", code, out, stderr)
+		}
+		webReadUntil(t, c, 5*time.Second, "the stopped frame", func(f map[string]any) bool { return f["k"] == "stopped" })
+		if f, err := webRead(t, c, 5*time.Second); err == nil {
+			t.Fatalf("frame after stopped: %v, want the connection closed", f)
+		}
+	})
+	t.Logf("TestWebTracer took %s after the instance was up", sysClock.Now()-start)
+}

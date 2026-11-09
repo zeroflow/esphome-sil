@@ -30,6 +30,9 @@ import (
 // DefaultAPIPort..DefaultAPIPort+PortScanSpan-1.
 const (
 	DefaultAPIPort = 6054
+	// DefaultWebPort is the first-time port of the web listener (D-09); its automatic scan covers
+	// DefaultWebPort..DefaultWebPort+PortScanSpan-1, disjoint from the API port range.
+	DefaultWebPort = 8054
 	PortScanSpan   = 1000
 	MinAPIPort     = 1024
 	MaxAPIPort     = 65535
@@ -153,6 +156,9 @@ type Identity struct {
 	Schema  int    `json:"schema"`
 	Name    string `json:"name"`
 	APIPort int    `json:"api_port"`
+	// WebPort is the sticky port of the web listener. Identities written before the web UI have none;
+	// the next LoadOrCreate allocates one and leaves key and api_port unchanged.
+	WebPort int    `json:"web_port,omitempty"`
 	Key     string `json:"key"`
 }
 
@@ -211,13 +217,23 @@ func LoadOrCreate(p Paths, apiPort int) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	if exists && port == id.APIPort {
+	// The web port is sticky like the API port. An identity that has none (written before the web UI)
+	// gets one here; the key and the API port stay as they are.
+	webPort := id.WebPort
+	if !exists || webPort == 0 {
+		// The API port just decided is not stored yet on a first use; it must not become the web port.
+		webPort, err = AllocateWebPort(root, p.Name, 0, func(wp int) bool { return wp != port && TestBindWeb("0.0.0.0", wp) == nil })
+		if err != nil {
+			return Identity{}, err
+		}
+	}
+	if exists && port == id.APIPort && webPort == id.WebPort {
 		return id, nil
 	}
 	// An explicit --api-port is the user's choice, but it becomes sticky once stored: a busy port
 	// must fail here (port_in_use) without being persisted, or every later plain `sil up` would
 	// re-use it and fail the same way. A port that is already the stored one changes nothing.
-	if apiPort != 0 {
+	if apiPort != 0 && !(exists && port == id.APIPort) {
 		if err := TestBind(port); err != nil {
 			return Identity{}, err
 		}
@@ -230,6 +246,7 @@ func LoadOrCreate(p Paths, apiPort int) (Identity, error) {
 		id = Identity{Schema: 1, Name: p.Name, Key: base64.StdEncoding.EncodeToString(key)}
 	}
 	id.APIPort = port
+	id.WebPort = webPort
 	if err := writeJSON(p.IdentityJSON(), id, 0o700); err != nil {
 		return Identity{}, apperr.Infra("identity_failed", "cannot write identity.json", map[string]any{"path": p.IdentityJSON(), "error": err.Error()})
 	}
@@ -268,6 +285,9 @@ func readIdentity(p Paths) (id Identity, exists bool, err error) {
 	}
 	if id.APIPort < MinAPIPort || id.APIPort > MaxAPIPort {
 		return Identity{}, true, corrupt("api_port is missing or out of range")
+	}
+	if id.WebPort != 0 && (id.WebPort < MinAPIPort || id.WebPort > MaxAPIPort) {
+		return Identity{}, true, corrupt("web_port is out of range")
 	}
 	return id, true, nil
 }
@@ -316,6 +336,10 @@ type RunFile struct {
 	RunDir   string `json:"run_dir"`
 	APISock  string `json:"api_sock"`
 	BusSock  string `json:"bus_sock"`
+	// WebPort and WebListen are where the web listener serves (absent in run.json files of older
+	// versions; readers decode without DisallowUnknownFields).
+	WebPort   int    `json:"web_port,omitempty"`
+	WebListen string `json:"web_listen,omitempty"`
 }
 
 // WriteRunFile writes run.json atomically (tmp + rename, 0600).

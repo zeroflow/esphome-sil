@@ -45,7 +45,13 @@ import (
 	"github.com/zeroflow/esphome-sil/internal/fanlib"
 	"github.com/zeroflow/esphome-sil/internal/instance"
 	"github.com/zeroflow/esphome-sil/internal/model"
+	"github.com/zeroflow/esphome-sil/internal/web"
+	"github.com/zeroflow/esphome-sil/ui"
 )
+
+// defaultWebListen is where the web listener binds (D-07): every interface, so the page is
+// reachable from the LAN.
+const defaultWebListen = "0.0.0.0"
 
 // stopGrace is how long the firmware gets after SIGTERM before SIGKILL.
 const stopGrace = 3 * time.Second
@@ -99,6 +105,8 @@ type supervisor struct {
 	engCfg engine.Config
 	// lanHost is the default-route IPv4 address, computed once in Serve ("" when unknown).
 	lanHost string
+	// webListen is the address the web listener binds (defaultWebListen).
+	webListen string
 
 	// broker carries the change events of every engine of this instance to the watch streams. It
 	// outlives engine replacement; stopAll closes it. Nil means no events (some unit tests).
@@ -195,7 +203,8 @@ func Serve(ctx context.Context, name string) error {
 		inputs: engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity},
 		fans:   ports,
 
-		lanHost: instance.LANHost(),
+		lanHost:   instance.LANHost(),
+		webListen: defaultWebListen,
 
 		starter:  ExecStarter{},
 		guard:    NewCrashGuard(clk),
@@ -220,6 +229,7 @@ func (s *supervisor) run(sigCtx context.Context) error {
 	rf := instance.RunFile{
 		Schema: 1, Instance: s.id.Name, PID: os.Getpid(),
 		RunDir: s.paths.RunDir, APISock: s.paths.APISock(), BusSock: s.paths.BusSock(),
+		WebPort: s.id.WebPort, WebListen: s.webListen,
 	}
 	if err := instance.WriteRunFile(s.paths, rf); err != nil {
 		return apperr.Infra("run_file_failed", "cannot write run.json", map[string]any{"error": err.Error()})
@@ -230,6 +240,14 @@ func (s *supervisor) run(sigCtx context.Context) error {
 
 	// Whatever happens below, the firmware group must not outlive us.
 	defer s.shutdown()
+
+	// The web port is bound before the engine starts (D-07): a taken port ends the supervisor with
+	// port_in_use and never moves to another one.
+	webLn, err := instance.ListenWeb(s.webListen, s.id.WebPort)
+	if err != nil {
+		return err
+	}
+	defer webLn.Close()
 
 	// Engine slot. The engine runs on its own context: shutdown stops the
 	// firmware first and cancels the engine afterwards.
@@ -256,8 +274,12 @@ func (s *supervisor) run(sigCtx context.Context) error {
 	srvCtx, srvCancel := context.WithCancel(context.Background())
 	srvDone := make(chan error, 1)
 	go func() { srvDone <- control.ServeListener(srvCtx, ln, control.NewHandler(s)) }()
+	webDone := make(chan error, 1)
+	go func() {
+		webDone <- control.ServeListener(srvCtx, webLn, web.NewHandler(s, web.Options{Static: ui.FS(), Clock: s.clk, Log: s.log}))
+	}()
 
-	s.log.Info("instance serving", "pid", os.Getpid(), "api_sock", s.paths.APISock())
+	s.log.Info("instance serving", "pid", os.Getpid(), "api_sock", s.paths.APISock(), "web_port", s.id.WebPort)
 
 	loopErr := s.mainLoop(sigCtx)
 
@@ -267,6 +289,7 @@ func (s *supervisor) run(sigCtx context.Context) error {
 	_ = os.Remove(s.paths.RunJSON())
 	srvCancel()
 	<-srvDone
+	<-webDone
 	s.log.Info("instance stopped")
 	return loopErr
 }
@@ -671,6 +694,9 @@ func (s *supervisor) statusFrom(have *engine.Snapshot) control.Status {
 		},
 		Firmware: control.FirmwareStatus{PID: pid, Running: running, BusConnected: snap.BusConnected, Restarts: restarts, LastExit: lastExit},
 		Sim:      control.SimStatus{TimeS: snap.SimTime.Seconds(), TimeFactor: 1, EngineRestarts: engRestarts, BusProto: snap.BusProto},
+		Web: control.WebStatus{
+			Listen: s.webListen, Port: s.id.WebPort, URL: instance.WebURL(s.webListen, s.lanHost, s.id.WebPort),
+		},
 		Ports:    make([]control.PortStatus, 0, len(snap.Ports)),
 		Env:      control.EnvStatus{Temperature: snap.Env.Temperature, Humidity: snap.Env.Humidity},
 		Buttons:  make(map[string]bool, len(engine.ButtonIDs)),

@@ -50,7 +50,9 @@ type Status struct {
 	API      APIStatus      `json:"api"`
 	Firmware FirmwareStatus `json:"firmware"`
 	Sim      SimStatus      `json:"sim"`
-	Ports    []PortStatus   `json:"ports"`
+	// Web is where the instance's web page is served.
+	Web   WebStatus    `json:"web"`
+	Ports []PortStatus `json:"ports"`
 	// Env is the temperature (degrees Celsius) and humidity (%RH) the firmware is fed.
 	Env EnvStatus `json:"env"`
 	// Buttons is the current level of every button (true = held): usr1, usr2, usr3.
@@ -59,6 +61,14 @@ type Status struct {
 	LEDs     LEDStatus     `json:"leds"`
 	Warnings []string      `json:"warnings"`
 	Error    *apperr.Error `json:"error,omitempty"`
+}
+
+// WebStatus describes the web listener: the address it binds, its port and the page URL for the
+// LAN (the instance's lan_host, 127.0.0.1 when that is unknown).
+type WebStatus struct {
+	Listen string `json:"listen"`
+	Port   int    `json:"port"`
+	URL    string `json:"url"`
 }
 
 // LEDStatus is the status LED strip: one "#rrggbb" per LED (the final pixel bytes, exactly as the
@@ -526,6 +536,19 @@ func streamNDJSON(w http.ResponseWriter, fn func(send func(any) error) error) {
 	if err := fn(send); err != nil && !started {
 		reply(w, nil, err)
 	}
+}
+
+// WriteError answers err as {"error":{...}} with the status code the control handler uses (400
+// for exit class 1, 500 otherwise), so other handlers write the same error shape.
+func WriteError(w http.ResponseWriter, err error) {
+	reply(w, nil, err)
+}
+
+// WriteErrorStatus answers err as {"error":{...}} with the given HTTP status.
+func WriteErrorStatus(w http.ResponseWriter, status int, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(errorBody{Error: apperr.AsError(err)})
 }
 
 func reply(w http.ResponseWriter, v any, err error) {
