@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/cdptest"
+	"github.com/zeroflow/esphome-sil/internal/control"
+	"github.com/zeroflow/esphome-sil/internal/events"
 )
 
 // capSel is the selector of the USR cap of button id.
@@ -126,5 +129,258 @@ func TestUSRHold(t *testing.T) {
 	}
 	if msg := textOf(t, p, "#message"); msg != "" {
 		t.Errorf("message line = %q after a plain hold, want it empty", msg)
+	}
+}
+
+// evalOn runs js in the page and fails the test on an error.
+func evalOn(t *testing.T, p *cdptest.Page, js string, out any) {
+	t.Helper()
+	if err := p.Eval(within(t, 10*time.Second), js, out); err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+}
+
+// holdFresh presses the cap of id with the mouse and waits for the button.down and the lit cap; it
+// returns the cap centre. wantDowns is how many downs the bench should have seen in total.
+func holdFresh(t *testing.T, b *bench, p *cdptest.Page, id string, wantDowns int) (float64, float64) {
+	t.Helper()
+	x, y := capCentre(t, p, id)
+	mouse(t, p, "mousePressed", x, y)
+	b.waitCalls(t, "button.down", wantDowns, 5*time.Second)
+	waitPressed(t, p, id, "true", 5*time.Second)
+	return x, y
+}
+
+// liveWithCaps opens the page on a fresh bench and waits for LIVE and the enabled caps.
+func liveWithCaps(t *testing.T) (*bench, *cdptest.Page) {
+	t.Helper()
+	b := newBench(t)
+	base := newSite(t, b)
+	p := openPage(t, base)
+	waitText(t, p, "#link", "LIVE", 15*time.Second)
+	if err := p.WaitFor(within(t, 5*time.Second), `[...document.querySelectorAll('button.usr')].every((e) => !e.disabled && e.getAttribute('aria-pressed') === 'false')`); err != nil {
+		t.Fatalf("the caps never became enabled and dark: %v", err)
+	}
+	return b, p
+}
+
+// TestUSRTouchLeave (D-15, Research Pitfall 6): a finger that goes down on USR1 and slides well off
+// the cap releases the hold at once, while the finger is still down. A touch pointer is captured by
+// the cap it started on, which would hide the leave; the page lets the capture go.
+func TestUSRTouchLeave(t *testing.T) {
+	b, p := liveWithCaps(t)
+	x, y := capCentre(t, p, "usr1")
+	ctx := within(t, 10*time.Second)
+	if err := p.Touch(ctx, "touchStart", x, y); err != nil {
+		t.Fatal(err)
+	}
+	b.waitCalls(t, "button.down", 1, 5*time.Second)
+	waitPressed(t, p, "usr1", "true", 5*time.Second)
+	if err := p.Touch(ctx, "touchMove", x, y-300); err != nil {
+		t.Fatal(err)
+	}
+	up := b.waitCalls(t, "button.up", 1, 5*time.Second)
+	if up[0].Args != "usr1" {
+		t.Errorf("button.up args = %q, want usr1", up[0].Args)
+	}
+	waitPressed(t, p, "usr1", "false", 5*time.Second)
+	if err := p.Touch(ctx, "touchEnd", x, y-300); err != nil {
+		t.Fatal(err)
+	}
+	settle(t, 300*time.Millisecond)
+	if n := len(b.callsOf("button.up")); n != 1 {
+		t.Errorf("%d ups after the finger lifted, want the one sent when it left the cap", n)
+	}
+}
+
+// TestUSRBlurHidden (D-15): a window blur, and the tab becoming hidden, each release a held cap.
+func TestUSRBlurHidden(t *testing.T) {
+	b, p := liveWithCaps(t)
+	x, y := holdFresh(t, b, p, "usr1", 1)
+	evalOn(t, p, `window.dispatchEvent(new Event('blur'))`, nil)
+	b.waitCalls(t, "button.up", 1, 5*time.Second)
+	waitPressed(t, p, "usr1", "false", 5*time.Second)
+	mouse(t, p, "mouseReleased", x, y)
+
+	x, y = holdFresh(t, b, p, "usr1", 2)
+	evalOn(t, p, `(() => { Object.defineProperty(document, 'hidden', {value: true, configurable: true});
+	  document.dispatchEvent(new Event('visibilitychange')); return true; })()`, nil)
+	b.waitCalls(t, "button.up", 2, 5*time.Second)
+	waitPressed(t, p, "usr1", "false", 5*time.Second)
+	mouse(t, p, "mouseReleased", x, y)
+	evalOn(t, p, `(delete document.hidden, true)`, nil)
+	settle(t, 300*time.Millisecond)
+	if n := len(b.callsOf("button.up")); n != 2 {
+		t.Errorf("%d ups, want exactly one per hold (the later pointerup must not send another)", n)
+	}
+}
+
+// TestUSRKeyboard (D-15): on a focused cap, Space and Enter hold like a pointer (one down on the first
+// keydown, nothing on a repeated one, one up on keyup); pointercancel, pointerleave, lostpointercapture
+// and the cap losing focus each release a held cap.
+func TestUSRKeyboard(t *testing.T) {
+	b, p := liveWithCaps(t)
+	ctx := within(t, 20*time.Second)
+	evalOn(t, p, `(document.querySelector('`+capSel("usr3")+`').focus(), true)`, nil)
+
+	downs, ups := 0, 0
+	for _, key := range []string{" ", "Enter"} {
+		if err := p.Key(ctx, "keyDown", key); err != nil {
+			t.Fatal(err)
+		}
+		downs++
+		b.waitCalls(t, "button.down", downs, 5*time.Second)
+		waitPressed(t, p, "usr3", "true", 5*time.Second)
+		evalOn(t, p, `(document.querySelector('`+capSel("usr3")+`').dispatchEvent(new KeyboardEvent('keydown', {key: `+strconvQuote(key)+`, repeat: true, bubbles: true, cancelable: true})), true)`, nil)
+		settle(t, 200*time.Millisecond)
+		if n := len(b.callsOf("button.down")); n != downs {
+			t.Fatalf("key %q: %d downs after a repeated keydown, want %d", key, n, downs)
+		}
+		if err := p.Key(ctx, "keyUp", key); err != nil {
+			t.Fatal(err)
+		}
+		ups++
+		b.waitCalls(t, "button.up", ups, 5*time.Second)
+		waitPressed(t, p, "usr3", "false", 5*time.Second)
+	}
+	if got := b.callsOf("button.down")[0].Args; got != "usr3 10000" {
+		t.Errorf("button.down args = %q, want %q", got, "usr3 10000")
+	}
+
+	for _, ev := range []string{
+		`new PointerEvent('pointercancel', {pointerId: 1, bubbles: true})`,
+		`new PointerEvent('pointerleave', {pointerId: 1})`,
+		`new PointerEvent('lostpointercapture', {pointerId: 1, bubbles: true})`,
+		`new FocusEvent('blur')`,
+	} {
+		downs++
+		x, y := holdFresh(t, b, p, "usr3", downs)
+		evalOn(t, p, `(document.querySelector('`+capSel("usr3")+`').dispatchEvent(`+ev+`), true)`, nil)
+		ups++
+		b.waitCalls(t, "button.up", ups, 5*time.Second)
+		waitPressed(t, p, "usr3", "false", 5*time.Second)
+		mouse(t, p, "mouseReleased", x, y)
+	}
+	settle(t, 300*time.Millisecond)
+	if n := len(b.callsOf("button.up")); n != ups {
+		t.Errorf("%d ups, want %d (one per hold)", n, ups)
+	}
+}
+
+// strconvQuote quotes s as a JavaScript string literal (Go syntax is enough for these keys).
+func strconvQuote(s string) string { return strconv.Quote(s) }
+
+// TestUSRAutoRelease (D-15): when the engine releases the button after its max hold (button v false),
+// the cap goes dark and the page's later pointerup sends no redundant up.
+func TestUSRAutoRelease(t *testing.T) {
+	b, p := liveWithCaps(t)
+	x, y := holdFresh(t, b, p, "usr1", 1)
+	b.AutoRelease("usr1")
+	waitPressed(t, p, "usr1", "false", 5*time.Second)
+	mouse(t, p, "mouseReleased", x, y)
+	settle(t, 500*time.Millisecond)
+	if n := len(b.callsOf("button.up")); n != 0 {
+		t.Errorf("%d ups after the engine's max-hold release, want none", n)
+	}
+	if msg := textOf(t, p, "#message"); msg != "" {
+		t.Errorf("message line = %q, want it empty (no button_not_held error)", msg)
+	}
+	// The cap works again afterwards.
+	x, y = holdFresh(t, b, p, "usr1", 2)
+	mouse(t, p, "mouseReleased", x, y)
+	b.waitCalls(t, "button.up", 1, 5*time.Second)
+	waitPressed(t, p, "usr1", "false", 5*time.Second)
+}
+
+// TestUSRRejected (D-17, UIC-19): a refused down shows the API's message verbatim, the cap stays as
+// the server reports it (dark), and the release that follows sends no up.
+func TestUSRRejected(t *testing.T) {
+	b, p := liveWithCaps(t)
+	const msg = `usr1 is already held by <b>"the CLI"</b> & more`
+	b.FailNext("button.down", apperr.Failed("button_busy", msg, map[string]any{"button": "usr1"}))
+	x, y := capCentre(t, p, "usr1")
+	mouse(t, p, "mousePressed", x, y)
+	waitText(t, p, "#message", msg, 5*time.Second)
+	if got := pressed(t, p, "usr1"); got != "false" {
+		t.Errorf("cap aria-pressed = %q after a refused down, want false", got)
+	}
+	mouse(t, p, "mouseReleased", x, y)
+	settle(t, 300*time.Millisecond)
+	if n := len(b.callsOf("button.up")); n != 0 {
+		t.Errorf("%d ups after a refused down, want none", n)
+	}
+}
+
+// TestUSRDisabledWhenStale (UIC-18): while the link is down the caps are disabled and a press sends
+// nothing.
+func TestUSRDisabledWhenStale(t *testing.T) {
+	b, p := liveWithCaps(t)
+	b.HoldSnapshot()
+	b.DropStreams()
+	waitText(t, p, "#link", "DISCONNECTED, RETRYING", 5*time.Second)
+	if err := p.WaitFor(within(t, 5*time.Second), `[...document.querySelectorAll('button.usr')].every((e) => e.disabled)`); err != nil {
+		t.Fatalf("the caps are not disabled on a lost link: %v", err)
+	}
+	x, y := capCentre(t, p, "usr1")
+	mouse(t, p, "mousePressed", x, y)
+	mouse(t, p, "mouseReleased", x, y)
+	settle(t, 500*time.Millisecond)
+	if n := len(b.callsOf("button.down")) + len(b.callsOf("button.up")); n != 0 {
+		t.Errorf("%d button calls from a disabled cap, want none", n)
+	}
+	b.ReleaseSnapshot()
+	waitText(t, p, "#link", "LIVE", 10*time.Second)
+	if err := p.WaitFor(within(t, 5*time.Second), `[...document.querySelectorAll('button.usr')].every((e) => !e.disabled)`); err != nil {
+		t.Fatalf("the caps never came back: %v", err)
+	}
+}
+
+// TestHeaderRealTime (UI-05, UIC-30): the REAL TIME cell is always there and reads IN SYNC; a sim
+// behind event makes it the orange BEHIND chip with the accessible name, in_sync restores it, and the
+// cell never changes width. The element carrying data-src holds the text itself.
+func TestHeaderRealTime(t *testing.T) {
+	b, p := liveWithCaps(t)
+	const sel = `[data-src="sim.behind_real_time"]`
+	waitText(t, p, sel, "IN SYNC", 5*time.Second)
+
+	read := func() (r struct {
+		Text, Label, Class, Fill, Color, Weight string
+		Kids                                    int
+		CellW                                   float64
+	}) {
+		t.Helper()
+		evalOn(t, p, `(() => { const e = document.querySelector('`+sel+`'), cs = getComputedStyle(e);
+		  return {Text: e.textContent, Label: e.getAttribute('aria-label') || '', Class: e.className, Fill: cs.backgroundColor, Color: cs.color,
+		    Weight: cs.fontWeight, Kids: e.children.length, CellW: e.closest('.cell').getBoundingClientRect().width}; })()`, &r)
+		return r
+	}
+	calm := read()
+	if calm.Label != "" || strings.Contains(calm.Class, "warn") || calm.Kids != 0 {
+		t.Errorf("IN SYNC cell = %+v, want no label, no warn class, no child element", calm)
+	}
+	if calm.Color != "rgb(230, 232, 235)" {
+		t.Errorf("IN SYNC colour = %s, want the primary text colour", calm.Color)
+	}
+	var label string
+	evalOn(t, p, `document.querySelector('[data-src="sim.behind_real_time"]').closest('.cell').querySelector('.label').textContent`, &label)
+	if label != "REAL TIME" {
+		t.Errorf("cell label = %q, want REAL TIME", label)
+	}
+
+	b.Emit(events.Event{K: "sim", V: "behind"}, func(st *control.Status) { st.Sim.BehindRealTime = true })
+	waitText(t, p, sel, "BEHIND", 5*time.Second)
+	behind := read()
+	if behind.Label != "Simulator behind real time" || !strings.Contains(behind.Class, "warn") || behind.Kids != 0 ||
+		behind.Fill != "rgb(255, 138, 31)" || behind.Color != "rgb(7, 8, 10)" {
+		t.Errorf("BEHIND cell = %+v, want the orange #ff8a1f chip, #07080a text, the label, no child element", behind)
+	}
+	if behind.CellW != calm.CellW {
+		t.Errorf("cell width %v with BEHIND, %v with IN SYNC: it must not change", behind.CellW, calm.CellW)
+	}
+
+	b.Emit(events.Event{K: "sim", V: "in_sync"}, func(st *control.Status) { st.Sim.BehindRealTime = false })
+	waitText(t, p, sel, "IN SYNC", 5*time.Second)
+	if back := read(); back.Label != "" || strings.Contains(back.Class, "warn") || back.Fill != calm.Fill || back.CellW != calm.CellW {
+		t.Errorf("after in_sync the cell = %+v, want the calm look %+v", back, calm)
 	}
 }

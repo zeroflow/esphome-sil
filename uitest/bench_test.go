@@ -45,6 +45,8 @@ type bench struct {
 
 	btnHold chan struct{} // non-nil while SetButton calls wait before they apply
 
+	watchErr error // returned by the next Watch after its snapshot (FailWatchAfterSnapshot)
+
 	histHold chan struct{}                                      // non-nil while History answers are held
 	histFn   func(control.HistoryRequest) control.HistoryResult // replaces the broker's history when set
 }
@@ -174,6 +176,13 @@ func (b *bench) Watch(ctx context.Context, req control.WatchRequest, send func(v
 	b.mu.Unlock()
 	if err := send(control.SnapshotLine{T: int64(st.Sim.TimeS * 1e6), K: "snapshot", Seq: seq, Status: st}); err != nil {
 		return err
+	}
+	b.mu.Lock()
+	after := b.watchErr
+	b.watchErr = nil
+	b.mu.Unlock()
+	if after != nil {
+		return after
 	}
 	for {
 		select {
@@ -535,4 +544,12 @@ func (b *bench) ReleaseButtonEvents() {
 		close(b.btnHold)
 		b.btnHold = nil
 	}
+}
+
+// FailWatchAfterSnapshot makes the next Watch send its snapshot and then return err, which the WS
+// adapter turns into the final {"error": ...} frame (once).
+func (b *bench) FailWatchAfterSnapshot(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.watchErr = err
 }
