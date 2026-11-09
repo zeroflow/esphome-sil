@@ -184,3 +184,57 @@ func TestHistory(t *testing.T) {
 		}
 	})
 }
+
+// TestBehindField proves the wiring of sim.behind_real_time from the engine to status and watch.
+// No value is asserted on the real clock: a loaded host may legitimately fall behind. The flip
+// thresholds and the 2 s hold-off are proven on the Manual clock by TestBehindRealTime.
+func TestBehindField(t *testing.T) {
+	in := r33Up(t, signalsInstance)
+
+	st := in.env.Status(t, in.name)
+	if _, isBool := jget(st, "sim", "behind_real_time").(bool); !isBool {
+		t.Fatalf("status sim.behind_real_time = %v, want a JSON boolean", jget(st, "sim", "behind_real_time"))
+	}
+
+	w := watchStart(t, in.env, "watch", "-i", in.name, "--kind", "sim", "--count", "0")
+	snap := w.next(t, 10*time.Second, "the snapshot")
+	cur, isBool := jget(snap, "sim", "behind_real_time").(bool)
+	if !isBool {
+		t.Fatalf("snapshot sim.behind_real_time = %v, want a JSON boolean", jget(snap, "sim", "behind_real_time"))
+	}
+	flips := 0
+	deadline := sysClock.Now() + 3*time.Second
+	for {
+		left := deadline - sysClock.Now()
+		if left <= 0 {
+			break
+		}
+		m, ok := w.nextOrTimeout(t, left)
+		if !ok {
+			break
+		}
+		if m["k"] != "sim" {
+			t.Fatalf("a --kind sim stream carried %v", m)
+		}
+		switch m["v"] {
+		case "behind":
+			if cur {
+				t.Fatalf("behind event while already behind: %v", m)
+			}
+			cur = true
+			flips++
+		case "in_sync":
+			if !cur {
+				t.Fatalf("in_sync event while already in sync: %v", m)
+			}
+			cur = false
+			flips++
+		case "restarted":
+		default:
+			t.Fatalf("unexpected sim value in %v, want behind, in_sync or restarted", m)
+		}
+	}
+	w.interrupt(t)
+	w.exit(t, 10*time.Second)
+	t.Logf("behind_real_time flips during the idle watch: %d (snapshot value at the end: %v)", flips, cur)
+}

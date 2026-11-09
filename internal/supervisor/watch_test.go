@@ -258,3 +258,43 @@ func TestWatchJoinsDuringTheEngineGap(t *testing.T) {
 		// the new engine's start states pass by
 	}
 }
+
+// sim.behind_real_time is always present in the status and the watch snapshot, as a boolean.
+func TestStatusCarriesBehindRealTime(t *testing.T) {
+	s := watchSup(t)
+	st, err := s.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	sim, _ := m["sim"].(map[string]any)
+	if v, ok := sim["behind_real_time"]; !ok || v != false {
+		t.Fatalf("status sim = %v, want behind_real_time present and false", sim)
+	}
+	w := startWatch(t, s, "sim")
+	snap := w.next(t)
+	if v, ok := jsonPath(snap, "sim", "behind_real_time"); !ok || v != false {
+		t.Fatalf("snapshot sim = %v, want behind_real_time present and false", snap["sim"])
+	}
+}
+
+func jsonPath(m map[string]any, keys ...string) (any, bool) {
+	var v any = m
+	for _, k := range keys {
+		mm, ok := v.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if v, ok = mm[k]; !ok {
+			return nil, false
+		}
+	}
+	return v, true
+}

@@ -1850,3 +1850,133 @@ func TestSampleGapMarker(t *testing.T) {
 		t.Fatalf("B's first sample is %d us after A's last, want more than the 3 s restart gap", d)
 	}
 }
+
+// behindEngine is an engine that is never run: noteTick is driven by hand, the way the tick branch
+// of Run calls it.
+func behindEngine() (*Engine, *recorder) {
+	rec := &recorder{}
+	return New(Config{Clock: clock.NewManual(), Emit: rec.emit}), rec
+}
+
+// note feeds one tick: due at tickAt, handled `late` after it, dt after the previous tick.
+func (e *Engine) note(tickAt, late, dt time.Duration) {
+	e.simNow = tickAt
+	e.inTick = true
+	e.noteTick(tickAt, tickAt+late, dt)
+	e.inTick = false
+	e.publish()
+}
+
+func simVals(rec *recorder) string {
+	var vs []string
+	for _, ev := range rec.of("sim") {
+		vs = append(vs, fmt.Sprint(ev.V))
+	}
+	return fmt.Sprint(vs)
+}
+
+// The behind-real-time flag is computed from tick lateness with a 2 s hold-off (UIC-30 / A-03-05).
+func TestBehindRealTime(t *testing.T) {
+	t.Run("on time stays in sync", func(t *testing.T) {
+		e, rec := behindEngine()
+		for i := 1; i <= 500; i++ {
+			e.note(time.Duration(i)*tick, 0, tick)
+		}
+		if e.Snapshot().BehindRealTime || len(rec.of("sim")) != 0 {
+			t.Fatalf("behind %v, sim events %s after 500 on-time ticks, want false and none", e.Snapshot().BehindRealTime, simVals(rec))
+		}
+	})
+
+	t.Run("a tick after a long gap sets it once", func(t *testing.T) {
+		e, rec := behindEngine()
+		e.note(10*tick, 0, tick)
+		e.note(10*tick+200*time.Millisecond, 0, 200*time.Millisecond) // dt 200 ms: the loop stalled
+		if !e.Snapshot().BehindRealTime {
+			t.Fatal("a 200 ms gap between ticks did not set behind")
+		}
+		e.note(10*tick+210*time.Millisecond, 0, tick)
+		if got := simVals(rec); got != "[behind]" {
+			t.Fatalf("sim events %s, want exactly one behind", got)
+		}
+	})
+
+	t.Run("a tick handled 60 ms late counts", func(t *testing.T) {
+		e, rec := behindEngine()
+		e.note(tick, 60*time.Millisecond, tick)
+		if !e.Snapshot().BehindRealTime || simVals(rec) != "[behind]" {
+			t.Fatalf("behind %v, events %s, want a tick handled 60 ms late to set it", e.Snapshot().BehindRealTime, simVals(rec))
+		}
+	})
+
+	t.Run("exactly the threshold is still on time", func(t *testing.T) {
+		e, _ := behindEngine()
+		e.note(tick, behindLate, tick)
+		e.note(2*tick, 0, behindLate)
+		if e.Snapshot().BehindRealTime {
+			t.Fatal("50 ms is not more than 50 ms")
+		}
+	})
+
+	t.Run("hysteresis", func(t *testing.T) {
+		e, rec := behindEngine()
+		at := time.Second
+		e.note(at, 200*time.Millisecond, tick) // the late tick
+		late := at
+		for at += tick; at-late < behindClear; at += tick {
+			e.note(at, 0, tick) // up to 1.99 s after the late one
+		}
+		if !e.Snapshot().BehindRealTime {
+			t.Fatalf("cleared %v after the late tick, want it held for %v", at-tick-late, behindClear)
+		}
+		if at-late != behindClear {
+			t.Fatalf("test arithmetic: at-late = %v", at-late)
+		}
+		e.note(at, 0, tick) // exactly 2 s
+		if e.Snapshot().BehindRealTime {
+			t.Fatal("still behind 2 s after the last late tick")
+		}
+		if got := simVals(rec); got != "[behind in_sync]" {
+			t.Fatalf("sim events %s, want behind then in_sync, once each", got)
+		}
+	})
+
+	t.Run("a second late tick restarts the hold-off", func(t *testing.T) {
+		e, rec := behindEngine()
+		at := time.Second
+		e.note(at, 200*time.Millisecond, tick)
+		first := at
+		for at += tick; at < first+time.Second; at += tick {
+			e.note(at, 0, tick)
+		}
+		e.note(at, 100*time.Millisecond, tick) // late again after 1 s
+		second := at
+		for at += tick; at-second < behindClear; at += tick {
+			e.note(at, 0, tick)
+			if at-first >= behindClear && !e.Snapshot().BehindRealTime {
+				t.Fatalf("cleared at %v after the first late tick although a second came at %v", at-first, second-first)
+			}
+		}
+		if !e.Snapshot().BehindRealTime {
+			t.Fatal("cleared before 2 s after the second late tick")
+		}
+		e.note(at, 0, tick)
+		if e.Snapshot().BehindRealTime {
+			t.Fatal("still behind 2 s after the second late tick")
+		}
+		if got := simVals(rec); got != "[behind in_sync]" {
+			t.Fatalf("sim events %s, want one behind and one in_sync (no flicker)", got)
+		}
+	})
+}
+
+// On the Manual clock every tick is delivered at its due time, so the flag never rises.
+func TestBehindRealTimeManualClockStaysInSync(t *testing.T) {
+	h := newHarness(t)
+	h.advanceTo(5 * time.Second)
+	if h.eng.Snapshot().BehindRealTime {
+		t.Fatal("behind_real_time rose on a Manual clock")
+	}
+	if got := h.rec.of("sim"); len(got) != 0 {
+		t.Fatalf("sim events %+v on a Manual clock, want none", got)
+	}
+}
