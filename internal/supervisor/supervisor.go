@@ -839,13 +839,28 @@ func (s *supervisor) Press(ctx context.Context, id string, r control.PressReques
 	}, nil
 }
 
-// SetButton implements control.Control (D-03): one strict edge, no hold.
+// SetButton implements control.Control (D-03): one strict edge, no hold. A
+// hold on a held button is button_busy, a release of a released one
+// button_not_held; nothing is queued.
 func (s *supervisor) SetButton(ctx context.Context, id string, down bool) (control.PressResult, error) {
 	if err := checkButton(id); err != nil {
 		return control.PressResult{}, err
 	}
-	// 02-01 task 1 stub: the raw down/up edges are wired in task 2.
-	return control.PressResult{}, apperr.Infra("internal", "raw button control is not implemented yet", nil)
+	if s.isStopping() {
+		return control.PressResult{}, errStopping()
+	}
+	t, err := s.currentEngine().SetButton(ctx, id, down, true)
+	if err != nil {
+		return control.PressResult{}, buttonErr(id, err)
+	}
+	res := control.PressResult{Button: id, Action: "up", Level: down}
+	if down {
+		res.Action = "down"
+		res.TDownUS = t.Microseconds()
+	} else {
+		res.TUpUS = t.Microseconds()
+	}
+	return res, nil
 }
 
 func isDown(ch <-chan struct{}) bool {
