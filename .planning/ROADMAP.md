@@ -31,7 +31,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Two named instances run side by side, each with its own run dir, API port, MAC, device name and key. `sil up` on a taken port fails with exit code 2 and a JSON error. `sil down` stops both processes, killing the simulator leaves no orphaned firmware, and each new run starts with fresh preferences.
   5. Misconfigurations fail loudly before anything runs: a host-incompatible component (e.g. `wifi:`, `ledc`, `i2c`), a sim platform without `channel:`, an over-long sim-bus socket path, or an unknown key in `fan.toml` each stop the build or start with a message naming the problem.
 
-**Plans:** 3/13 plans executed
+**Plans:** 4/13 plans executed
 
 Plans:
 **Wave 1**
@@ -42,7 +42,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [x] 01-03-PLAN.md — Walking skeleton link 3 (tracer): `sil up` -> detached supervisor -> `sil status` over api.sock -> `sil down`; four ports; CLI error JSON; e2e Env helpers (wave 3)
-- [ ] 01-04-PLAN.md — Manual clock and deterministic engine tests (exact step composition, last-wins, race-free snapshots) (wave 3)
+- [x] 01-04-PLAN.md — Manual clock and deterministic engine tests (exact step composition, last-wins, race-free snapshots) (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 01-05-PLAN.md — Fan model (hysteresis, below_min, asymmetric lag) and strict fan.toml library with located errors (wave 4)
@@ -99,6 +99,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Closed-Loop Fan Skeleton | 3/13 | In Progress|  |
+| 1. Closed-Loop Fan Skeleton | 4/13 | In Progress|  |
 | 2. Full Rev 3.3 Bench | 0/TBD | Not started | - |
 | 3. Live Web UI | 0/TBD | Not started | - |

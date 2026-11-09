@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Closed-Loop Fan Skeleton
 status: executing
-stopped_at: Completed 01-03-PLAN.md
-last_updated: "2026-11-09T01:06:37.357Z"
+stopped_at: Completed 01-04-PLAN.md
+last_updated: "2026-11-09T01:11:23.865Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 1 execution started
-state_head: 5b048e88e96d5a2d32ad82c456f5efc437d5937e
+state_head: fb885a70f4bf318277f07419f66dc018454cd4e5
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 13
-  completed_plans: 3
+  completed_plans: 4
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 1 (Closed-Loop Fan Skeleton) — EXECUTING
-Plan: 4 of 13
+Plan: 5 of 13
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 1 execution started
 
@@ -59,6 +59,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 1 P01 | 12 min | 2 tasks | 14 files |
 | Phase 01 P02 | 20min | 2 tasks | 12 files |
 | Phase 01 P03 | 10min | 2 tasks | 11 files |
+| Phase 1 P04 | 3 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,7 @@ Recent decisions affecting current work:
 - [Phase 01]: 01-02: wall-clock lint bans context timers and stdlib timeout fields too; infrastructure timeouts go through clock.WithTimeout or clock.Deadline
 - [Phase 01]: 01-03 D-02: engine is a goroutine in sil serve with fresh state per engine.New; engine.Run owns bus.Listen and socket unlink; supervisor owns lifecycle of engine slot and firmware process group; a sim restart (01-10) keeps the firmware PID
 - [Phase 01]: 01-03: control API only on <run>/api.sock (0600); run-dir parent must be a real 0700 dir owned by the user (run_dir_unsafe otherwise)
+- [Phase 1]: 01-04: clock.Manual delivers tick/timer values by blocking unbuffered sends; Timer.Stop is false exactly when Advance already took the timer
 
 ### Pending Todos
 
@@ -104,8 +106,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T01:06:37.327Z
-Stopped at: Completed 01-03-PLAN.md
+Last session: 2026-11-09T01:11:23.837Z
+Stopped at: Completed 01-04-PLAN.md
 Resume file: None
 
 ## Needs Human
