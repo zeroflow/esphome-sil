@@ -255,6 +255,36 @@ func TestWebTracer(t *testing.T) {
 		}
 	})
 
+	t.Run("lifecycle_refused", func(t *testing.T) {
+		before := in.env.Status(t, in.name)
+		for _, op := range []struct{ path, cli string }{
+			{"/api/v1/down", "sil down"},
+			{"/api/v1/sim/restart", "sil sim restart"},
+			{"/api/v1/fw/restart", "sil fw restart"},
+		} {
+			code, _, raw := webDo(t, port, http.MethodPost, op.path)
+			if code != http.StatusForbidden {
+				t.Fatalf("POST %s = %d, want 403: %s", op.path, code, raw)
+			}
+			body := webJSON(t, raw)
+			if got := jget(body, "error", "code"); got != "operation_not_allowed" {
+				t.Fatalf("POST %s error code = %v, want operation_not_allowed: %s", op.path, got, raw)
+			}
+			if msg, _ := jget(body, "error", "message").(string); !strings.Contains(msg, "`"+op.cli+"`") {
+				t.Fatalf("POST %s message = %q, want it to name `%s`", op.path, msg, op.cli)
+			}
+		}
+		after := in.env.Status(t, in.name)
+		if after["phase"] != "ready" {
+			t.Fatalf("phase after the refused operations = %v, want ready", after["phase"])
+		}
+		for _, path := range [][]any{{"firmware", "pid"}, {"sim", "engine_restarts"}, {"firmware", "restarts"}} {
+			if a, b := jget(before, path...), jget(after, path...); a != b {
+				t.Fatalf("%v changed from %v to %v: a refused operation must do nothing", path, a, b)
+			}
+		}
+	})
+
 	t.Run("stopped_on_down", func(t *testing.T) {
 		c := webDial(t, port, "")
 		if f, err := webRead(t, c, 5*time.Second); err != nil || f["k"] != "snapshot" {
