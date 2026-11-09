@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Full Rev 3.3 Bench
 status: executing
-stopped_at: Completed 02-05-PLAN.md
-last_updated: "2026-11-09T07:31:08.674Z"
+stopped_at: Completed 02-06-PLAN.md
+last_updated: "2026-11-09T08:00:50.969Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 2 execution started
-state_head: 9df9265c72b154feb6ef80e56aedaca17cd952d5
+state_head: 8e9bfc23048ebcaae3669d8e1d031ba1c0ea3ae2
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 21
-  completed_plans: 18
+  completed_plans: 19
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-08)
 ## Current Position
 
 Phase: 2 (Full Rev 3.3 Bench) — EXECUTING
-Plan: 6 of 8
+Plan: 7 of 8
 Status: Ready to execute
 Last activity: 2026-11-09 — Phase 2 execution started
 
@@ -74,6 +74,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 02 P03 | 15 min | 2 tasks | 14 files |
 | Phase 02 P04 | 25min | 2 tasks | 5 files |
 | Phase 02 P05 | 21min | 2 tasks | 13 files |
+| Phase 02 P06 | 28 min | 2 tasks | 17 files |
 
 ## Accumulated Context
 
@@ -125,6 +126,8 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-04: duplicate-channel message names a sim light by its user-written id, not the generated output_id; default_label() is the single partition-to-label mapping
 - [Phase 02]: 02-05: per-port fan list is held by the supervisor and is the single source of every engine's ports; DefaultFan is only the default of sil up --fan
 - [Phase 02]: 02-05: engine.Apply publishes its snapshot before replying, so a status read after sil set returned never shows the old fan
+- [Phase 02]: 02-06: watch joins the engine through SnapshotSync (snapshot built on the engine goroutine, stamped with the broker seq) so no change is lost or repeated at the snapshot/stream join
+- [Phase 02]: 02-06: log lines are cleaned whole (ANSI strip, key redaction) before the 64 KiB cut; lines whose beginning was not read are never served
 
 ### Pending Todos
 
@@ -151,8 +154,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T07:31:08.628Z
-Stopped at: Completed 02-05-PLAN.md
+Last session: 2026-11-09T08:00:50.922Z
+Stopped at: Completed 02-06-PLAN.md
 Resume file: None
 
 ## Needs Human
