@@ -12,20 +12,19 @@ A simulated fan controller runs closed-loop on the developer's own machine: real
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ Sim hardware mirrors Rev 3.3: 4 fan ports (PWM out, RPM in, no pulse simulation), status LED strip as addressable light so `partition` lights work, buttons USR1-3, temperature/humidity sensor (HDC1080 replacement) — Phase 2
+- ✓ Minimal example firmware YAML (Rev 3.3 IO surface, not the real product modules) lives in this repo as example and contract test — Phase 2
+- ✓ The firmware's native API is reachable by any Home Assistant instance the user points at it; fan speed control, RPM, LEDs, buttons, temperature are usable from HA — Phase 2 (accepted on aioesphomeapi proxy; live HA UAT open)
+- ✓ CLI/JSON API is first citizen (`sil up`, `sil set`, `sil press`, status as JSON); the web UI is only a client of the same API — Phase 2
 
 ### Active
 
 Milestone 1 — "the plumbing works end to end":
 
 - [ ] ESPHome `host:` firmware with `sim_*` external components builds (pinned ESPHome 2026.10.1, Docker) and runs on Linux
-- [ ] Sim hardware mirrors Rev 3.3: 4 fan ports (PWM out, RPM in, no pulse simulation), status LED strip as addressable light so `partition` lights work, buttons USR1-3, temperature/humidity sensor (HDC1080 replacement)
 - [ ] Firmware and simulator talk over a local sim-bus socket
 - [ ] Linear fan model with first-order lag (min duty, start threshold, max RPM, inertia), parameters from `fan.toml`
-- [ ] Minimal example firmware YAML (Rev 3.3 IO surface, not the real product modules) lives in this repo as example and contract test
-- [ ] The firmware's native API is reachable by any Home Assistant instance the user points at it; fan speed control, RPM, LEDs, buttons, temperature are usable from HA
 - [ ] Simple local web UI (served by the simulator, live over WebSocket, no build step, no runtime CDN): per fan port duty, RPM, live plot; virtual LEDs; short/long button press; run info (sim time, firmware connected)
-- [ ] CLI/JSON API is first citizen (`sil up`, `sil set`, `sil press`, status as JSON); the web UI is only a client of the same API
 - [ ] Simulator uses an injectable clock, `dt`-based model integration and sim timestamps on the sim-bus, so the time factor can be added later without a rewrite
 
 ### Out of Scope
@@ -77,6 +76,10 @@ Milestone 1 — "the plumbing works end to end":
 | Tach as RPM value, no pulse simulation | Drivers are HIL's job; SiL tests logic | — Pending |
 | Firmware build via pinned ESPHome Docker image | Nothing to install on the host, matches `compile.sh` | — Pending |
 | RPM sensor is a `PollingComponent` (exception to the push-only sensor rule) | IO-02 requires a 1 s windowed mean published at `update_interval`; temp/humidity/buttons stay push-only `Component`s. Decided autonomously 2026-11-09 during Phase 1 planning (plan-checker blocker); needs maintainer review | — Pending |
+| Contract tests drive and observe only via `sil` (D-18); Python test lock hash-gated against the product HIL lock (`make test-contract` depends on `lock-check`) | Keeps the CLI/JSON surface the single contract; hash identity stands in for a dependency review | ✓ Good (Phase 2) |
+| `examples/rev33.yaml` is the default `sil up` config; `fan-skeleton.yaml` stays as the minimal option | The Rev 3.3 bench is what users and contract tests run | ✓ Good (Phase 2) |
+| `api.lan_host` from a default-route UDP probe, shown in status and the `sil up` hint (mDNS is a stub on host) | HA must be added manually by host:port | ✓ Good (Phase 2); LAN reachability from a real HA unverified |
+| Phase 2 verification accepted on automated evidence (4/5; HA criterion proxied by aioesphomeapi) | User decision 2026-11-09 to proceed to Phase 3; live HA UAT tracked in STATE.md Needs Human | — Pending (`/gsd-verify-work 2`) |
 
 ## Evolution
 
@@ -96,4 +99,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-08 after initialization*
+*Last updated: 2026-11-09 after Phase 2*

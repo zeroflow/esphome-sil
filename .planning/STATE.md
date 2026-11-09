@@ -1,12 +1,12 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 1
-current_phase_name: Closed-Loop Fan Skeleton
+current_phase: 3
+current_phase_name: Live Web UI
 status: planning
-stopped_at: Phase 2 complete, ready to plan Phase 1
+stopped_at: Phase 2 complete, ready to plan Phase 3
 last_updated: "2026-11-09T09:36:07.398Z"
 last_activity: 2026-11-09
-last_activity_desc: Phase 2 complete, transitioned to Phase 1
+last_activity_desc: Phase 2 complete, transitioned to Phase 3 (Phase 1 verification still deferred)
 state_head: 90c241b444db8e3b98d05f3d207edd19f4e30f2f
 progress:
   total_phases: 3
@@ -20,17 +20,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-11-08)
+See: .planning/PROJECT.md (updated 2026-11-09)
 
 **Core value:** A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
-**Current focus:** Phase 2 — Full Rev 3.3 Bench
+**Current focus:** Phase 3 — Live Web UI
 
 ## Current Position
 
-Phase: 1 — Closed-Loop Fan Skeleton
+Phase: 3 — Live Web UI
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-11-09 — Phase 2 complete, transitioned to Phase 1
+Last activity: 2026-11-09 — Phase 2 complete (accepted on automated evidence), transitioned to Phase 3; Phase 1 verification deferred (`/gsd-verify-work 1`)
 
 Progress: [███░░░░░░░] 33%
 
@@ -141,11 +141,10 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 1] Go 1.27.3 is not yet installed on this host (checksum in research/STACK.md)
-- [Phase 1] Spike needed: static build with `api: encryption:` (Noise libs fetched at build time, hermetic build cache), same-path bind mounts for local external components, incremental rebuild timing
-- [Phase 1] Ready check needs a real encrypted API handshake from the Go side (Noise); pick the approach during planning
+- [Phase 1] RESOLVED: Go toolchain installed; static encrypted build with hermetic toolcache (01-08); Noise ready check (01-09)
 - [Phase 2] RESOLVED in 02-02: `partition` + `pulse` (and `addressable_rainbow`) on the sim addressable light verified at runtime; boot pulse 12 frames/s, rainbow 11 to 15 frames/s, idle 0 frames in 5 s
-- [Phase 2] Live HA behaviour with the stable-MAC scheme is unverified (research read HA source, no live run)
+- [Phase 2] Live HA behaviour with the stable-MAC scheme is unverified (aioesphomeapi identity proxy passes; no live HA run) — see Needs Human
+- [Phase 2] `TestSupervisorRebootExit` flake fixed in 8542d9d (test race); watch for recurrence
 - [Later] Static linking with real product modules (DNS, `json:`) is unverified; run-in-image fallback stays available
 - [Later] Host `select()` timeout lives in `core/wake/wake_host.cpp::wakeable_delay` in 2026.10.1, not `core/application.cpp` as PROJECT.md says (affects the time-factor milestone)
 - 01-05 A1 (non-blocking): Arctic start_duty 0.10, tau_up 1.0 s, tau_down 2.5 s are ASSUMED; maintainer to confirm or measure (fans/arctic-p12-pwm-pst.toml)
@@ -160,8 +159,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T08:48:45.329Z
-Stopped at: Phase 2 complete, ready to plan Phase 1
+Last session: 2026-11-09
+Stopped at: Phase 2 complete, ready to plan Phase 3
 Resume file: None
 
 ## Needs Human
