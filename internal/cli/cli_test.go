@@ -22,6 +22,7 @@ import (
 	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/clock"
 	"github.com/zeroflow/esphome-sil/internal/control"
+	"github.com/zeroflow/esphome-sil/internal/events"
 	"github.com/zeroflow/esphome-sil/internal/instance"
 )
 
@@ -105,6 +106,7 @@ type fakeControl struct {
 	press           []control.PressRequest
 	sets            []control.SetRequest
 	fans            control.FansResult
+	history         []control.HistoryRequest
 	edges           []bool
 	status          control.Status
 	err             error
@@ -180,6 +182,13 @@ func (f *fakeControl) Set(_ context.Context, r control.SetRequest) (control.SetR
 
 func (f *fakeControl) Fans(context.Context) (control.FansResult, error) {
 	return f.fans, f.record("fans")
+}
+
+func (f *fakeControl) History(_ context.Context, r control.HistoryRequest) (control.HistoryResult, error) {
+	f.mu.Lock()
+	f.history = append(f.history, r)
+	f.mu.Unlock()
+	return control.HistoryResult{Seq: 4, T: 300000, WindowS: 60, Samples: []events.Event{{T: 300000, K: events.SampleKind, Seq: 4}}}, f.record("history")
 }
 
 func (f *fakeControl) Watch(ctx context.Context, r control.WatchRequest, send func(any) error) error {
@@ -888,4 +897,56 @@ func TestUpHelpMentionsFan(t *testing.T) {
 	if !strings.Contains(se.String(), "--fan") || !strings.Contains(se.String(), "port") {
 		t.Fatalf("up --help = %q, want --fan documented", se.String())
 	}
+}
+
+func TestHistoryCommand(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan")}
+	liveInstance(t, "fan", fc)
+	r := run(t, "history", "-i", "fan", "--window", "60s")
+	if r.exit != 0 {
+		t.Fatalf("exit %d, stdout %s", r.exit, r.stdout)
+	}
+	res := r.object(t)
+	if samples, _ := res["samples"].([]any); res["seq"] != float64(4) || len(samples) != 1 {
+		t.Fatalf("result %s, want the HistoryResult as one JSON value", r.stdout)
+	}
+	if len(fc.history) != 1 || fc.history[0].WindowS != 60 {
+		t.Fatalf("history requests %v, want one with window_s 60", fc.history)
+	}
+	if r := run(t, "history", "-i", "fan"); r.exit != 0 || len(fc.history) != 2 || fc.history[1].WindowS != 0 {
+		t.Fatalf("`sil history` without a window: exit %d, requests %v, want window_s left out (0)", r.exit, fc.history)
+	}
+}
+
+func TestHistoryWindowErrorsComeFromTheServer(t *testing.T) {
+	cliEnv(t)
+	fc := &fakeControl{status: readyStatus("fan")}
+	liveInstance(t, "fan", fc)
+	r := run(t, "history", "-i", "fan", "--window", "301s")
+	if r.exit != 1 || r.errCode(t) != "invalid_argument" || len(fc.history) != 0 {
+		t.Fatalf("exit %d, stdout %s, requests %v, want exit 1 invalid_argument before the control is asked", r.exit, r.stdout, fc.history)
+	}
+}
+
+func TestWatchHelpListsSample(t *testing.T) {
+	var cli CLI
+	parser, err := kong.New(&cli, kong.Name("sil"), kong.Writers(io.Discard, io.Discard), kong.Exit(func(code int) { panic(exitSignal(code)) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range parser.Model.Children {
+		if c.Name == "watch" {
+			if h := c.Flags; len(h) == 0 {
+				t.Fatal("watch has no flags")
+			}
+			for _, f := range c.Flags {
+				if f.Name == "kind" && !strings.Contains(f.Help, "sample") {
+					t.Fatalf("watch --kind help %q does not mention the opt-in sample kind", f.Help)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("no watch command")
 }

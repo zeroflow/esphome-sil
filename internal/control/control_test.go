@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/zeroflow/esphome-sil/internal/apperr"
+	"github.com/zeroflow/esphome-sil/internal/events"
 )
 
 // fakeControl records the restart requests the handler forwards.
@@ -496,6 +497,10 @@ func (f *tableFake) Set(context.Context, SetRequest) (SetResult, error) {
 	return SetResult{}, nil
 }
 func (f *tableFake) Fans(context.Context) (FansResult, error) { f.calls++; return FansResult{}, nil }
+func (f *tableFake) History(context.Context, HistoryRequest) (HistoryResult, error) {
+	f.calls++
+	return HistoryResult{}, nil
+}
 func (f *tableFake) Watch(_ context.Context, _ WatchRequest, send func(any) error) error {
 	f.calls++
 	return send(map[string]string{"k": "snapshot"})
@@ -543,7 +548,7 @@ func TestOperationsTable(t *testing.T) {
 			t.Errorf("row %s: handler nil = %v, want nil exactly for watch.ws", op.Name, op.handler == nil)
 		}
 	}
-	for _, want := range []string{"status", "down", "sim.restart", "fw.restart", "press", "button.down", "button.up", "set", "fans", "watch", "logs", "watch.ws"} {
+	for _, want := range []string{"status", "down", "sim.restart", "fw.restart", "press", "button.down", "button.up", "set", "fans", "history", "watch", "logs", "watch.ws"} {
 		if _, ok := OperationByName(want); !ok {
 			t.Errorf("row %s is missing", want)
 		}
@@ -613,7 +618,7 @@ func TestOperationsTable(t *testing.T) {
 				lan = append(lan, op.Name)
 			}
 		}
-		if got := strings.Join(lan, ","); got != "status,press,button.down,button.up,set,fans,watch,watch.ws" {
+		if got := strings.Join(lan, ","); got != "status,press,button.down,button.up,set,fans,history,watch,watch.ws" {
 			t.Errorf("LAN rows = %s", got)
 		}
 	})
@@ -637,4 +642,115 @@ func TestOperationsTable(t *testing.T) {
 			}
 		}
 	})
+}
+
+// historyControl records the requests its History receives.
+type historyControl struct {
+	Control
+	got []HistoryRequest
+	res HistoryResult
+	err error
+}
+
+func (f *historyControl) History(_ context.Context, r HistoryRequest) (HistoryResult, error) {
+	f.got = append(f.got, r)
+	return f.res, f.err
+}
+
+func getPath(h http.Handler, path string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	return rec
+}
+
+func TestHistoryRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name, query string
+		wantCode    int
+		wantWindow  float64
+	}{
+		{"default window", "", 200, 300},
+		{"fractional window", "?window_s=2.5", 200, 2.5},
+		{"upper bound", "?window_s=300", 200, 300},
+		{"zero", "?window_s=0", 400, 0},
+		{"negative", "?window_s=-1", 400, 0},
+		{"too long", "?window_s=301", 400, 0},
+		{"not a number", "?window_s=NaN", 400, 0},
+		{"text", "?window_s=abc", 400, 0},
+		{"empty value", "?window_s=", 400, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := &historyControl{}
+			rec := getPath(NewHandler(fc), "/api/v1/history"+tc.query)
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status %d, want %d; body %s", rec.Code, tc.wantCode, rec.Body)
+			}
+			if tc.wantCode != 200 {
+				var eb struct{ Error *apperr.Error }
+				if err := json.Unmarshal(rec.Body.Bytes(), &eb); err != nil || eb.Error == nil || eb.Error.Code != "invalid_argument" {
+					t.Fatalf("body %s, want invalid_argument", rec.Body)
+				}
+				if len(fc.got) != 0 {
+					t.Fatalf("an invalid window reached the control: %v", fc.got)
+				}
+				return
+			}
+			if len(fc.got) != 1 || fc.got[0].WindowS != tc.wantWindow {
+				t.Fatalf("forwarded %v, want one request with window_s %v", fc.got, tc.wantWindow)
+			}
+		})
+	}
+
+	t.Run("an empty ring answers samples []", func(t *testing.T) {
+		rec := getPath(NewHandler(&historyControl{}), "/api/v1/history")
+		if !strings.Contains(rec.Body.String(), `"samples":[]`) {
+			t.Fatalf("body %s, want samples as an empty array and not null", rec.Body)
+		}
+	})
+
+	t.Run("the LAN handler serves it", func(t *testing.T) {
+		fc := &historyControl{res: HistoryResult{Seq: 9, T: 5, WindowS: 1, Samples: []events.Event{{T: 5, K: "sample", Seq: 9}}}}
+		rec := getPath(NewLANHandler(fc), "/api/v1/history?window_s=1")
+		if rec.Code != 200 || len(fc.got) != 1 || fc.got[0].WindowS != 1 {
+			t.Fatalf("LAN history: %d %s (requests %v)", rec.Code, rec.Body, fc.got)
+		}
+		var res HistoryResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || res.Seq != 9 || len(res.Samples) != 1 {
+			t.Fatalf("body %s (%v), want the HistoryResult unchanged", rec.Body, err)
+		}
+		if op, ok := OperationByName("history"); !ok || !op.LAN || op.CLI != "history" || op.Transport != "json" {
+			t.Fatalf("history row = %+v, %v, want a LAN json row with CLI history", op, ok)
+		}
+	})
+
+	t.Run("an error keeps its class", func(t *testing.T) {
+		rec := getPath(NewHandler(&historyControl{err: apperr.Infra("internal", "no broker", nil)}), "/api/v1/history")
+		if rec.Code != 500 {
+			t.Fatalf("status %d, want 500", rec.Code)
+		}
+	})
+}
+
+func TestHistoryRequestPath(t *testing.T) {
+	if p := (HistoryRequest{}).HistoryPath(); p != "/api/v1/history" {
+		t.Fatalf("HistoryPath() = %q, want no window_s when 0", p)
+	}
+	if p := (HistoryRequest{WindowS: 60}).HistoryPath(); p != "/api/v1/history?window_s=60" {
+		t.Fatalf("HistoryPath() = %q", p)
+	}
+	if p := (HistoryRequest{WindowS: 2.5}).HistoryPath(); p != "/api/v1/history?window_s=2.5" {
+		t.Fatalf("HistoryPath() = %q", p)
+	}
+}
+
+func TestClientHistory(t *testing.T) {
+	fc := &historyControl{res: HistoryResult{Seq: 3, T: 7, WindowS: 60, Samples: []events.Event{{T: 7, K: "sample", Seq: 3}}}}
+	c := serveStream(t, fc)
+	res, err := c.History(context.Background(), HistoryRequest{WindowS: 60})
+	if err != nil || res.Seq != 3 || len(res.Samples) != 1 || len(fc.got) != 1 || fc.got[0].WindowS != 60 {
+		t.Fatalf("Client.History = %+v, %v (control got %v)", res, err, fc.got)
+	}
+	if _, err := c.History(context.Background(), HistoryRequest{}); err != nil || fc.got[1].WindowS != 300 {
+		t.Fatalf("Client.History with no window = %v, control got %v, want the default 300", err, fc.got)
+	}
 }

@@ -3,6 +3,7 @@ package engine
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -1667,5 +1668,185 @@ func TestEngineSnapshotSyncStampsTheBrokerSeq(t *testing.T) {
 	waitUntil(t, "the engine to stop", func() bool { return !h.eng.Snapshot().BusConnected })
 	if _, err := h.eng.SnapshotSync(context.Background()); !errors.Is(err, ErrStopped) {
 		t.Fatalf("SnapshotSync after stop: %v, want ErrStopped", err)
+	}
+}
+
+// samplesOf decodes the V of every sample event.
+func samplesOf(t *testing.T, evs []events.Event) [][]events.Sample {
+	t.Helper()
+	var out [][]events.Sample
+	for _, ev := range evs {
+		v, ok := ev.V.([]events.Sample)
+		if !ok {
+			t.Fatalf("sample event V is %T, want []events.Sample", ev.V)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// Every 100 ms of sim time one sample event carries duty and rpm of every port; without the
+// firmware on the bus the values are null (a gap), never zero.
+func TestSampleCadence(t *testing.T) {
+	h := newHarness(t)
+	h.setDuty(1, 0.4)
+	h.advanceTo(time.Second)
+	evs := h.rec.of(events.SampleKind)
+	if len(evs) != 10 {
+		t.Fatalf("%d sample events after 1 s of ticks, want 10", len(evs))
+	}
+	for i, ev := range evs {
+		if want := int64(i+1) * 100_000; ev.T != want {
+			t.Fatalf("sample %d at t=%d, want %d (100 ms apart)", i, ev.T, want)
+		}
+	}
+	snap := h.eng.Snapshot()
+	vs := samplesOf(t, evs)
+	last := vs[len(vs)-1]
+	if len(last) != 4 {
+		t.Fatalf("a sample has %d entries, want one per port (4)", len(last))
+	}
+	for i, s := range last {
+		if s.Port != i+1 || s.Duty == nil || s.RPM == nil {
+			t.Fatalf("entry %d = %+v, want port %d with duty and rpm", i, s, i+1)
+		}
+		if *s.Duty != snap.Ports[i].Duty || *s.RPM != snap.Ports[i].RPM {
+			t.Fatalf("entry %d = duty %v rpm %v, want the snapshot's %v / %v", i, *s.Duty, *s.RPM, snap.Ports[i].Duty, snap.Ports[i].RPM)
+		}
+	}
+	if *last[0].Duty != 0.4 || *last[1].Duty != 0 {
+		t.Fatalf("duties %v %v, want 0.4 and 0", *last[0].Duty, *last[1].Duty)
+	}
+	if *last[0].RPM <= 0 {
+		t.Fatalf("port 1 rpm %v after 1 s at 40%%, want it spinning up", *last[0].RPM)
+	}
+
+	d := startEngine(t) // no firmware on the bus
+	d.advanceTo(time.Second)
+	dv := samplesOf(t, d.rec.of(events.SampleKind))
+	if len(dv) != 10 {
+		t.Fatalf("%d samples without a firmware, want 10 (gaps are still samples)", len(dv))
+	}
+	for _, sample := range dv {
+		for i, s := range sample {
+			if s.Port != i+1 || s.Duty != nil || s.RPM != nil {
+				t.Fatalf("disconnected entry %+v, want port %d with null duty and rpm", s, i+1)
+			}
+		}
+	}
+	raw, err := json.Marshal(dv[0][0])
+	if err != nil || string(raw) != `{"port":1,"duty":null,"rpm":null}` {
+		t.Fatalf("a null entry marshals as %s (%v), want explicit nulls", raw, err)
+	}
+}
+
+// A slot the engine missed is skipped, never back-filled.
+func TestSampleSkipsMissedSlots(t *testing.T) {
+	e := New(Config{Clock: clock.NewManual()})
+	e.nextSample = sampleStep
+	if e.sampleDue(99 * time.Millisecond) {
+		t.Fatal("a sample was due before the first slot")
+	}
+	if !e.sampleDue(350 * time.Millisecond) {
+		t.Fatal("no sample due at 350 ms with the slot at 100 ms open")
+	}
+	if e.sampleDue(350 * time.Millisecond) {
+		t.Fatal("the same instant produced a second sample: the missed slots were back-filled")
+	}
+	if e.sampleDue(399 * time.Millisecond) {
+		t.Fatal("a sample was due at 399 ms, want the next slot at 400 ms")
+	}
+	if !e.sampleDue(400 * time.Millisecond) {
+		t.Fatal("no sample due at the 400 ms slot")
+	}
+	if e.nextSample != 500*time.Millisecond {
+		t.Fatalf("nextSample = %v after the 400 ms slot, want 500ms", e.nextSample)
+	}
+}
+
+// startOn runs a new engine on clk that publishes into emit, like the supervisor does after a sim
+// restart, and returns it with a stop function that waits for Run.
+func startOn(t *testing.T, clk *clock.Manual, emit func(events.Event) uint64) (*Engine, func()) {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "sil-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	fan := fanParams(t)
+	ports := []PortConfig{{Port: 1, FanID: fanlib.DefaultFan, Fan: fan}, {Port: 2, FanID: fanlib.DefaultFan, Fan: fan}}
+	eng := New(Config{Clock: clk, BusPath: filepath.Join(dir, "bus.sock"), Ports: ports, Emit: emit})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- eng.Run(ctx) }()
+	tm := clock.NewReal().NewTimer(guard)
+	defer tm.Stop()
+	select {
+	case <-eng.Ready():
+	case err := <-done:
+		t.Fatalf("engine stopped before it was ready: %v", err)
+	case <-tm.C():
+		t.Fatal("engine never became ready")
+	}
+	clk.BlockUntil(1)
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			cancel()
+			wt := clock.NewReal().NewTimer(guard)
+			defer wt.Stop()
+			select {
+			case <-done:
+			case <-wt.C():
+				t.Error("Run did not return after cancel")
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return eng, stop
+}
+
+// The first sample of every engine carries gap:true, so a sim restart is marked in the stream.
+func TestSampleGapMarker(t *testing.T) {
+	broker := events.NewBroker()
+	clk := clock.NewManual()
+	run := func(d time.Duration) (stop func()) {
+		eng, stop := startOn(t, clk, broker.Publish)
+		target := eng.Snapshot().SimTime + d
+		clk.Advance(d)
+		waitUntil(t, fmt.Sprintf("SimTime == %v", target), func() bool { return eng.Snapshot().SimTime == target })
+		return stop
+	}
+	stopA := run(time.Second)
+	stopA() // the sim restart: engine A is gone
+	clk.Advance(3 * time.Second)
+	run(time.Second) // engine B starts on the same broker and the same clock
+
+	_, hist := broker.History(0)
+	if len(hist) != 20 {
+		t.Fatalf("History holds %d samples, want 10 from each engine", len(hist))
+	}
+	var gaps []int
+	for i, ev := range hist {
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hasGap := strings.Contains(string(raw), `"gap"`)
+		if hasGap != ev.Gap || (hasGap && !strings.Contains(string(raw), `"gap":true`)) {
+			t.Fatalf("sample %d marshals as %s with Gap=%v", i, raw, ev.Gap)
+		}
+		if ev.Gap {
+			gaps = append(gaps, i)
+		}
+		if i > 0 && ev.Seq <= hist[i-1].Seq {
+			t.Fatalf("history is not in seq order at %d", i)
+		}
+	}
+	if fmt.Sprint(gaps) != "[0 10]" {
+		t.Fatalf("gap samples at %v, want exactly the first sample of each engine [0 10]", gaps)
+	}
+	if d := hist[10].T - hist[9].T; d <= 3_000_000 {
+		t.Fatalf("B's first sample is %d us after A's last, want more than the 3 s restart gap", d)
 	}
 }

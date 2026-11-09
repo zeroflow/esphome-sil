@@ -1,9 +1,12 @@
 package events
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func drain(s *Sub, n int) []Event {
@@ -191,5 +194,129 @@ func TestConcurrentUse(t *testing.T) {
 	wg.Wait()
 	if b.Seq() != 8000 {
 		t.Fatalf("Seq() = %d, want 8000", b.Seq())
+	}
+}
+
+// sampleEvent is a sample at t microseconds, the way the engine builds one.
+func sampleEvent(t int64) Event {
+	return Event{T: t, K: SampleKind, V: []Sample{{Port: 1}}}
+}
+
+func TestSampleRing(t *testing.T) {
+	b := NewBroker()
+	for i := 1; i <= 5000; i++ {
+		b.Publish(sampleEvent(int64(i) * 100_000))
+		if i%7 == 0 {
+			b.Publish(Event{T: int64(i) * 100_000, K: "duty", Port: 1, V: 0.5}) // never enters the ring
+		}
+	}
+	seq, got := b.History(0)
+	if len(got) != HistoryCap || HistoryCap != 3000 {
+		t.Fatalf("History holds %d samples, want %d (HistoryCap 3000)", len(got), HistoryCap)
+	}
+	if seq != b.Seq() {
+		t.Fatalf("History seq = %d, want the broker's %d", seq, b.Seq())
+	}
+	for i, ev := range got {
+		if ev.K != SampleKind {
+			t.Fatalf("entry %d is a %q event, want only samples", i, ev.K)
+		}
+		if i > 0 && ev.Seq <= got[i-1].Seq {
+			t.Fatalf("seq not increasing at %d: %d after %d", i, ev.Seq, got[i-1].Seq)
+		}
+	}
+	if first, last := got[0].T, got[len(got)-1].T; first != 2001*100_000 || last != 5000*100_000 {
+		t.Fatalf("ring spans t %d..%d, want the newest 3000 (2001..5000 x 100 ms): the oldest were not dropped", first, last)
+	}
+
+	_, win := b.History(2 * time.Second)
+	if len(win) != 21 { // the newest and the 20 before it, all within 2 s of it
+		t.Fatalf("History(2s) = %d samples, want 21", len(win))
+	}
+	if newest := got[len(got)-1].T; win[0].T < newest-2_000_000 || win[len(win)-1].T != newest {
+		t.Fatalf("History(2s) spans %d..%d, want within 2 s of %d", win[0].T, win[len(win)-1].T, newest)
+	}
+
+	// The result is a copy: editing it leaves the ring alone.
+	got[0].K = "mutated"
+	if _, again := b.History(0); again[0].K != SampleKind {
+		t.Fatal("History returned the ring's own storage")
+	}
+}
+
+func TestHistoryEmptyRing(t *testing.T) {
+	b := NewBroker()
+	b.Publish(Event{K: "duty"})
+	seq, got := b.History(time.Second)
+	if seq != 1 || got == nil || len(got) != 0 {
+		t.Fatalf("History on an empty ring = %d, %#v, want seq 1 and an empty non-nil slice", seq, got)
+	}
+}
+
+func TestDefaultSubscriptionExcludesSample(t *testing.T) {
+	b := NewBroker()
+	all, _ := b.Subscribe(nil)
+	some, _ := b.Subscribe([]string{"duty", "rpm"})
+	opt, _ := b.Subscribe([]string{SampleKind})
+	b.Publish(sampleEvent(1))
+	b.Publish(Event{T: 2, K: "duty", Port: 1, V: 1.0})
+	if got := drain(all, 5); len(got) != 1 || got[0].K != "duty" {
+		t.Fatalf("a default subscription got %+v, want only the duty event (sample is opt-in)", got)
+	}
+	if got := drain(some, 5); len(got) != 1 || got[0].K != "duty" {
+		t.Fatalf("a duty,rpm subscription got %+v, want only the duty event", got)
+	}
+	if got := drain(opt, 5); len(got) != 1 || got[0].K != SampleKind {
+		t.Fatalf("a sample subscription got %+v, want only the sample", got)
+	}
+}
+
+func TestUnknownKindAcceptsSample(t *testing.T) {
+	if k := UnknownKind([]string{"duty", SampleKind}); k != "" {
+		t.Fatalf("UnknownKind rejected %q", k)
+	}
+	if k := UnknownKind([]string{"sample", "nope"}); k != "nope" {
+		t.Fatalf("UnknownKind = %q, want nope", k)
+	}
+	for _, k := range Kinds {
+		if k == SampleKind {
+			t.Fatal("Kinds lists sample; it must stay the default set")
+		}
+	}
+	b := NewBroker()
+	s, err := b.Subscribe([]string{SampleKind})
+	if err != nil {
+		t.Fatalf("Subscribe(sample): %v", err)
+	}
+	s.Close()
+}
+
+// An hour of samples at 10 Hz leaves exactly the newest 3000: memory stays flat.
+func TestHistorySoak(t *testing.T) {
+	b := NewBroker()
+	for i := 1; i <= 36000; i++ {
+		b.Publish(sampleEvent(int64(i) * 100_000))
+	}
+	_, got := b.History(0)
+	if len(got) != 3000 {
+		t.Fatalf("after one hour the ring holds %d samples, want exactly 3000", len(got))
+	}
+	if got[0].T != 33001*100_000 || got[2999].T != 36000*100_000 {
+		t.Fatalf("ring spans %d..%d, want the last 5 minutes", got[0].T, got[2999].T)
+	}
+}
+
+func TestEventGapAndReasonJSON(t *testing.T) {
+	raw, err := json.Marshal(Event{T: 1, K: SampleKind, Gap: true})
+	if err != nil || !strings.Contains(string(raw), `"gap":true`) {
+		t.Fatalf("a gap sample marshals as %s (%v), want gap:true", raw, err)
+	}
+	raw, _ = json.Marshal(Event{T: 1, K: SampleKind})
+	if strings.Contains(string(raw), "gap") || strings.Contains(string(raw), "reason") {
+		t.Fatalf("an ordinary event marshals as %s, want no gap and no reason member", raw)
+	}
+	raw, _ = json.Marshal(Event{T: 1, K: "button", ID: "usr1", V: false, Reason: "max_hold"})
+	if !strings.Contains(string(raw), `"reason":"max_hold"`) || !strings.Contains(string(raw), `"v":false`) {
+		t.Fatalf("a max-hold release marshals as %s, want reason max_hold and v false", raw)
 	}
 }
