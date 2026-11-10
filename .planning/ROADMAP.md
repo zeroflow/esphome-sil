@@ -154,7 +154,7 @@ Plans:
   3. `03.1-CONCURRENCY-REVIEW.md` traces 8542d9d, b976a6c, da1a9ca and e4f1046 and classifies every finding; the `s.fans` rollback data race (F1), the Set-during-shutdown `engine_failed` answer (F2, audit IN-09) and the shutdown-cancelled Set that answers `stopping` without rolling the record back (F6, user decision 2026-11-10) each have a test that failed before its fix and passes under `go test -race`, and a concurrent Set x SimRestart stress test passes repeated under `-race`.
   4. `make test-cpp` (host g++, no Docker) builds the shipped `components/sim_bus/sim_bus.cpp` against stub ESPHome headers and proves that more than 64 KiB pending for a peer that does not read drops the connection (WARN line, empty TX buffer, children told), and that the hub reconnects only after its backoff and replays hello, channels, last outputs and sync. `make test-cpp-image` passes the same test with the image gcc.
 
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans executed
 
 Plans:
 **Wave 1**
@@ -164,7 +164,7 @@ Plans:
 - [x] 03.1-02-PLAN.md — Independent re-review of the Set/SimRestart fixes in `03.1-CONCURRENCY-REVIEW.md`; red-then-green `-race` tests and fixes for F1 (`s.fans` rollback race), F2 (IN-09) and F6 (shutdown-cancelled Set skips rollback), Set x SimRestart stress test (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 03.1-03-PLAN.md — Host-side C++ test of the 64 KiB hub TX-cap drop, backoff and replay against stub ESPHome headers, wired into `make test-cpp` and `make test-cpp-image` (wave 3)
+- [x] 03.1-03-PLAN.md — Host-side C++ test of the 64 KiB hub TX-cap drop, backoff and replay against stub ESPHome headers, wired into `make test-cpp` and `make test-cpp-image` (wave 3)
 
 ## Progress
 
@@ -176,4 +176,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1
 | 1. Closed-Loop Fan Skeleton | 13/13 | Complete    | 2026-11-10 |
 | 2. Full Rev 3.3 Bench | 8/8 | Complete    | 2026-11-09 |
 | 3. Live Web UI | 12/12 | Complete    | 2026-11-10 |
-| 3.1. Address tech debt (INSERTED) | 2/3 | In Progress|  |
+| 3.1. Address tech debt (INSERTED) | 3/3 | In Progress|  |

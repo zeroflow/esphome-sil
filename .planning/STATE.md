@@ -3,17 +3,17 @@ gsd_state_version: "1.0"
 milestone: v0.1.0
 current_phase: "03.1"
 current_phase_name: "Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (INSERTED)"
-status: executing
-stopped_at: Completed 03.1-02-PLAN.md
-last_updated: "2026-11-10T12:47:47.317Z"
+status: verifying
+stopped_at: Completed 03.1-03-PLAN.md
+last_updated: "2026-11-10T12:54:19.019Z"
 last_activity: 2026-11-10
 last_activity_desc: Phase 03.1 execution started
-state_head: 0352fa87251a29c40a4374ccbac79de39264757c
+state_head: b48dfbe86563e8d67feca69f5ca6b358319c90cf
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 36
-  completed_plans: 35
+  completed_plans: 36
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 
 Phase: 03.1 (Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (INSERTED)) — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-11-10 — Phase 03.1 execution started
 
 Progress: [████████░░] 75%
@@ -93,6 +93,7 @@ Progress: [████████░░] 75%
 | Phase 03 P12 | 19 min | 2 tasks | 6 files |
 | Phase 03.1 P01 | 7 min | 3 tasks | 7 files |
 | Phase 03.1 P02 | 6 min | 2 tasks | 3 files |
+| Phase 03.1 P03 | 4 min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -179,6 +180,7 @@ Recent decisions affecting current work:
 - [Phase 03.1]: Set rolls back element-wise (copy(s.fans, prevFans)) so the s.fans slice header is written only in Serve (F1)
 - [Phase 03.1]: Set answers stopping with a rollback once a shutdown is requested or cancels its Apply; a shutdown is terminal so the rollback cannot desync a later engine (F2, F6)
 - [Phase 03.1]: Concurrency review kept as 03.1-CONCURRENCY-REVIEW.md; F3 documented, F5 and F7 left unchanged
+- [Phase 03.1]: 03.1-03: hub TX cap tested on host via stub ESPHome headers (tests/cpp/stubs); SimChild::on_value unnamed param keeps -Werror
 
 ### Pending Todos
 
@@ -208,8 +210,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-10T12:47:47.256Z
-Stopped at: Completed 03.1-02-PLAN.md
+Last session: 2026-11-10T12:54:18.957Z
+Stopped at: Completed 03.1-03-PLAN.md
 Resume file: None
 
 ## Needs Human
