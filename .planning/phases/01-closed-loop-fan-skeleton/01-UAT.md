@@ -3,7 +3,7 @@ status: complete
 phase: 01-closed-loop-fan-skeleton
 source: [01-VERIFICATION.md]
 started: 2026-11-09T04:26:44Z
-updated: 2026-11-10T09:19:48Z
+updated: 2026-11-10T10:12:41Z
 ---
 
 ## Current Test
@@ -32,7 +32,7 @@ result: pass
 ### 5. Hub 64 KiB TX-buffer overflow (backstop truth, 01-10)
 expected: Against a peer that never reads, the firmware drops the connection, reconnects with backoff, its API stays responsive and memory stays bounded.
 result: skipped
-reason: "skip it -> good enough for now"
+reason: "Deferred follow-up: skip it -> good enough for now"
 
 ### 6. chan manifest order stable across rebuilds (backstop truth, 01-10)
 expected: Building the example twice (cleaned cache) gives identical chan frame order in the hello snapshot.
@@ -51,3 +51,9 @@ blocked: 0
 ## Gaps
 
 [none]
+
+## Deferred Follow-Ups
+
+- test: 5
+  idea: "skip it -> good enough for now (one-off stress run of the 64 KiB TX-cap drop against a non-reading peer)"
+  deferred_at: 2026-11-10

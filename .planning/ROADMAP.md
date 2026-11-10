@@ -12,7 +12,7 @@ Milestone 1 proves the plumbing end to end in three vertical slices. Phase 1 is 
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Closed-Loop Fan Skeleton** - `sil up` builds static host firmware whose fan duty drives simulated fans over the sim-bus, with RPM flowing back; isolated, resilient, stoppable
+- [x] **Phase 1: Closed-Loop Fan Skeleton** - `sil up` builds static host firmware whose fan duty drives simulated fans over the sim-bus, with RPM flowing back; isolated, resilient, stoppable (completed 2026-11-10)
 - [x] **Phase 2: Full Rev 3.3 Bench** - Buttons, LED strip, temperature/humidity, full CLI vocabulary and Home Assistant control on the Rev 3.3 example, guarded by contract tests (completed 2026-11-09)
 - [ ] **Phase 3: Live Web UI** - Embedded local page with live per-port plots, virtual LEDs, button and environment controls, and run info, all through the same API as the CLI
 
@@ -31,7 +31,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Two named instances run side by side, each with its own run dir, API port, MAC, device name and key. `sil up` on a taken port fails with exit code 2 and a JSON error. `sil down` stops both processes, killing the simulator leaves no orphaned firmware, and each new run starts with fresh preferences.
   5. Misconfigurations fail loudly before anything runs: a host-incompatible component (e.g. `wifi:`, `ledc`, `i2c`), a sim platform without `channel:`, an over-long sim-bus socket path, or an unknown key in `fan.toml` each stop the build or start with a message naming the problem.
 
-**Plans:** 13/13 plans executed
+**Plans:** 13/13 plans complete
 
 Plans:
 **Wave 1**
@@ -149,6 +149,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Closed-Loop Fan Skeleton | 13/13 | In Progress|  |
+| 1. Closed-Loop Fan Skeleton | 13/13 | Complete    | 2026-11-10 |
 | 2. Full Rev 3.3 Bench | 8/8 | Complete    | 2026-11-09 |
 | 3. Live Web UI | 12/12 | In Progress|  |
