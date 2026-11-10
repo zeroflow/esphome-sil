@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Closed-Loop Fan Skeleton** - `sil up` builds static host firmware whose fan duty drives simulated fans over the sim-bus, with RPM flowing back; isolated, resilient, stoppable (completed 2026-11-10)
 - [x] **Phase 2: Full Rev 3.3 Bench** - Buttons, LED strip, temperature/humidity, full CLI vocabulary and Home Assistant control on the Rev 3.3 example, guarded by contract tests (completed 2026-11-09)
 - [x] **Phase 3: Live Web UI** - Embedded local page with live per-port plots, virtual LEDs, button and environment controls, and run info, all through the same API as the CLI (completed 2026-11-10)
-- [ ] **Phase 3.1: Address tech debt** (INSERTED) - Sim-restart button release, Set/SimRestart re-review, TX-cap test
+- [x] **Phase 3.1: Address tech debt** (INSERTED) - Sim-restart button release, Set/SimRestart re-review, TX-cap test (completed 2026-11-10)
 
 ## Phase Details
 
@@ -154,7 +154,7 @@ Plans:
   3. `03.1-CONCURRENCY-REVIEW.md` traces 8542d9d, b976a6c, da1a9ca and e4f1046 and classifies every finding; the `s.fans` rollback data race (F1), the Set-during-shutdown `engine_failed` answer (F2, audit IN-09) and the shutdown-cancelled Set that answers `stopping` without rolling the record back (F6, user decision 2026-11-10) each have a test that failed before its fix and passes under `go test -race`, and a concurrent Set x SimRestart stress test passes repeated under `-race`.
   4. `make test-cpp` (host g++, no Docker) builds the shipped `components/sim_bus/sim_bus.cpp` against stub ESPHome headers and proves that more than 64 KiB pending for a peer that does not read drops the connection (WARN line, empty TX buffer, children told), and that the hub reconnects only after its backoff and replays hello, channels, last outputs and sync. `make test-cpp-image` passes the same test with the image gcc.
 
-**Plans:** 3/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 **Wave 1**
@@ -176,4 +176,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1
 | 1. Closed-Loop Fan Skeleton | 13/13 | Complete    | 2026-11-10 |
 | 2. Full Rev 3.3 Bench | 8/8 | Complete    | 2026-11-09 |
 | 3. Live Web UI | 12/12 | Complete    | 2026-11-10 |
-| 3.1. Address tech debt (INSERTED) | 3/3 | In Progress|  |
+| 3.1. Address tech debt (INSERTED) | 3/3 | Complete    | 2026-11-10 |
