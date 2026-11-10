@@ -40,7 +40,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ## Phase Details
 
 ### Phase 4: Fan Model v2
-**Goal**: A simulated fan behaves like a real one: separate up and down duty→RPM curves, distinct start and stop thresholds with start delay, kick and coast-down, a tach that quantises and jitters like the firmware's `pulse_counter` window, and airflow and power from datasheet values. All of it is driven by an explicit `fan.toml` schema 2 with per-value provenance, while every v0.1.0 fan file still behaves exactly as before.
+**Goal**: A simulated fan behaves like a real one: separate up and down duty→RPM curves, distinct start and stop thresholds with start delay and coast-down, a tach that quantises and jitters like the firmware's `pulse_counter` window, and airflow and power from datasheet values. All of it is driven by an explicit `fan.toml` schema 2 with per-value provenance, while every v0.1.0 fan file still behaves exactly as before.
 **Mode:** mvp
 **Depends on**: v0.1.0 (Phase 3.1); first phase of this milestone
 **Requirements**: MODEL-05, MODEL-06, MODEL-07, MODEL-08, MODEL-09, MODEL-10, MODEL-11, MODEL-12
@@ -48,7 +48,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Research**: standard patterns. One in-phase check (spike S7): confirm that the 30 rpm steps from the Go pulse accumulator survive the firmware's 1 s mean; analytic quantisation is the fallback
 **Success Criteria** (what must be TRUE):
   1. With a schema 2 fan on a port, sweeping duty up and then down through the firmware's fan entity shows RPM in `sil status` and `sil watch` following the fan's separate up and down curves: monotone in each direction, interpolated between table points, and different on the way down than on the way up at the same duty.
-  2. From standstill the fan stays at 0 rpm until duty exceeds its start duty, then spins up after its start delay (with a kick if configured); once running it keeps turning down to its lower stop duty and below that coasts to 0 with its own dynamics. A fan marked "never stops" holds its floor RPM at 0 % duty.
+  2. From standstill the fan stays at 0 rpm until duty exceeds its start duty, then spins up after its start delay; once running it keeps turning down to its lower stop duty and below that coasts to 0 with its own dynamics. A fan marked "never stops" holds its floor RPM at 0 % duty.
   3. The RPM the firmware reports (and Home Assistant shows) moves in the fan's pulse quantisation steps (30 rpm per pulse at ppr 2) with seeded noise of the amplitude set in `fan.toml`; two runs with the same seed and duty sequence give identical traces even when tick timing differs. The sim-bus protocol is still version 1, and the contract test shows the firmware-visible steps.
   4. Each port shows airflow (m³/h, ∝ RPM) and power (W, ∝ RPM³) derived from the fan's datasheet values in `sil status`, `sil watch` and on the web page.
   5. Every shipped schema 1 `fan.toml` loads and behaves exactly as in v0.1.0 (the existing test suite passes unchanged), a schema 2 file with an unknown key is rejected with its file:line:col, and `sil fans` lists each fan's schema version and the provenance (assumed / datasheet / measured / unobservable) of every value.
