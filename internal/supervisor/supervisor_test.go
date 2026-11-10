@@ -646,6 +646,55 @@ func TestSetInTheShutdownWindowIsStopping(t *testing.T) {
 	}
 }
 
+// raceIdleSlot is a slot whose engine is built the way startEngine builds it but never runs: nothing
+// reads its inbox, so an Apply sent to it waits for a reply that never comes until its context ends.
+// Its cancel does nothing and its done is already closed, so a stopEngine on it returns at once.
+func raceIdleSlot(s *supervisor) *engineSlot {
+	s.inMu.Lock()
+	defer s.inMu.Unlock()
+	cfg := s.engCfg
+	cfg.Env = s.inputs
+	cfg.Ports = append([]engine.PortConfig(nil), s.fans...)
+	done := make(chan struct{})
+	close(done)
+	return &engineSlot{eng: engine.New(cfg), cancel: func() {}, done: done}
+}
+
+// F6 (03.1 re-review, user decision 2026-11-10): a Set whose Apply is cancelled by a shutdown
+// (the actx.Err() arm) answers stopping. An error return must leave the record as it was, so
+// the change recorded before Apply has to be rolled back. The engine in the slot never answers, so
+// the cancellation is the only way out, whatever the scheduling.
+func TestSetCancelledByShutdownRollsBack(t *testing.T) {
+	s := fanSupervisor(t)
+	s.inputs = engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity}
+	idle := raceIdleSlot(s)
+	s.mu.Lock()
+	s.slot = idle
+	s.mu.Unlock()
+
+	// The first step of shutdown(); s.stopping stays false, so Set reaches Apply.
+	s.downOnce.Do(func() { close(s.downReq) })
+
+	answered := make(chan error, 1)
+	go func() {
+		_, err := s.Set(context.Background(), control.SetRequest{Values: rawVals(map[string]string{"temperature": "31", "port1.fan": `"beta-fan"`})})
+		answered <- err
+	}()
+	err, ok := raceWait(answered)
+	if !ok {
+		t.Fatal("Set did not return: a shutdown must cancel its Apply")
+	}
+	if errCode(err) != "stopping" {
+		t.Fatalf("Set cancelled by a shutdown: %v, want stopping", err)
+	}
+	s.inMu.Lock()
+	defer s.inMu.Unlock()
+	if s.inputs.Temperature != DefaultTemperature || s.fans[0].FanID != "alpha-fan" {
+		t.Fatalf("record kept a change of a Set that answered stopping: temperature %v, port1 fan %q, want %v and alpha-fan",
+			s.inputs.Temperature, s.fans[0].FanID, DefaultTemperature)
+	}
+}
+
 // WR-02 (second review): a SimRestart that cannot start the new engine while another failure is held
 // records no engine_failed (the held diagnosis wins), yet the slot keeps a stopped engine. Set must
 // decide on the real state, not on the failure code: it reports engine_failed and keeps the record
