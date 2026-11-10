@@ -1,18 +1,14 @@
 ---
-status: testing
+status: complete
 phase: 03-live-web-ui
 source: [03-VERIFICATION.md]
 started: 2026-11-09T18:00:00Z
-updated: 2026-11-10T10:21:54Z
+updated: 2026-11-10T10:44:15Z
 ---
 
 ## Current Test
 
-number: 6
-name: Visual character
-expected: |
-  Dark, sober bench-instrument look (D-01), channel colours per port (yellow, green, blue, magenta), the only glow on the LED lenses, no vendor names.
-awaiting: user response
+[testing complete]
 
 ## Tests
 
@@ -39,31 +35,36 @@ result: pass
 
 ### 6. Visual character (UAT 6): look at the desktop page at 1280 x 720 or larger (screenshots 03-06-layout-1280x720.png, 03-06-layout-390x844.png are in the phase directory).
 expected: Dark, sober bench-instrument look (D-01), channel colours per port (yellow, green, blue, magenta), the only glow on the LED lenses, no vendor names.
-result: [pending]
+result: pass
 
 ### 7. UIC-10 minutes-long soak (UAT 7): leave the page open 10 minutes or more with a fan running; watch the tab's memory (Chrome task manager or DevTools Memory).
 expected: Memory stays flat and the plots keep their 60 s window.
-result: [pending]
+result: pass
+evidence: "start 11:23 125M, 11:26 209M, end 11:39 97M (16 min soak; peak reclaimed by GC, no growth trend)"
 
 ### 8. Behind-real-time thresholds A-03-05/06 on a loaded host (UAT 8): load the host (parallel `make e2e` or a compile) and watch the REAL TIME cell.
 expected: BEHIND appears when the simulator is 50 ms or more late and returns to IN SYNC about 2 s after it caught up, without flicker; judge whether 50 ms / 2 s feel right.
-result: [pending]
+result: pass
+note: "pass, ok" - 50 ms / 2 s thresholds accepted"
 
 ### 9. `--listen 127.0.0.1` reachability (UAT 9): from a second machine, `sil up uat --listen 127.0.0.1` and open the same URL.
 expected: The page is not reachable from the LAN (README claim).
-result: [pending]
+result: pass
 
 ### 10. Semantics of a timed-out button down (review WR-01 fix bfbb808, IN-06, IN-07): stall or delay a button.down on a real host and observe the cap and the next press.
 expected: A down that times out after 3 s counts as never registered: no up is sent, the cap shows only the server's report, the engine's 10 s max hold releases a late-applied hold; a late-applied down (> 3 s) can make the next press fail `button_busy`. Decide whether that is acceptable.
-result: [pending]
+result: pass
+note: "pass" - timed-out-down semantics (IN-06, IN-07) accepted for a local bench"
 
 ## Summary
 
 total: 10
-passed: 5
+passed: 10
 issues: 0
-pending: 5
+pending: 0
 skipped: 0
 blocked: 0
 
 ## Gaps
+
+[none]
