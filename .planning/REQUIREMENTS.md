@@ -82,12 +82,46 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| MODEL-05 | Phase 4 | Pending |
+| MODEL-06 | Phase 4 | Pending |
+| MODEL-07 | Phase 4 | Pending |
+| MODEL-08 | Phase 4 | Pending |
+| MODEL-09 | Phase 4 | Pending |
+| MODEL-10 | Phase 4 | Pending |
+| MODEL-11 | Phase 4 | Pending |
+| MODEL-12 | Phase 4 | Pending |
+| FAULT-02 | Phase 5 | Pending |
+| FAULT-03 | Phase 5 | Pending |
+| FAULT-04 | Phase 5 | Pending |
+| FAULT-05 | Phase 5 | Pending |
+| FAULT-06 | Phase 5 | Pending |
+| FAULT-07 | Phase 5 | Pending |
+| FAULT-08 | Phase 5 | Pending |
+| FAULT-09 | Phase 5 | Pending |
+| FAULT-10 | Phase 5 | Pending |
+| FAULT-11 | Phase 5 | Pending |
+| ANLZ-02 | Phase 6 | Pending |
+| ANLZ-03 | Phase 6 | Pending |
+| ANLZ-04 | Phase 6 | Pending |
+| ANLZ-05 | Phase 6 | Pending |
+| ANLZ-06 | Phase 6 | Pending |
+| ANLZ-07 | Phase 7 | Pending |
+| MEAS-01 | Phase 7 | Pending |
+| MEAS-02 | Phase 7 | Pending |
+| MEAS-03 | Phase 7 | Pending |
+| MEAS-04 | Phase 7 | Pending |
+| MEAS-05 | Phase 7 | Pending |
+| MEAS-06 | Phase 7 | Pending |
+| CAL-01 | Phase 8 | Pending |
+| CAL-02 | Phase 8 | Pending |
 
 **Coverage:**
 - v0.2.0 requirements: 32 total
-- Mapped to phases: 0
-- Unmapped: 32 ⚠️
+- Mapped to phases: 32 ✓
+- Unmapped: 0
+
+ANLZ-07 sits in Phase 7, not Phase 6: its host-firmware leg needs the Go native API client (MEAS-05). The fake-board recovery already runs in Phase 6 as the acceptance test of ANLZ-04.
 
 ---
 *Requirements defined: 2026-11-10*
-*Last updated: 2026-11-10 after initial definition*
+*Last updated: 2026-11-10 after v0.2.0 roadmap creation (traceability mapped to Phases 4-8)*

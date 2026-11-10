@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 milestone: v0.2.0
 milestone_name: Real Fans
 status: planning
-last_updated: "2026-11-10T18:46:35.223Z"
+last_updated: "2026-11-10T19:12:58.000Z"
 last_activity: 2026-11-10
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -20,14 +20,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-10)
 
 **Core value:** A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
-**Current focus:** Planning next milestone (`/gsd-new-milestone`); v0.1.0 MVP shipped 2026-11-10
+**Current focus:** Phase 4: Fan Model v2 (milestone v0.2.0 Real Fans, Phases 4-8)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-11-10 — Milestone v0.2.0 started
+Phase: 4 of 8 (Fan Model v2), first of 5 phases in v0.2.0 (Phases 4-8)
+Plan: — (not planned yet)
+Status: Ready to plan
+Last activity: 2026-11-10 — v0.2.0 roadmap created (Phases 4-8, 32/32 requirements mapped)
+
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
@@ -177,6 +179,13 @@ Recent decisions affecting current work:
 - [Phase 03.1]: Set answers stopping with a rollback once a shutdown is requested or cancels its Apply; a shutdown is terminal so the rollback cannot desync a later engine (F2, F6)
 - [Phase 03.1]: Concurrency review kept as 03.1-CONCURRENCY-REVIEW.md; F3 documented, F5 and F7 left unchanged
 - [Phase 03.1]: 03.1-03: hub TX cap tested on host via stub ESPHome headers (tests/cpp/stubs); SimChild::on_value unnamed param keeps -Werror
+- [Roadmap v0.2.0]: Five phases 4-8, continuing numbering after 3.1: Fan Model v2 → Fault Injection ∥ fan-analyze Offline Core → Measuring Firmware and Board Link → Arctic P12 Calibration (granularity coarse; five kept because the user-set research order defines five distinct slices)
+- [Roadmap v0.2.0]: No separate spike phase; the MEAS-01 hardware spikes open Phase 7 (user decision)
+- [Roadmap v0.2.0]: ANLZ-07 (synthetic-fan recovery) maps to Phase 7, not 6: its host-firmware leg needs the Go native API client (MEAS-05). The fake-board recovery already proves ANLZ-04 in Phase 6. "Before any real hardware is used" is read as "before any real-fan recording is fitted"; the MEAS-01 spikes characterise the instrument only
+- [Roadmap v0.2.0]: Fault lifecycle per FAULT-09 is decided: cleared by `sil sim restart` and `sil down`, kept across firmware restart, cleared with an event on fan swap; unplug is a fault, replug clears it
+- [Roadmap v0.2.0]: Done criterion is the Arctic P12 only, verified on a held-out recording (CAL-02); Noctua NF-A12x25 stays `assumed` (CAL-03, v0.3)
+- [Roadmap v0.2.0]: UI hint on Phase 4 (airflow/power readouts on the page, MODEL-11) and Phase 5 (fault controls and scope markers, FAULT-10/11); Phases 6-8 explicitly `UI hint: no` (`report.html` is a generated offline report, not the page)
+- [Roadmap v0.2.0]: Hardware/human-gated: Phase 7 (board on the bench for spikes, first flash, fail-safe checks) and Phase 8 (bench setup, preflight, run with repeatability pass, report review). Deeper research: Phase 6 (identifiability in the count domain, fitter robustness, estimator/tolerance) and Phase 7 (instrument design, PCNT limits, device-stamped delivery, api.proto IDs)
 
 ### Pending Todos
 
@@ -190,11 +199,19 @@ None yet.
 - [Phase 2] `TestSupervisorRebootExit` flake fixed in 8542d9d (test race); watch for recurrence
 - [Later] Static linking with real product modules (DNS, `json:`) is unverified; run-in-image fallback stays available
 - [Later] Host `select()` timeout lives in `core/wake/wake_host.cpp::wakeable_delay` in 2026.10.1, not `core/application.cpp` as PROJECT.md says (affects the time-factor milestone)
-- 01-05 A1 (non-blocking): Arctic start_duty 0.10, tau_up 1.0 s, tau_down 2.5 s are ASSUMED; maintainer to confirm or measure (fans/arctic-p12-pwm-pst.toml)
+- 01-05 A1 (non-blocking): Arctic start_duty 0.10, tau_up 1.0 s, tau_down 2.5 s are ASSUMED; closed by measurement in Phase 8 (CAL-01/CAL-02)
+- [Phase 4] Tach accumulator (spike S7, no hardware): if firmware-side arrival jitter into the 1 s time-weighted mean blurs the 30 rpm steps, switch to analytic quantisation (protocol stays v1 either way)
+- [Phase 6] Fit identifiability of tau and start delay in the count domain is MEDIUM confidence; Nelder-Mead may need the LM fallback on real data
+- [Phase 7] ESP32-S2 PCNT unit count and ISR latency unverified; Rev 3.3 schematic (tach pull-up, supply) unchecked; 100 ms device-stamped sample publish rate over the API unconfirmed (fallback: host-stamped `total` with Wi-Fi jitter)
+- [Phase 7] Native API: confirm message IDs/fields from the pinned 2026.10.1 `api.proto` and that no password/`ConnectRequest` step is needed for an encrypted API
+- [Phase 8] Arctic P12 SKU mismatch: repo cites ACFAN00120A, research fetched ACFAN00170A; record the real SKU at bench setup. PST daisy-chain topology: measure a single fan
+- [Phase 8] Tolerance numbers (`floor`, `k`) are the maintainer's call, frozen after the repeatability pass and before the held-out recording
+- [Phase 8] Real fan may show behaviour model v2 cannot express (rpm-dependent tau, low-duty hunting, PWM-frequency effects); budget one model iteration as a decimal phase
 
 ### Roadmap Evolution
 
 - Phase 3.1 inserted after Phase 3: Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (URGENT)
+- v0.2.0 Real Fans roadmap created 2026-11-10: Phases 4-8 (Fan Model v2, Fault Injection, fan-analyze Offline Core, Measuring Firmware and Board Link, Arctic P12 Calibration); 32/32 requirements mapped
 
 ## Deferred Items
 
@@ -208,7 +225,7 @@ Items acknowledged and deferred at milestone close, most recent first:
 ## Session Continuity
 
 Last session: 2026-11-10
-Stopped at: Milestone v0.1.0 MVP shipped; phase dirs archived to .planning/milestones/v0.1.0-phases/
+Stopped at: v0.2.0 roadmap created (ROADMAP.md, STATE.md, REQUIREMENTS.md traceability); next is planning Phase 4
 Resume file: None
 
 ## Needs Human
@@ -265,4 +282,6 @@ Items recorded during the unattended `/gsd-autonomous --from 1 --to 3` run (2026
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Phase 4 (Fan Model v2) carries `UI hint: yes` (airflow/power readouts on the page): run `/gsd-ui-phase 4` if a design contract is wanted, then `/gsd-discuss-phase 4` or `/gsd-plan-phase 4`
+- Phases 5 and 6 can run in parallel once Phase 4 is done; Phase 5 needs `/gsd-ui-phase 5` (fault controls, scope markers)
+- Phases 7 and 8 need the Rev 3.3 board on the bench and the maintainer present at the checkpoints
