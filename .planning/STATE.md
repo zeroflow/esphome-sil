@@ -222,6 +222,15 @@ Items recorded during the unattended `/gsd-autonomous --from 1 --to 3` run (2026
 | Phase | State | Resume |
 |-------|-------|--------|
 | 1 | verification_deferred_human | /gsd-verify-work 1 |
+| 3 | verification_deferred_human | /gsd-verify-work 3 |
+
+### Needs Human — Phase 3 (2026-11-10)
+
+| Phase | Item | Where | Status |
+|-------|------|-------|--------|
+| 3 | UAT deferred by user: 10 hands-on items (phone on LAN, USR2 long press + HA, touch slide-off on a real phone, temperature to HA, sim restart on phone, visual character, 10 min soak, behind-real-time thresholds A-03-05/06, `--listen 127.0.0.1`, timed-out button down semantics). All automated checks green (9/9 must-haves) | 03-UAT.md, 03-VERIFICATION.md | needs human |
+| 3 | Review-fix semantics to confirm: timed-out down (3 s) counts as never registered (bfbb808); client per-cap down/up chain (4bd7507). 6 info findings open (IN-01/02/03/05/06/07) | 03-REVIEW-DISPOSITION.md | needs review |
+| 3 | User decisions taken during planning: D-18 api.key redacted on TCP, D-19 lifecycle socket-only, D-20 logs socket-only; plans split to ≤14 files. Per-IP connection cap not added (NAT households) — accepted residual | 03-CONTEXT.md, 03-03-SUMMARY.md | info |
 
 ### Needs Human — Phase 2 (planning, 2026-11-09)
 
