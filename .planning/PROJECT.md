@@ -8,6 +8,18 @@ A software-in-the-loop test bench ("labcar") for ESPHome firmware. The ESPHome `
 
 A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
 
+## Current Milestone: v0.2.0 Real Fans
+
+**Goal:** The simulated fan behaves like a real, measured fan, including when it breaks, and its parameters come from measuring real fans on a Rev 3.3 board instead of assumptions.
+
+**Target features:**
+- Better fan model: nonlinear duty→RPM (up/down curves), start/stop dynamics (kick-start vs. hold threshold, start delay, coast-down, fans that do not stop at duty 0), RPM noise and tach quirks (jitter, ppr, quantisation), airflow and power from datasheet values in `fan.toml` scaled by fan laws
+- Fault injection: stuck/blocked, late/no start, tach faults (dead tach, wrong ppr, intermittent), unplug/replug, degraded/worn; switched at runtime via CLI/JSON API and web UI, visible in status/watch
+- Companion `fan-analyze`: measuring ESPHome firmware for the Rev 3.3 board plus a `sil fan-analyze` host CLI (Go, native API) that runs sweeps, step and start/stop tests, fits `fan.toml` and writes `report.html`
+- Done when Arctic P12 and Noctua NF-A12x25 are measured and fitted, and a sim replay of the same sequence matches the measurement within a stated tolerance (closes assumptions A1/A2)
+
+**Later milestones (planned):** v0.3 product modules (fan control core: `rpm_pi_control`, `stall_guard`, `rpm_status_leds`, `globals`; curves: `temperature_curve_dual`, `temperature_curve_triple_independent`, `dual_curve`) → v0.4 rack thermals + simulator stimulus (noise, ramp, recorded/listed profiles for temperature and heat load). Overall aim: feature parity with the real product firmware.
+
 ## Requirements
 
 ### Validated
@@ -24,17 +36,21 @@ A simulated fan controller runs closed-loop on the developer's own machine: real
 
 ### Active
 
-Next milestone: not yet defined (`/gsd-new-milestone`). Candidates from Out of Scope and carried-forward debt: time factor for headless runs, real wifi-fancontroller modules in the sim, fault models / Lua (P2), live Home Assistant UAT.
+- [ ] Fan model reproduces measured real-fan behaviour: nonlinear duty→RPM, start/stop dynamics, RPM noise and tach quirks, airflow and power from datasheet
+- [ ] Fan faults (stuck, late/no start, tach faults, unplug/replug, degraded) can be injected and cleared at runtime from CLI/JSON and the web UI
+- [ ] `sil fan-analyze` measures a real fan on a Rev 3.3 board and produces a fitted `fan.toml` and `report.html`
+- [ ] Arctic P12 and Noctua NF-A12x25 library entries are measured, not assumed, and the sim matches the measurement within a stated tolerance
 
 ### Out of Scope
 
-- Time factor (x100+) in M1 — planned for a later milestone; HA in the loop forces x1 anyway, so sped-up runs will be headless test runs
-- Real wifi-fancontroller modules in the sim (`rpm_pi_control`, `stall_guard`, ...) in M1 — M1 proves the plumbing with a minimal example; the real modules follow
+- Time factor (x100+) — not in v0.2.0; planned for a later milestone; HA in the loop forces x1 anyway, so sped-up runs will be headless test runs
 - Rev 3.3 SiL YAML in the product repo in M1 — starts here, moves to `wifi-fancontroller` once the consumer interface settles (0.x → 1.0)
-- Fault models, Lua, plug/unplug, virtual supervisor — P2
+- Fault profile files (`fans/_faults/`), Lua, scheduled faults — v0.2.0 uses runtime-switched faults only; scheduled behaviour belongs to the v0.4 stimulus work
+- Virtual supervisor / `fallback_mode`, extra sensor modules (bme680, scd41, ds2484, oled) — not in the v0.3 module set
+- Measured airflow and power draw — Rev 3.3 has no current or airflow sensing; datasheet values with fan laws in v0.2.0
 - Web UI eye candy, fan photos, drag & drop — P3
-- `fan-analyze` companion tool — P4
-- Rack thermal model and control-quality KPIs — P5
+- Rack thermal model, stimulus profiles and control-quality KPIs — v0.4
+- Real product modules in the sim — v0.3
 - Lockstep / virtual time, CI runner — later
 - Cloud simulators (Wokwi etc.) and QEMU — local-only requirement; QEMU has no ESP32-S2 machine and would need custom peripheral models
 - Testing drivers, framework (arduino/esp-idf), Wi-Fi, OTA, `update: http_request`, ISRs, heap — not possible on `host:`, stays the HIL's job
@@ -102,4 +118,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-10 after v0.1.0 milestone*
+*Last updated: 2026-11-10 after starting milestone v0.2.0 Real Fans*
