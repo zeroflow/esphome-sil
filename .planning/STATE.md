@@ -1,19 +1,18 @@
 ---
 gsd_state_version: "1.0"
 milestone: v0.1.0
-current_phase: "03.1"
-status: completed
-stopped_at: Phase 03.1 complete — all phases complete
-last_updated: "2026-11-10T13:12:48.856Z"
+status: Awaiting next milestone
+stopped_at: Milestone v0.1.0 MVP shipped and archived
+last_updated: "2026-11-10T18:33:03.953Z"
 last_activity: 2026-11-10
-last_activity_desc: Phase 03.1 complete
-state_head: c6ac151753884ebf728130155a18890703275ed9
+last_activity_desc: Milestone v0.1.0 completed and archived
+state_head: bed941a006006a6572822ce52ef47aeb16707384
 progress:
   total_phases: 4
   completed_phases: 4
   total_plans: 36
   completed_plans: 36
-  percent: 100
+current_phase: "03.1"
 ---
 
 # Project State
@@ -23,16 +22,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-10)
 
 **Core value:** A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
-**Current focus:** Milestone v0.1.0 — all phases complete; next: milestone close
+**Current focus:** Planning next milestone (`/gsd-new-milestone`); v0.1.0 MVP shipped 2026-11-10
 
 ## Current Position
 
-Phase: 03.1
-Plan: Not started
-Status: All phases complete
-Last activity: 2026-11-10 — Phase 03.1 complete
-
-Progress: [██████████] 100%
+Phase: Milestone v0.1.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-11-10 — Milestone v0.1.0 completed and archived
 
 ## Performance Metrics
 
@@ -207,12 +204,13 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 | Category | Item | Status | Deferred At | Milestone |
 |----------|------|--------|-------------|-----------|
-| *(none)* | | | | |
+| deferred_items | 03/deferred-items.md: TestWSPingReaps flake (found in 03-04, resolved in 03-05) | acknowledged | 2026-11-10 | v0.1.0 |
+| verification | Phases 1, 2, 3, 03.1: VERIFICATION.md stale (later phases and review fixes touched covered files) | override (UATs passed) | 2026-11-10 | v0.1.0 |
 
 ## Session Continuity
 
 Last session: 2026-11-10
-Stopped at: Phase 03.1 complete — all milestone v0.1.0 phases complete, ready for milestone close
+Stopped at: Milestone v0.1.0 MVP shipped; phase dirs archived to .planning/milestones/v0.1.0-phases/
 Resume file: None
 
 ## Needs Human
@@ -245,7 +243,7 @@ Items recorded during the unattended `/gsd-autonomous --from 1 --to 3` run (2026
 | Phase | Item | Where | Status |
 |-------|------|-------|--------|
 | 03.1 | F7 design question: a `Set` in a restart gap while shutdown has already started answers success (F2 now answers `stopping` once the gap ends). Left unchanged; confirm | 03.1-CONCURRENCY-REVIEW.md | needs review |
-| 03.1 | Code review 0 critical / 2 warning / 4 info, all open: WR-01 `Manual.BlockUntil(1)` can be satisfied by the old engine's ticker (latent flake); WR-02 late cleanup leaks goroutine on early failure; IN-01..04 doc/test hygiene | 03.1-REVIEW.md, 03.1-REVIEW-DISPOSITION.md | needs review (`/gsd-code-review 03.1 --fix`) |
+| 03.1 | Code review 0 critical / 2 warning / 4 info, all open: WR-01 `Manual.BlockUntil(1)` can be satisfied by the old engine's ticker (latent flake); WR-02 late cleanup leaks goroutine on early failure; IN-01..04 doc/test hygiene | 03.1-REVIEW.md, 03.1-REVIEW-DISPOSITION.md | resolved 2026-11-10: WR-02 + IN-01..04 fixed, WR-01 skipped (premise wrong); see 03.1-REVIEW-FIX.md |
 
 ### Needs Human — Phase 3 (2026-11-10)
 
@@ -266,3 +264,7 @@ Items recorded during the unattended `/gsd-autonomous --from 1 --to 3` run (2026
 | 2 | Live Home Assistant UAT (7-step checklist, HA on another machine) — automated proxy is aioesphomeapi only | 02-07/02-08 backstop truths | needs human |
 | 2 | Phase 2 verification accepted by user on automated evidence (4/5; criterion 4 HA-01/HA-02 proxied only). Live HA UAT still open — run `/gsd-verify-work 2` to close | 02-VERIFICATION.md, 02-UAT.md | needs human |
 | 2 | Review-fix concurrency changes (8542d9d, b976a6c, da1a9ca, e4f1046) re-reviewed in Phase 03.1: F1/F2(IN-09)/F6 fixed with race tests. Remaining IN-01..IN-08 open (IN-07 missing `<algorithm>` include is a latent compile risk) | 03.1-CONCURRENCY-REVIEW.md, 02-REVIEW-DISPOSITION.md | resolved in 03.1 (IN-01..08 still open) |
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone

@@ -7,3 +7,4 @@
   while a write was still in flight, and coder/websocket closes the TCP connection hard when the context of an in-flight
   write expires (`setupWriteTimeout` -> `c.close()`), so the server's going-away close frame was never sent. Fixed in the test
   by never advancing time during a write; `-race -count=100` passes. See the 03-05 SUMMARY.
+  status: acknowledged
