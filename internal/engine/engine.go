@@ -244,7 +244,8 @@ type Engine struct {
 	// buttons is the held level per button id; an id is always present.
 	buttons map[string]bool
 	// holdUntil is the sim time at which the engine releases a held button by itself; a button
-	// without a max hold has no entry. A new engine (sim restart) starts with none.
+	// without a max hold has no entry. A new engine (sim restart) starts with none, and a
+	// stopped engine clears it.
 	holdUntil map[string]time.Duration
 	// btnAvail records the optional button channels of the current session's manifest.
 	btnAvail map[string]bool
@@ -574,10 +575,24 @@ func (e *Engine) Run(ctx context.Context) error {
 
 // stopped publishes the final state of an engine that is shutting down: the
 // bus is gone, so a status read during a simulator restart says so.
+//
+// A stopped engine holds nothing: its World goes away and the next engine starts with every
+// button released, which the firmware sees in the hello in-snapshot. So a button still held
+// is released here and the stream says so (reason engine_stopped), and the final snapshot
+// shows every button released. `sil watch`, `sil status` in a restart gap and the page then
+// agree with the firmware (CLI-03, UI-04), whichever way the engine stopped (restart,
+// shutdown or failure). No bus frame is sent: the bus is closed by now.
 func (e *Engine) stopped() {
 	if e.connected {
 		e.emit(events.Event{K: "firmware", V: false})
 	}
+	for _, id := range ButtonIDs {
+		if e.buttons[id] {
+			e.buttons[id] = false
+			e.emit(events.Event{K: "button", ID: id, V: false, Reason: "engine_stopped"})
+		}
+	}
+	e.holdUntil = map[string]time.Duration{}
 	e.connected, e.synced, e.proto = false, false, 0
 	e.btnAvail = map[string]bool{}
 	e.publish()

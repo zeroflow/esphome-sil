@@ -55,7 +55,9 @@ type Event struct {
 	Strip   []string `json:"strip,omitempty"`
 	Dropped uint64   `json:"dropped,omitempty"`
 	// Reason says why a button event happened when it was not a client's request: "max_hold" for a
-	// release by the engine after the button's max hold (D-15).
+	// release by the engine after the button's max hold (D-15), "engine_stopped" for a release by
+	// an engine that stopped (simulator restart, `sil down` or an engine failure) while the button
+	// was held.
 	Reason string `json:"reason,omitempty"`
 	// Gap marks the first sample of an engine: sim time ran on while the simulator was away, so a
 	// plot must break the line before it. Clients draw the marker, they never infer it from timing.
