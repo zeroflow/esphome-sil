@@ -695,6 +695,78 @@ func TestSetCancelledByShutdownRollsBack(t *testing.T) {
 	}
 }
 
+// The record/engine rule under concurrency: four goroutines Set while one restarts the engine over
+// and over; afterwards the record (s.inputs, s.fans) equals the engine in the slot. Every Set must
+// succeed: there is no firmware, so SimRestart answers firmware_not_running, but it always installs
+// a new engine first. A Set that meets a stopped engine during a restart reads engGap true, because
+// SimRestart needs inMu, which the Set holds, to seed and install the next engine, and it clears
+// engGap in the same section that installs it. So a gap Set is recorded, seeds the next engine,
+// and is never mistaken for a dead engine. Run under -race.
+func TestSetAndSimRestartKeepRecordAndEngineEqual(t *testing.T) {
+	s := fanSupervisor(t)
+	s.inputs = engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity}
+	// Every SimRestart installs a new engine, so stop the one that is current at the end.
+	t.Cleanup(func() {
+		s.mu.Lock()
+		sl := s.slot
+		s.mu.Unlock()
+		s.stopEngine(sl)
+	})
+	const setters, sets, restarts = 4, 50, 20
+
+	bad := make(chan string, setters*sets+restarts)
+	var wg sync.WaitGroup
+	for g := 0; g < setters; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < sets; i++ {
+				vals := map[string]string{"temperature": fmt.Sprint(20 + (g*sets+i)%20)}
+				if i%3 == 0 {
+					vals["humidity"] = fmt.Sprint(30 + (g*sets+i)%30)
+				}
+				fan := "alpha-fan"
+				if i%2 == 0 {
+					fan = "beta-fan"
+				}
+				vals[fmt.Sprintf("port%d.fan", g+1)] = `"` + fan + `"`
+				if _, err := s.Set(context.Background(), control.SetRequest{Values: rawVals(vals)}); err != nil {
+					bad <- fmt.Sprintf("Set %d/%d answered %v, want nil", g, i, err)
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < restarts; i++ {
+			if _, err := s.SimRestart(context.Background(), control.SimRestartRequest{}); errCode(err) != "firmware_not_running" {
+				bad <- fmt.Sprintf("SimRestart %d answered %v, want firmware_not_running", i, err)
+			}
+		}
+	}()
+	wg.Wait()
+	close(bad)
+	for msg := range bad {
+		t.Error(msg)
+	}
+
+	s.inMu.Lock()
+	defer s.inMu.Unlock()
+	snap := s.currentEngine().Snapshot()
+	if snap.Env != s.inputs {
+		t.Fatalf("engine env %+v, record %+v: they must be equal after quiescence", snap.Env, s.inputs)
+	}
+	if len(snap.Ports) != len(s.fans) {
+		t.Fatalf("engine has %d ports, record %d", len(snap.Ports), len(s.fans))
+	}
+	for i := range s.fans {
+		if snap.Ports[i].Fan != s.fans[i].FanID {
+			t.Errorf("port %d: engine fan %q, record %q", i+1, snap.Ports[i].Fan, s.fans[i].FanID)
+		}
+	}
+}
+
 // WR-02 (second review): a SimRestart that cannot start the new engine while another failure is held
 // records no engine_failed (the held diagnosis wins), yet the slot keeps a stopped engine. Set must
 // decide on the real state, not on the failure code: it reports engine_failed and keeps the record
