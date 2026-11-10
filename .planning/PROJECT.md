@@ -80,6 +80,8 @@ Milestone 1 — "the plumbing works end to end":
 | `examples/rev33.yaml` is the default `sil up` config; `fan-skeleton.yaml` stays as the minimal option | The Rev 3.3 bench is what users and contract tests run | ✓ Good (Phase 2) |
 | `api.lan_host` from a default-route UDP probe, shown in status and the `sil up` hint (mDNS is a stub on host) | HA must be added manually by host:port | ✓ Good (Phase 2); LAN reachability from a real HA unverified |
 | Phase 2 verification accepted on automated evidence (4/5; HA criterion proxied by aioesphomeapi) | User decision 2026-11-09 to proceed to Phase 3; live HA UAT tracked in STATE.md Needs Human | — Pending (`/gsd-verify-work 2`) |
+| A stopping engine releases every held USR button itself (`button` event, `reason: engine_stopped`, final all-released snapshot) | One change in `Engine.stopped()` covers sim restart, `sil down` and engine failure; no firmware, protocol or page change. Known limit (user-approved 2026-11-10): a page that misses the frame still sends one refused best-effort `button.up` | ✓ Good (Phase 03.1) |
+| A failing `Set` rolls back, including when a shutdown cancels its Apply, and a `Set` racing shutdown answers `stopping` | Concurrency re-review F1/F2/F6 (user decision 2026-11-10); F7 (Set in a restart gap with shutdown already started answers success) recorded as a design question | ✓ Good (Phase 03.1) |
 
 ## Evolution
 
@@ -99,4 +101,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-09 after Phase 2*
+*Last updated: 2026-11-10 after Phase 03.1*

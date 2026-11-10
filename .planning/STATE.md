@@ -20,10 +20,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-11-09)
+See: .planning/PROJECT.md (updated 2026-11-10)
 
 **Core value:** A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
-**Current focus:** Phase 03.1 — Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (INSERTED)
+**Current focus:** Milestone v0.1.0 — all phases complete; next: milestone close
 
 ## Current Position
 
@@ -211,8 +211,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-10T12:54:18.957Z
-Stopped at: Phase 03.1 complete — all phases complete
+Last session: 2026-11-10
+Stopped at: Phase 03.1 complete — all milestone v0.1.0 phases complete, ready for milestone close
 Resume file: None
 
 ## Needs Human
@@ -240,6 +240,13 @@ Items recorded during the unattended `/gsd-autonomous --from 1 --to 3` run (2026
 | 1 | verification_deferred_human | /gsd-verify-work 1 |
 | 3 | verification_deferred_human | /gsd-verify-work 3 |
 
+### Needs Human — Phase 03.1 (2026-11-10)
+
+| Phase | Item | Where | Status |
+|-------|------|-------|--------|
+| 03.1 | F7 design question: a `Set` in a restart gap while shutdown has already started answers success (F2 now answers `stopping` once the gap ends). Left unchanged; confirm | 03.1-CONCURRENCY-REVIEW.md | needs review |
+| 03.1 | Code review 0 critical / 2 warning / 4 info, all open: WR-01 `Manual.BlockUntil(1)` can be satisfied by the old engine's ticker (latent flake); WR-02 late cleanup leaks goroutine on early failure; IN-01..04 doc/test hygiene | 03.1-REVIEW.md, 03.1-REVIEW-DISPOSITION.md | needs review (`/gsd-code-review 03.1 --fix`) |
+
 ### Needs Human — Phase 3 (2026-11-10)
 
 | Phase | Item | Where | Status |
@@ -258,4 +265,4 @@ Items recorded during the unattended `/gsd-autonomous --from 1 --to 3` run (2026
 | 2 | Python test deps (aioesphomeapi 46.12.0, pytest 9.2.0, pytest-timeout 2.4.0) flagged SUS by package check; human review replaced by `make lock-check` hash diff against ../wifi-fancontroller/hil/uv.lock | 02-07-PLAN | needs review |
 | 2 | Live Home Assistant UAT (7-step checklist, HA on another machine) — automated proxy is aioesphomeapi only | 02-07/02-08 backstop truths | needs human |
 | 2 | Phase 2 verification accepted by user on automated evidence (4/5; criterion 4 HA-01/HA-02 proxied only). Live HA UAT still open — run `/gsd-verify-work 2` to close | 02-VERIFICATION.md, 02-UAT.md | needs human |
-| 2 | Review-fix concurrency changes need a human read: `Set`/`SimRestart` `engGap` flag (da1a9ca, e4f1046); iteration-3 fixes 8542d9d, b976a6c not re-reviewed (cap). 9 info findings IN-01..IN-09 open (IN-07 missing `<algorithm>` include is a latent compile risk) | 02-REVIEW-DISPOSITION.md, 02-UAT.md | needs review |
+| 2 | Review-fix concurrency changes (8542d9d, b976a6c, da1a9ca, e4f1046) re-reviewed in Phase 03.1: F1/F2(IN-09)/F6 fixed with race tests. Remaining IN-01..IN-08 open (IN-07 missing `<algorithm>` include is a latent compile risk) | 03.1-CONCURRENCY-REVIEW.md, 02-REVIEW-DISPOSITION.md | resolved in 03.1 (IN-01..08 still open) |
