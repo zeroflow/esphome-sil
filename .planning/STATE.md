@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v0.1.0
 current_phase: "03.1"
-current_phase_name: address-tech-debt-sim-restart-button-release-set-simrestart
-status: Not planned yet
-stopped_at: Phase 3 complete — all phases complete
-last_updated: "2026-11-10T12:20:06.068Z"
+current_phase_name: "Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (INSERTED)"
+status: executing
+stopped_at: Completed 03.1-01-PLAN.md
+last_updated: "2026-11-10T12:40:01.835Z"
 last_activity: 2026-11-10
-last_activity_desc: Phase 3 complete
-state_head: 7d7e66b8255f3d87ea63e91b770e8ef963d21ef3
+last_activity_desc: Phase 03.1 execution started
+state_head: 6445f7d19670e46e5961339b1193bffbb20571d0
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 36
-  completed_plans: 33
+  completed_plans: 34
 ---
 
 # Project State
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-09)
 
 **Core value:** A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
-**Current focus:** Phase 3.1 — Address tech debt (inserted)
+**Current focus:** Phase 03.1 — Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (INSERTED)
 
 ## Current Position
 
-Phase: 03.1 (address-tech-debt-sim-restart-button-release-set-simrestart) — READY TO EXECUTE
-Plan: Not started
-Status: Not planned yet
-Last activity: 2026-11-10 — Phase 3 complete
+Phase: 03.1 (Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (INSERTED)) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-11-10 — Phase 03.1 execution started
 
 Progress: [████████░░] 75%
 
@@ -91,6 +91,7 @@ Progress: [████████░░] 75%
 | Phase 03 P10 | 15 min | 2 tasks | 12 files |
 | Phase 03 P11 | 13min | 2 tasks | 13 files |
 | Phase 03 P12 | 19 min | 2 tasks | 6 files |
+| Phase 03.1 P01 | 7 min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -172,6 +173,8 @@ Recent decisions affecting current work:
 - [Phase 03]: 03-11: the page's own releasePointerCapture is tracked per pointer id (ownLoss); Chrome 157 fires no lostpointercapture for it, so the guard is tested with a synthetic event
 - [Phase 3]: 03-12: parity_real compares RPM within 1 rpm only after every RPM has settled (a freshly swapped fan is still ramping)
 - [Phase 3]: 03-12: the LED group is asserted by natural height (108 px) against the strip content box (110 px), not the stretched group box
+- [Phase 03.1]: Engine.stopped() releases held buttons with reason engine_stopped, so restart, sil down and engine failure share one fix (A-03.1-01/02)
+- [Phase 03.1]: Missed-release page path kept as a user-approved known limit (2026-11-10), pinned by TestUSRSimRestartWithoutReleaseSendsAnUp
 
 ### Pending Todos
 
@@ -201,8 +204,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-09T15:30:02.633Z
-Stopped at: Phase 3 complete — all phases complete
+Last session: 2026-11-10T12:40:01.772Z
+Stopped at: Completed 03.1-01-PLAN.md
 Resume file: None
 
 ## Needs Human
