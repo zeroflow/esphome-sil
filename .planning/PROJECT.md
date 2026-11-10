@@ -72,6 +72,7 @@ A simulated fan controller runs closed-loop on the developer's own machine: real
 ## Constraints
 
 - **Locality**: everything runs on own hardware and own code — a vendor shutdown must not kill the pipeline.
+- **Locality exception (v0.2.0, accepted 2026-11-10)**: the ESP32-S2 measuring firmware for `fan-analyze` needs a one-time PlatformIO toolchain/ArduinoJson fetch into the shared cache, then builds offline. The sim firmware build stays fully hermetic.
 - **Tech stack**: simulator, CLI and web server in Go (single static binary, embedded UI); no Python in the simulator. Product-repo tests may stay pytest and drive `sil` via CLI/JSON.
 - **ESPHome version**: pinned 2026.10.1 (matches the product repo); build via `esphome/esphome:2026.10.1` Docker image.
 - **Web UI**: no build step, no external CDN at runtime; vendored plot library (uPlot leaning).
