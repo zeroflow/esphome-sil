@@ -70,6 +70,15 @@ Four additions exist for the web page and are available to every client:
 - `sil press BUTTON --down --max-hold D` (`1ms` to `60s`) releases the button by
   itself after D of sim time with a `button` event `{"v": false, "reason":
   "max_hold"}`, so a client that goes away cannot leave a button held.
+- When the simulator stops with a button held (`sil sim restart`, `sil down` or
+  an engine failure), the stream first gets the release `{"v": false,
+  "reason": "engine_stopped"}`, `sil status` shows the button released, and the
+  firmware sees the release when it resyncs with the next simulator.
+
+A `sim` event with the value `restarted` means the simulator state was rebuilt.
+Values set during the restart gap (`sil set`) seed the new simulator but arrive
+in no event, so a client re-reads the state after `restarted` (`sil status`, or
+the snapshot of a new `sil watch`; the page does this by itself).
 
 ## Web UI
 

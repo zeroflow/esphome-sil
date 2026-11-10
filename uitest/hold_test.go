@@ -319,6 +319,59 @@ func TestUSRAutoRelease(t *testing.T) {
 	waitPressed(t, p, "usr1", "false", 5*time.Second)
 }
 
+// TestUSRSimRestartRelease (UI-04, audit tech debt #1): a cap held while the simulator restarts
+// sends no button.up across the restart. The stopping engine releases the button and the stream
+// carries that (button v false, reason engine_stopped) before `sim restarted`, so onReleased ends
+// the hold before the resync's lost() -> renderButtons -> release(cap). That release then sends
+// nothing, so no up reaches the new engine, which would refuse it as button_not_held.
+func TestUSRSimRestartRelease(t *testing.T) {
+	b, p := liveWithCaps(t)
+	x, y := holdFresh(t, b, p, "usr1", 1)
+	b.Emit(events.Event{K: "button", ID: "usr1", V: false, Reason: "engine_stopped"}, func(st *control.Status) { st.Buttons["usr1"] = false })
+	b.Emit(events.Event{K: "sim", V: "restarted"}, nil)
+	b.waitCalls(t, "Watch", 2, 10*time.Second)
+	waitText(t, p, "#link", "LIVE", 10*time.Second)
+	waitPressed(t, p, "usr1", "false", 5*time.Second)
+	mouse(t, p, "mouseReleased", x, y)
+	settle(t, 500*time.Millisecond)
+	if n := len(b.callsOf("button.up")); n != 0 {
+		t.Errorf("%d ups across the sim restart, want none: the engine_stopped release ended the hold", n)
+	}
+	if msg := textOf(t, p, "#message"); msg != "" {
+		t.Errorf("message line = %q, want it empty (no button_not_held error)", msg)
+	}
+	// The cap works again afterwards.
+	x, y = holdFresh(t, b, p, "usr1", 2)
+	mouse(t, p, "mouseReleased", x, y)
+	b.waitCalls(t, "button.up", 1, 5*time.Second)
+}
+
+// TestUSRSimRestartWithoutReleaseSendsAnUp is the contrast to TestUSRSimRestartRelease, and it
+// pins the user-approved known limit (2026-11-10, A-03.1-09), not the spec. The spec (ROADMAP
+// criterion 2) is that a held cap sends no button.up across a restart. This test records the one
+// path where the page still sends it: the page never gets the engine_stopped frame (its stream
+// lagged, or its WebSocket closed during the restart), so the Phase 3 link-loss release (03-11),
+// which is kept, sends one best-effort up. The new engine refuses it as button_not_held and the
+// message line shows the refusal. No server or firmware state is wrong: the engine had already
+// released the button. A later change that defers the page's link-loss release until the next
+// snapshot would fix the limit and flip this test; that change updates the test and the ROADMAP
+// criterion 2 note together.
+func TestUSRSimRestartWithoutReleaseSendsAnUp(t *testing.T) {
+	b, p := liveWithCaps(t)
+	x, y := holdFresh(t, b, p, "usr1", 1)
+	// The engine released the button, but no event reaches the page...
+	b.Mutate(func(st *control.Status) { st.Buttons["usr1"] = false })
+	// ...only the broker's marker for the dropped frame.
+	b.Inject(events.Event{K: "lagged", Dropped: 1})
+	b.waitCalls(t, "button.up", 1, 5*time.Second)
+	waitText(t, p, "#message", "usr1 is not held", 5*time.Second)
+	mouse(t, p, "mouseReleased", x, y)
+	settle(t, 300*time.Millisecond)
+	if n := len(b.callsOf("button.up")); n != 1 {
+		t.Errorf("%d ups after the pointer was released, want the one best-effort up of the link loss", n)
+	}
+}
+
 // TestUSRRejected (D-17, UIC-19): a refused down shows the API's message verbatim, the cap stays as
 // the server reports it (dark), and the release that follows sends no up.
 func TestUSRRejected(t *testing.T) {
