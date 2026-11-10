@@ -442,6 +442,99 @@ func TestWatchStream(t *testing.T) {
 		w.exit(t, 5*time.Second)
 	})
 
+	// held_button_across_sim_restart closes audit tech debt #1 (cross-phase 01 resync x 02 buttons x
+	// 03 page): a USR button held while the simulator restarts is released by the stopping engine.
+	// The stream says so (reason engine_stopped) before `sim restarted`, `sil status` in the gap
+	// shows it released, and the firmware sees the release at the resync. USR3 is a 50..1000 ms
+	// click in examples/rev33.yaml, so a hold across a 2 s gap triggers nothing in the firmware
+	// (USR2 is a long press and would).
+	t.Run("held_button_across_sim_restart", func(t *testing.T) {
+		w := watch(t, "--kind", "sim,firmware,button")
+		w.next(t, 10*time.Second, "the snapshot")
+		in.mustPress(t, "usr3", "--down")
+		w.until(t, 10*time.Second, "usr3 held", func(m map[string]any) bool {
+			return m["k"] == "button" && m["id"] == "usr3" && m["v"] == true
+		})
+
+		res := in.async("sim", "restart", in.name, "--gap", "2s")
+
+		// The gap status comes from the stopped engine's final snapshot: usr3 is released.
+		deadline := sysClock.Now() + 10*time.Second
+		for {
+			st := in.env.Status(t, in.name)
+			if jget(st, "firmware", "bus_connected") == false {
+				if level, present := r33Buttons(st, "usr3"); !present || level {
+					t.Fatalf("status in the restart gap: usr3 present %v, level %v, want present and released", present, level)
+				}
+				break
+			}
+			if sysClock.Now() > deadline {
+				t.Fatalf("no status with bus_connected false within 10s of the restart")
+			}
+			if err := sysClock.Sleep(t.Context(), 100*time.Millisecond); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if r := r33Wait(t, "sim restart", res); r.exit != 0 {
+			t.Fatalf("sim restart: exit %d: %v", r.exit, r.out)
+		}
+
+		restarted := false
+		_, got := w.until(t, 20*time.Second, "firmware true after sim restarted", func(m map[string]any) bool {
+			watchCheckLine(t, m)
+			switch m["k"] {
+			case "sim":
+				if m["v"] == "restarted" {
+					restarted = true
+				}
+			case "firmware":
+				return restarted && m["v"] == true
+			}
+			return false
+		})
+		idx := func(match func(map[string]any) bool) int {
+			for i, m := range got {
+				if match(m) {
+					return i
+				}
+			}
+			return -1
+		}
+		isRelease := func(m map[string]any) bool {
+			return m["k"] == "button" && m["id"] == "usr3" && m["v"] == false
+		}
+		fwFalse := idx(func(m map[string]any) bool { return m["k"] == "firmware" && m["v"] == false })
+		rel := idx(isRelease)
+		rst := idx(func(m map[string]any) bool { return m["k"] == "sim" && m["v"] == "restarted" })
+		fwTrue := len(got) - 1
+		if !(fwFalse >= 0 && fwFalse < rel && rel < rst && rst < fwTrue) {
+			t.Fatalf("order: firmware false %d, usr3 release %d, sim restarted %d, firmware true %d, want strictly increasing; lines %v", fwFalse, rel, rst, fwTrue, got)
+		}
+		if got[rel]["reason"] != "engine_stopped" {
+			t.Fatalf("usr3 release %v, want reason engine_stopped", got[rel])
+		}
+		for i, m := range got {
+			if i != rel && i < rst && isRelease(m) {
+				t.Fatalf("second usr3 release before sim restarted: %v", m)
+			}
+		}
+
+		out, code := in.press(t, "usr3", "--up")
+		r33ExpectErr(t, "up after the restart", out, code, "button_not_held")
+
+		in.mustPress(t, "usr3")
+		w.until(t, 10*time.Second, "usr3 pressed again", func(m map[string]any) bool {
+			return m["k"] == "button" && m["id"] == "usr3" && m["v"] == true && m["reason"] == nil
+		})
+		w.until(t, 10*time.Second, "usr3 released again", func(m map[string]any) bool {
+			return m["k"] == "button" && m["id"] == "usr3" && m["v"] == false && m["reason"] == nil
+		})
+		w.interrupt(t)
+		if code := w.exit(t, 5*time.Second); code != 0 {
+			t.Fatalf("exit %d, want 0\nstderr: %s", code, w.stderr.String())
+		}
+	})
+
 	t.Run("stopped_on_down", func(t *testing.T) {
 		w := watch(t, "--kind", "sim")
 		w.next(t, 10*time.Second, "the snapshot")
