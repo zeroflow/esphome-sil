@@ -15,6 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Closed-Loop Fan Skeleton** - `sil up` builds static host firmware whose fan duty drives simulated fans over the sim-bus, with RPM flowing back; isolated, resilient, stoppable (completed 2026-11-10)
 - [x] **Phase 2: Full Rev 3.3 Bench** - Buttons, LED strip, temperature/humidity, full CLI vocabulary and Home Assistant control on the Rev 3.3 example, guarded by contract tests (completed 2026-11-09)
 - [x] **Phase 3: Live Web UI** - Embedded local page with live per-port plots, virtual LEDs, button and environment controls, and run info, all through the same API as the CLI (completed 2026-11-10)
+- [ ] **Phase 3.1: Address tech debt** (INSERTED) - Sim-restart button release, Set/SimRestart re-review, TX-cap test
 
 ## Phase Details
 
@@ -142,13 +143,36 @@ Plans:
 **Wave 7** *(blocked on Wave 6 completion)*
 - [x] 03-12-PLAN.md — Acceptance against the real firmware, final viewport check, docs, phase gate, human UAT checklist (wave 7)
 
+### Phase 03.1: Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (INSERTED)
+
+**Goal:** Before the v0.1.0 tag, a simulator that stops with a USR button held (sim restart or `sil down`) announces the release so `sil watch`, `sil status` and the page agree with the firmware, the Phase 2 Set/SimRestart concurrency fixes are independently re-reviewed with race tests and their confirmed defects fixed, and the 64 KiB hub TX-cap drop and recovery has an automated host-side test.
+**Requirements**: CLI-03, IO-03, UI-04, BUS-03 (plus CLI-02, BUS-02 touched by the Set/SimRestart re-review)
+**Depends on:** Phase 3
+**Success Criteria** (what must be TRUE):
+  1. With USR3 held (`sil press usr3 --down`), `sil sim restart --gap 2s` makes `sil watch` print a `button` `usr3` `false` event with `reason` `engine_stopped` after `firmware false` and before `sim restarted`; `sil status` during the gap shows `buttons.usr3` false; a later `sil press usr3 --up` answers `button_not_held` and a fresh press works. `sil down` with a button held prints the same release before the `stopped` line.
+  2. A page holding a USR cap across a sim restart, whose stream delivers the engine's `engine_stopped` release, sends no `button.up` and shows no error. Known limit (user-approved 2026-11-10; the Phase 3 link-loss behaviour of 03-11 is kept, no page change): a page that misses that release (its stream lagged, or its WebSocket closed during the restart) sends its best-effort `button.up` when the link is lost. The gap or the next engine refuses it (`firmware_not_connected` / `button_not_held`) and the message line shows the refusal. Engine and firmware state stay correct. The limit is pinned by a uitest and recorded in the 03.1-01 SUMMARY.
+  3. `03.1-CONCURRENCY-REVIEW.md` traces 8542d9d, b976a6c, da1a9ca and e4f1046 and classifies every finding; the `s.fans` rollback data race (F1), the Set-during-shutdown `engine_failed` answer (F2, audit IN-09) and the shutdown-cancelled Set that answers `stopping` without rolling the record back (F6, user decision 2026-11-10) each have a test that failed before its fix and passes under `go test -race`, and a concurrent Set x SimRestart stress test passes repeated under `-race`.
+  4. `make test-cpp` (host g++, no Docker) builds the shipped `components/sim_bus/sim_bus.cpp` against stub ESPHome headers and proves that more than 64 KiB pending for a peer that does not read drops the connection (WARN line, empty TX buffer, children told), and that the hub reconnects only after its backoff and replays hello, channels, last outputs and sync. `make test-cpp-image` passes the same test with the image gcc.
+**Plans:** 3 plans
+
+Plans:
+**Wave 1**
+- [ ] 03.1-01-PLAN.md — Tracer: a stopping engine releases its held buttons (`reason` `engine_stopped`), proven on real firmware across `sil sim restart --gap` and `sil down`; engine, supervisor and page tests (missed-release known limit, user-approved 2026-11-10, pinned); README (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 03.1-02-PLAN.md — Independent re-review of the Set/SimRestart fixes in `03.1-CONCURRENCY-REVIEW.md`; red-then-green `-race` tests and fixes for F1 (`s.fans` rollback race), F2 (IN-09) and F6 (shutdown-cancelled Set skips rollback), Set x SimRestart stress test (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 03.1-03-PLAN.md — Host-side C++ test of the 64 KiB hub TX-cap drop, backoff and replay against stub ESPHome headers, wired into `make test-cpp` and `make test-cpp-image` (wave 3)
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3
+Phases execute in numeric order: 1 → 2 → 3 → 3.1
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Closed-Loop Fan Skeleton | 13/13 | Complete    | 2026-11-10 |
 | 2. Full Rev 3.3 Bench | 8/8 | Complete    | 2026-11-09 |
 | 3. Live Web UI | 12/12 | Complete    | 2026-11-10 |
+| 3.1. Address tech debt (INSERTED) | 0/3 | Not started | - |

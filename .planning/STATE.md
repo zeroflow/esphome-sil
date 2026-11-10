@@ -1,18 +1,19 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 3
-status: completed
+milestone: v0.1.0
+current_phase: "03.1"
+current_phase_name: address-tech-debt-sim-restart-button-release-set-simrestart
+status: Not planned yet
 stopped_at: Phase 3 complete — all phases complete
-last_updated: "2026-11-10T10:44:27.886Z"
+last_updated: "2026-11-10T12:20:06.068Z"
 last_activity: 2026-11-10
 last_activity_desc: Phase 3 complete
-state_head: 389f1d86dd99c8d76418591188f0f624b72c3680
+state_head: 7d7e66b8255f3d87ea63e91b770e8ef963d21ef3
 progress:
-  total_phases: 3
+  total_phases: 4
   completed_phases: 3
-  total_plans: 33
+  total_plans: 36
   completed_plans: 33
-  percent: 100
 ---
 
 # Project State
@@ -22,16 +23,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-09)
 
 **Core value:** A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
-**Current focus:** Phase 3 — Live Web UI
+**Current focus:** Phase 3.1 — Address tech debt (inserted)
 
 ## Current Position
 
-Phase: 3
+Phase: 03.1 (address-tech-debt-sim-restart-button-release-set-simrestart) — READY TO EXECUTE
 Plan: Not started
-Status: All phases complete
+Status: Not planned yet
 Last activity: 2026-11-10 — Phase 3 complete
 
-Progress: [██████████] 100%
+Progress: [████████░░] 75%
 
 ## Performance Metrics
 
@@ -185,6 +186,10 @@ None yet.
 - [Later] Static linking with real product modules (DNS, `json:`) is unverified; run-in-image fallback stays available
 - [Later] Host `select()` timeout lives in `core/wake/wake_host.cpp::wakeable_delay` in 2026.10.1, not `core/application.cpp` as PROJECT.md says (affects the time-factor milestone)
 - 01-05 A1 (non-blocking): Arctic start_duty 0.10, tau_up 1.0 s, tau_down 2.5 s are ASSUMED; maintainer to confirm or measure (fans/arctic-p12-pwm-pst.toml)
+
+### Roadmap Evolution
+
+- Phase 3.1 inserted after Phase 3: Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (URGENT)
 
 ## Deferred Items
 
