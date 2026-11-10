@@ -1199,7 +1199,9 @@ func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.Set
 	s.inMu.Lock()
 	defer s.inMu.Unlock()
 	prevIn, prevFans := s.inputs, slices.Clone(s.fans)
-	rollback := func() { s.inputs, s.fans = prevIn, prevFans }
+	// Restore elements in place: the slice header of s.fans is written only in Serve, so the
+	// unlocked len(s.fans) above (and in parseSet) never races a rollback.
+	rollback := func() { s.inputs = prevIn; copy(s.fans, prevFans) }
 	if change.Temperature != nil {
 		s.inputs.Temperature = *change.Temperature
 	}
