@@ -1185,7 +1185,8 @@ func (s *supervisor) library() FanLibrary {
 // seeds and starts the next engine (bounded by that start, a local bus listen, and not cancelled by
 // ctx). A value set while the bus is down reaches the firmware with the next snapshot, and a
 // replaced engine is seeded from the recorded inputs and fans. Every failing Set leaves the record as
-// it was.
+// it was. During a shutdown a failing Set may still have reached the engine; the instance is going
+// down and the record is not used again.
 func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.SetResult, error) {
 	change, applied, err := parseSet(r.Values, len(s.fans), s.library())
 	if err != nil {
