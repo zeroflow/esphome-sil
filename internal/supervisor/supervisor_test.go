@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -551,6 +552,46 @@ func TestSetOnAFailedEngineFailsAndRollsBack(t *testing.T) {
 	}
 	if s.inputs.Temperature != DefaultTemperature || s.fans[0].FanID != "alpha-fan" {
 		t.Fatalf("record kept a value the engine never took: inputs %+v, port1 fan %q", s.inputs, s.fans[0].FanID)
+	}
+}
+
+// F1 (03.1 re-review): Set reads len(s.fans) outside inMu while a rolling-back Set assigned the
+// slice header under it, a data race the Phase 2 reviews missed. On a dead engine with no gap every
+// Set rolls back, so two concurrent Sets exercise exactly that pair. Run under -race.
+func TestSetRollbackDoesNotRaceSet(t *testing.T) {
+	s := fanSupervisor(t)
+	s.inputs = engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity}
+	s.stopEngine(s.slot)
+
+	const callers, calls = 2, 200
+	bad := make(chan string, callers*calls)
+	var wg sync.WaitGroup
+	for g := 0; g < callers; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < calls; i++ {
+				_, err := s.Set(context.Background(), control.SetRequest{Values: rawVals(map[string]string{"temperature": "31"})})
+				if code := errCode(err); code != "engine_failed" {
+					bad <- fmt.Sprintf("Set on a dead engine answered %q (%v), want engine_failed", code, err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(bad)
+	for msg := range bad {
+		t.Error(msg)
+	}
+	s.inMu.Lock()
+	defer s.inMu.Unlock()
+	if s.inputs.Temperature != DefaultTemperature {
+		t.Fatalf("record kept a value the engine never took: inputs %+v", s.inputs)
+	}
+	for i, pc := range s.fans {
+		if pc.FanID != "alpha-fan" {
+			t.Fatalf("port %d fan %q after rollbacks, want alpha-fan", i+1, pc.FanID)
+		}
 	}
 }
 
