@@ -4,16 +4,16 @@ milestone: v0.1.0
 current_phase: "03.1"
 current_phase_name: "Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (INSERTED)"
 status: executing
-stopped_at: Completed 03.1-01-PLAN.md
-last_updated: "2026-11-10T12:40:01.835Z"
+stopped_at: Completed 03.1-02-PLAN.md
+last_updated: "2026-11-10T12:47:47.317Z"
 last_activity: 2026-11-10
 last_activity_desc: Phase 03.1 execution started
-state_head: 6445f7d19670e46e5961339b1193bffbb20571d0
+state_head: 0352fa87251a29c40a4374ccbac79de39264757c
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 36
-  completed_plans: 34
+  completed_plans: 35
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-11-09)
 ## Current Position
 
 Phase: 03.1 (Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (INSERTED)) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-11-10 — Phase 03.1 execution started
 
@@ -92,6 +92,7 @@ Progress: [████████░░] 75%
 | Phase 03 P11 | 13min | 2 tasks | 13 files |
 | Phase 03 P12 | 19 min | 2 tasks | 6 files |
 | Phase 03.1 P01 | 7 min | 3 tasks | 7 files |
+| Phase 03.1 P02 | 6 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -175,6 +176,9 @@ Recent decisions affecting current work:
 - [Phase 3]: 03-12: the LED group is asserted by natural height (108 px) against the strip content box (110 px), not the stretched group box
 - [Phase 03.1]: Engine.stopped() releases held buttons with reason engine_stopped, so restart, sil down and engine failure share one fix (A-03.1-01/02)
 - [Phase 03.1]: Missed-release page path kept as a user-approved known limit (2026-11-10), pinned by TestUSRSimRestartWithoutReleaseSendsAnUp
+- [Phase 03.1]: Set rolls back element-wise (copy(s.fans, prevFans)) so the s.fans slice header is written only in Serve (F1)
+- [Phase 03.1]: Set answers stopping with a rollback once a shutdown is requested or cancels its Apply; a shutdown is terminal so the rollback cannot desync a later engine (F2, F6)
+- [Phase 03.1]: Concurrency review kept as 03.1-CONCURRENCY-REVIEW.md; F3 documented, F5 and F7 left unchanged
 
 ### Pending Todos
 
@@ -204,8 +208,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-10T12:40:01.772Z
-Stopped at: Completed 03.1-01-PLAN.md
+Last session: 2026-11-10T12:47:47.256Z
+Stopped at: Completed 03.1-02-PLAN.md
 Resume file: None
 
 ## Needs Human
