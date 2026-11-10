@@ -207,9 +207,9 @@ The plans use some file names that differ from the classification table above. E
 | `internal/instance/instance.go` (04-05) | "internal/instance/instance.go (MOD: Spec.Seed)" | also RunFile.Seed |
 | `ui/web/js/ring.js`, `ui/web/index.html`, `ui/web/app.css` (04-07) | "store.js, plot.js, app.js" plus the files themselves (Ring push/trim, port template, fixed-width `.readout .value`) | |
 | `uitest/plot_test.go`, `parity_test.go`, `layout_test.go`, `bench_test.go` (04-07) | "Test pinning" (uitest runs on the shipped library) and the files themselves | bench_test.go switches to `control.NewFanInfo` |
-| `testdata/fans-v2/*.toml` (04-01, 04-02, 04-06, 04-09) | "fans/*.toml" and RESEARCH Code Example 5 | test-fixture header comment, every value `assumed:test` |
-| `e2e/model_v2_test.go` (04-01), `library_v2_test.go` (04-08), `seed_test.go` (04-05), `fans_test.go`/`web_test.go` (04-03, 04-09) | "Test pinning" → `e2e/model_test.go` (modelAPI, modelSetFan, TestFanTomlUnknownKey), `e2e/restart_test.go` (rsInstance.restart), `e2e/web_test.go` TestWebPlot | |
-| `tests/test_tach_steps.py` (04-09) | "Test pinning" → `tests/test_api_smoke.py` (api_main usage), `tests/silbench.py` | |
+| `testdata/fans-v2/*.toml` (04-01, 04-02, 04-06, 04-10) | "fans/*.toml" and RESEARCH Code Example 5 | test-fixture header comment, every value `assumed:test` |
+| `e2e/model_v2_test.go` (04-01), `library_v2_test.go` (04-08, 04-09), `seed_test.go` (04-05), `fans_test.go`/`web_test.go` (04-03, 04-10) | "Test pinning" → `e2e/model_test.go` (modelAPI, modelSetFan, TestFanTomlUnknownKey), `e2e/restart_test.go` (rsInstance.restart), `e2e/web_test.go` TestWebPlot | |
+| `tests/test_tach_steps.py` (04-10) | "Test pinning" → `tests/test_api_smoke.py` (api_main usage), `tests/silbench.py` | |
 
 ## Shared Patterns
 

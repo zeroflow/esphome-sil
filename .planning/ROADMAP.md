@@ -49,11 +49,11 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Open assumption (A11, to be confirmed on hardware in Phase 7/8)**: 30 rpm per pulse assumes that Rev 3.3 counts its tach like Rev 1.0-3.1 (`pulse_counter` with `multiply: 0.5`, `update_interval: 1s`). The Rev 3.3 hardware YAML read at plan revision (2026-11-10) has no `pulse_counter`. The sim side follows `sim_sensor.h` (1 s time-weighted mean), and the board constants are single values in `internal/model`.
 **Success Criteria** (what must be TRUE):
   1. With a schema 2 fan on a port, sweeping duty up and then down through the firmware's fan entity shows RPM in `sil status` and `sil watch` following the fan's separate up and down curves: monotone in each direction, interpolated between table points, and different on the way down than on the way up at the same duty.
-  2. From standstill the fan stays at 0 rpm until duty exceeds its start duty, then spins up after its start delay; once running it keeps turning down to its lower stop duty and below that coasts to 0 with its own dynamics. A fan marked "never stops" holds its floor RPM at 0 % duty.
+  2. From standstill the fan stays at 0 rpm until duty reaches its start duty (at or above it; amended 2026-11-11 at plan revision), then spins up after its start delay; once running it keeps turning down to its lower stop duty and below that coasts to 0 with its own dynamics. A fan marked "never stops" holds its floor RPM at 0 % duty.
   3. The RPM the firmware reports (and Home Assistant shows) moves in the fan's pulse quantisation steps (30 rpm per pulse at ppr 2), shown by a defined step signature (amended 2026-11-10 at plan revision). With a noise-free tach at a steady speed between pulse-grid points, the firmware's 1 s readings average to the speed within 5 rpm, spread at least 12 and at most 90 rpm peak to peak, and split around their mean with at least a quarter of them on each side; an unquantised tach would show one constant value. In the hermetic emulation of the firmware window without arrival jitter, every reading lies on the 30 rpm grid or on one phase-offset copy of it (at most three residues modulo 30, one of them 0). The noise is seeded, with the amplitude set in `fan.toml` (`noise_rpm`, the standard deviation of a 1 s reading), and two runs with the same seed and duty sequence give identical traces even when tick timing differs. The sim-bus protocol is still version 1, and the contract test shows the firmware-visible steps.
   4. Each port shows airflow (m³/h, ∝ RPM) and power (W, ∝ RPM³) derived from the fan's datasheet values in `sil status`, `sil watch` and on the web page.
   5. Every v0.1.0 schema 1 `fan.toml` loads and behaves exactly as in v0.1.0 (amended 2026-11-10 at plan revision). The shipped files become schema 2 (D-01), and the v0.1.0 files live on byte for byte as hash-pinned fixtures in `testdata/fans-v0.1.0`. The existing v0.1.0 test assertions pass unchanged against those pinned fixtures (D-02). A schema 2 file with an unknown key is rejected with its file:line:col, and `sil fans` lists each fan's schema version and the provenance (assumed / datasheet / measured / unobservable) of every value.
-**Plans**: 9 plans (7 waves: 01 → 02 ∥ 03 → 04 ∥ 05 → 06 → 07 → 08 → 09)
+**Plans**: 10 plans (8 waves: 01 → 02 ∥ 03 → 04 ∥ 05 → 06 → 07 → 08 → 09 → 10)
 
 Plans:
 - [ ] 04-01-PLAN.md — Tracer: a schema 2 curve fan from fan.toml drives a port through model.Plant and the engine; separate up/down curves; strict v2 loader with provenance
@@ -61,10 +61,11 @@ Plans:
 - [ ] 04-03-PLAN.md — `sil fans` shows schema and per-value provenance (JSON + stderr summary/--verbose); loader errors located per table, tach/datasheet/measured tables (measured tolerance carries provenance)
 - [ ] 04-04-PLAN.md — Pulse-accumulator tach in the bus frames, keyed-hash seeded noise (amplitude = std of a 1 s reading), spike S7a with the step signature, math/rand lint
 - [ ] 04-05-PLAN.md — `sil up --seed`: seed through spec.json to every plant, sim.seed in status, run.json, kept across restarts
-- [ ] 04-06-PLAN.md — tach_rpm, airflow_m3h and power_w in status, watch and history (null when unknown)
-- [ ] 04-07-PLAN.md — Page: stepped tach trace, TACH RPM / AIRFLOW / POWER readouts, parity and layout tests
-- [ ] 04-08-PLAN.md — Shipped fans rewritten as schema 2 with provenance and 20 rpm tach noise; exact tests pinned to v0.1.0 fixtures; e2e acceptance on the shipped library
-- [ ] 04-09-PLAN.md — Spike S7b in the contract test (firmware-visible steps with the step signature via aioesphomeapi); real-bench page check; README; all gates
+- [ ] 04-06-PLAN.md — tach_rpm (1 s gate reading; the 1 s shaft mean for an ideal tach), airflow_m3h and power_w in status, watch and history (null when unknown)
+- [ ] 04-07-PLAN.md — Page: stepped tach trace, TACH RPM / AIRFLOW / POWER readouts (`—` for null), parity and layout tests
+- [ ] 04-08-PLAN.md — Shipped fans rewritten as schema 2 with provenance and 20 rpm tach noise; exact tests pinned to v0.1.0 fixtures; schema 2 library and typo checks on a default `sil up`
+- [ ] 04-09-PLAN.md — e2e acceptance on the shipped library through the real firmware: up/down curves, start at start duty after the delay, coast, never-stops floor, loads and tach in status (split from 04-08 at plan revision iteration 2)
+- [ ] 04-10-PLAN.md — Spike S7b in the contract test (firmware-visible steps with the step signature via aioesphomeapi); real-bench page check; README; all gates
 **UI hint**: yes
 
 ### Phase 5: Fault Injection
