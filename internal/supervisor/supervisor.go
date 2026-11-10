@@ -1226,7 +1226,11 @@ func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.Set
 		gap, stopping := s.engGap, s.stopping
 		s.mu.Unlock()
 		if !gap {
-			if stopping {
+			// shutdown() closes downReq before it can take opMu, and stopAll sets s.stopping only
+			// later: a requested shutdown already counts as stopping. Either way the call fails, so
+			// the record goes back to what it was.
+			if stopping || isDown(s.downReq) {
+				rollback()
 				return control.SetResult{}, errStopping()
 			}
 			rollback()
