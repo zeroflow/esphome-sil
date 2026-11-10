@@ -1180,10 +1180,12 @@ func (s *supervisor) library() FanLibrary {
 }
 
 // Set implements control.Control (D-09): every pair is validated before anything is applied, then
-// the held inputs and fans are recorded and one engine operation applies them together. It does not
-// take opMu, so it never waits for a restart; a value set while the bus is down reaches the
-// firmware with the next snapshot, and a replaced engine is seeded from the recorded inputs and
-// fans.
+// the held inputs and fans are recorded and one engine operation applies them together. It never
+// takes opMu, so a restart's gap sleep does not delay it, but it does wait on inMu while a SimRestart
+// seeds and starts the next engine (bounded by that start, a local bus listen, and not cancelled by
+// ctx). A value set while the bus is down reaches the firmware with the next snapshot, and a
+// replaced engine is seeded from the recorded inputs and fans. Every failing Set leaves the record as
+// it was.
 func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.SetResult, error) {
 	change, applied, err := parseSet(r.Values, len(s.fans), s.library())
 	if err != nil {
