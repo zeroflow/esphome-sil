@@ -35,11 +35,15 @@ CXX ?= g++
 CPP_TEST_FLAGS ?= -std=c++20 -Wall -Wextra -Werror -O1
 CPP_IMAGE ?= ghcr.io/esphome/esphome:2026.10.1@sha256:eab8cd6b4f51077c3883af4cedc058280ddc34a94f3b2ffee23e9d2cd5f1db64
 
-# Header-only sim-bus codec against protocol/vectors/frames.tsv, the same file the Go test reads.
+# Header-only sim-bus codec against protocol/vectors/frames.tsv (the same file the Go test reads), and the
+# shipped hub (components/sim_bus/sim_bus.cpp, compiled by path) against stub ESPHome headers: its 64 KiB TX
+# cap, reconnect backoff and replay. Host g++ only, no Docker.
 test-cpp:
 	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; \
 	$(CXX) $(CPP_TEST_FLAGS) -Icomponents/sim_bus -o "$$d/test_protocol" tests/cpp/test_protocol.cpp; \
-	"$$d/test_protocol" protocol/vectors/frames.tsv
+	"$$d/test_protocol" protocol/vectors/frames.tsv; \
+	$(CXX) $(CPP_TEST_FLAGS) -Itests/cpp/stubs -Icomponents/sim_bus -o "$$d/test_txcap" tests/cpp/test_txcap.cpp components/sim_bus/sim_bus.cpp; \
+	"$$d/test_txcap"
 
 test-cpp-image:
 	@docker run --rm --pull=never --user "$$(id -u):$$(id -g)" -v "$(CURDIR):$(CURDIR):ro" -w "$(CURDIR)" \

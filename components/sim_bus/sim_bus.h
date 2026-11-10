@@ -30,7 +30,7 @@ class SimChild {
     static const std::string none;
     return none;
   }
-  virtual void on_value(float v) {}
+  virtual void on_value(float) {}
   virtual void on_connected() {}
   virtual void on_disconnected() {}
 
