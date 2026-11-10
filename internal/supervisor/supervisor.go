@@ -1237,7 +1237,10 @@ func (s *supervisor) Set(ctx context.Context, r control.SetRequest) (control.Set
 			return control.SetResult{}, apperr.Infra("engine_failed", "the simulator engine is not running; nothing was applied", nil)
 		}
 	case actx.Err() != nil:
-		// Only a shutdown cancels actx; the instance is going down.
+		// Only a shutdown cancels actx. The engine may still apply the queued change before it
+		// stops, but a shutdown is terminal and seeds no later engine from the record, so the error
+		// return rolls the record back like every other failing Set.
+		rollback()
 		return control.SetResult{}, errStopping()
 	default:
 		rollback()
