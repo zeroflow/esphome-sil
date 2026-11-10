@@ -1653,6 +1653,64 @@ func TestEngineStopEmitsFirmwareFalse(t *testing.T) {
 	})
 }
 
+// engineDone reports whether the engine's Run has returned.
+func engineDone(e *Engine) bool {
+	select {
+	case <-e.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// Tech debt #1: a stopping engine (restart, shutdown, failure) releases every button still held.
+// The stream says so with reason engine_stopped, after the firmware false event, and the final
+// snapshot shows every button released and no max-hold deadline left.
+func TestEngineStopReleasesHeldButtons(t *testing.T) {
+	h := newButtonHarness(t)
+	if _, err := setButton(t, h.eng, "usr2", true, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := setButtonHold(t, h.eng, "usr1", true, true, 500*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	h.cancel()
+	waitUntil(t, "the engine to stop", func() bool { return engineDone(h.eng) })
+	if got := buttonEvents(h.rec); got != "[usr2=true usr1=true usr1=false:engine_stopped usr2=false:engine_stopped]" {
+		t.Fatalf("button events %s, want the two holds then both engine_stopped releases in id order", got)
+	}
+	fwFalse, firstRelease := -1, -1
+	for i, ev := range h.rec.all() {
+		if ev.K == "firmware" && ev.V == false {
+			fwFalse = i
+		}
+		if ev.K == "button" && ev.Reason == "engine_stopped" && firstRelease < 0 {
+			firstRelease = i
+		}
+	}
+	if fwFalse < 0 || firstRelease < 0 || fwFalse > firstRelease {
+		t.Fatalf("firmware false at %d, first engine_stopped release at %d, want the firmware event first", fwFalse, firstRelease)
+	}
+	for id, held := range h.eng.Snapshot().Buttons {
+		if held {
+			t.Errorf("final snapshot has %s held, want every button released", id)
+		}
+	}
+	if len(h.eng.holdUntil) != 0 {
+		t.Fatalf("holdUntil %v after the stop, want empty", h.eng.holdUntil)
+	}
+}
+
+// A stop with nothing held says nothing about buttons.
+func TestEngineStopWithNothingHeldEmitsNoButtonEvent(t *testing.T) {
+	h := newButtonHarness(t)
+	h.cancel()
+	waitUntil(t, "the engine to stop", func() bool { return engineDone(h.eng) })
+	if got := buttonEvents(h.rec); got != "[]" {
+		t.Fatalf("button events %s, want none", got)
+	}
+}
+
 // SnapshotSync is taken on the engine goroutine and carries Config.Seq when set.
 func TestEngineSnapshotSyncStampsTheBrokerSeq(t *testing.T) {
 	h := newHarness(t)

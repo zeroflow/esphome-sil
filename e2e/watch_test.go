@@ -442,7 +442,7 @@ func TestWatchStream(t *testing.T) {
 		w.exit(t, 5*time.Second)
 	})
 
-	// held_button_across_sim_restart closes audit tech debt #1 (cross-phase 01 resync x 02 buttons x
+	// This subtest closes audit tech debt #1 (cross-phase 01 resync x 02 buttons x
 	// 03 page): a USR button held while the simulator restarts is released by the stopping engine.
 	// The stream says so (reason engine_stopped) before `sim restarted`, `sil status` in the gap
 	// shows it released, and the firmware sees the release at the resync. USR3 is a 50..1000 ms
@@ -535,15 +535,30 @@ func TestWatchStream(t *testing.T) {
 		}
 	})
 
+	// stopped_on_down also holds usr1 over `sil down`: the stopping engine puts its engine_stopped
+	// release on the stream before the stopped line (tech debt #1).
 	t.Run("stopped_on_down", func(t *testing.T) {
-		w := watch(t, "--kind", "sim")
+		w := watch(t, "--kind", "sim,button")
 		w.next(t, 10*time.Second, "the snapshot")
+		in.mustPress(t, "usr1", "--down")
+		w.until(t, 10*time.Second, "usr1 held", func(m map[string]any) bool {
+			return m["k"] == "button" && m["id"] == "usr1" && m["v"] == true
+		})
 		start := sysClock.Now()
 		out, code, _ := in.env.Sil(t, "down", in.name)
 		if code != 0 {
 			t.Fatalf("down: exit %d: %v", code, out)
 		}
-		stopped, _ := w.until(t, 5*time.Second, "the stopped line", func(m map[string]any) bool { return m["k"] == "stopped" })
+		stopped, read := w.until(t, 5*time.Second, "the stopped line", func(m map[string]any) bool { return m["k"] == "stopped" })
+		released := false
+		for _, m := range read {
+			if m["k"] == "button" && m["id"] == "usr1" && m["v"] == false && m["reason"] == "engine_stopped" {
+				released = true
+			}
+		}
+		if !released {
+			t.Fatalf("no usr1 release with reason engine_stopped before the stopped line; read %v", read)
+		}
 		if !watchInt(stopped["t"]) {
 			t.Fatalf("stopped line %v, want an integer t", stopped)
 		}

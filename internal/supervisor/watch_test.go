@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/clock"
 	"github.com/zeroflow/esphome-sil/internal/control"
 	"github.com/zeroflow/esphome-sil/internal/engine"
@@ -297,4 +298,113 @@ func jsonPath(m map[string]any, keys ...string) (any, bool) {
 		}
 	}
 	return v, true
+}
+
+// heldButton holds id through the engine. There is no firmware, so the hold is not strict.
+func heldButton(t *testing.T, s *supervisor, id string) {
+	t.Helper()
+	ctx, cancel := clock.WithTimeout(context.Background(), realClock, 5*time.Second)
+	defer cancel()
+	if _, err := s.currentEngine().SetButton(ctx, id, true, false, 0); err != nil {
+		t.Fatalf("hold %s: %v", id, err)
+	}
+}
+
+// heldNext is next for a stream that ends: Watch returns after it has handed over its last line,
+// so when both the line and the return are ready the line comes first (next picks at random).
+func heldNext(t *testing.T, w *watching) map[string]any {
+	t.Helper()
+	select {
+	case m := <-w.lines:
+		return m
+	default:
+	}
+	return w.next(t)
+}
+
+// heldSnapshot reads the snapshot line of a watch and requires id to be held in it.
+func heldSnapshot(t *testing.T, w *watching, id string) {
+	t.Helper()
+	snap := w.next(t)
+	if snap["k"] != "snapshot" {
+		t.Fatalf("first line %v, want the snapshot", snap)
+	}
+	if b, _ := snap["buttons"].(map[string]any); b[id] != true {
+		t.Fatalf("snapshot buttons %v, want %s held", snap["buttons"], id)
+	}
+}
+
+// Tech debt #1: a simulator restart with a held button puts the engine's release on the stream
+// before `sim restarted`, and a status read during the gap shows the button released.
+func TestSimRestartReleasesAHeldButton(t *testing.T) {
+	s := watchSup(t)
+	heldButton(t, s, "usr2")
+	old := s.slot
+	w := startWatch(t, s, "button", "sim")
+	heldSnapshot(t, w, "usr2")
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := s.SimRestart(context.Background(), control.SimRestartRequest{GapS: 2})
+		errc <- err
+	}()
+	rel := w.next(t)
+	if rel["k"] != "button" || rel["id"] != "usr2" || rel["v"] != false || rel["reason"] != "engine_stopped" {
+		t.Fatalf("line %v, want the usr2 release with reason engine_stopped", rel)
+	}
+	// The old engine's final snapshot is published when done closes.
+	tm := realClock.NewTimer(5 * time.Second)
+	defer tm.Stop()
+	select {
+	case <-old.done:
+	case <-tm.C():
+		t.Fatal("the old engine did not stop")
+	}
+	ctx, cancel := clock.WithTimeout(context.Background(), realClock, 5*time.Second)
+	defer cancel()
+	st, err := s.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Buttons["usr2"] {
+		t.Fatalf("status in the restart gap shows usr2 held: %v", st.Buttons)
+	}
+	// BlockUntil waits for the gap sleep: the old engine's ticker is gone with its done channel.
+	s.clk.(*clock.Manual).BlockUntil(1)
+	s.clk.(*clock.Manual).Advance(2 * time.Second)
+	if next := w.next(t); next["k"] != "sim" || next["v"] != "restarted" {
+		t.Fatalf("line %v, want sim restarted right after the release", next)
+	}
+	select {
+	case err := <-errc:
+		if apperr.AsError(err).Code != "firmware_not_running" {
+			t.Fatalf("SimRestart returned %v, want firmware_not_running (no firmware)", err)
+		}
+	case <-tm.C():
+		t.Fatal("SimRestart did not return")
+	}
+	// SimRestart left a new engine in the slot; watchSup's cleanup only knows the first one.
+	s.mu.Lock()
+	cur := s.slot
+	s.mu.Unlock()
+	t.Cleanup(func() { s.stopEngine(cur) })
+}
+
+// Tech debt #1: `sil down` with a held button puts the release on the stream before the stopped line.
+func TestDownReleasesAHeldButton(t *testing.T) {
+	s := watchSup(t)
+	heldButton(t, s, "usr1")
+	w := startWatch(t, s, "button")
+	heldSnapshot(t, w, "usr1")
+	s.shutdown()
+	rel := heldNext(t, w)
+	if rel["k"] != "button" || rel["id"] != "usr1" || rel["v"] != false || rel["reason"] != "engine_stopped" {
+		t.Fatalf("line %v, want the usr1 release with reason engine_stopped", rel)
+	}
+	if stopped := heldNext(t, w); stopped["k"] != "stopped" {
+		t.Fatalf("line %v, want stopped after the release", stopped)
+	}
+	if err := <-w.done; err != nil {
+		t.Fatalf("Watch returned %v after the stop, want nil", err)
+	}
 }
