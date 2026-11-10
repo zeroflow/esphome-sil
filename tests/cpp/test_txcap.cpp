@@ -14,12 +14,12 @@
 #include "sim_protocol.h"
 #include "esphome/core/hal.h"
 
-#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <csignal>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -79,6 +79,18 @@ struct TxChild : sim_bus::SimChild {
   void on_disconnected() override { disconnected++; }
 };
 
+// The watchdog's SIGALRM kills the process before Env's destructor can run, so the paths it must
+// remove are kept in static buffers the signal handler can reach. Only async-signal-safe calls
+// (unlink, rmdir, _exit) may run there: no std::string, no stdio, no allocation.
+char g_cleanup_sock[128];
+char g_cleanup_dir[128];
+
+void on_watchdog(int) {
+  if (g_cleanup_sock[0] != '\0') ::unlink(g_cleanup_sock);
+  if (g_cleanup_dir[0] != '\0') ::rmdir(g_cleanup_dir);
+  ::_exit(3);
+}
+
 /// Private temp dir with a listening socket; every fd, the socket file and the dir go on destruction.
 struct Env {
   std::string dir;
@@ -91,6 +103,10 @@ struct Env {
     if (mkdtemp(tmpl) == nullptr) return false;
     dir = tmpl;
     sock = dir + "/bus.sock";
+    if (dir.size() < sizeof(g_cleanup_dir) && sock.size() < sizeof(g_cleanup_sock)) {
+      std::memcpy(g_cleanup_dir, dir.c_str(), dir.size() + 1);
+      std::memcpy(g_cleanup_sock, sock.c_str(), sock.size() + 1);
+    }
     listen_fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (listen_fd < 0) return false;
     sockaddr_un a{};
@@ -145,7 +161,8 @@ StallResult stall(Ctx &c) {
   StallResult r;
   // A UDS stream is limited by the sender's buffer: shrink the hub's, so the kernel backs up soon.
   int sz = 4096;
-  ::setsockopt(c.bus.fd_, SOL_SOCKET, SO_SNDBUF, &sz, sizeof(sz));
+  check(::setsockopt(c.bus.fd_, SOL_SOCKET, SO_SNDBUF, &sz, sizeof(sz)) == 0, "stall",
+        "setsockopt(SO_SNDBUF) failed, the stall loop would not back the kernel up");
   while (c.bus.connected() && r.calls < 200000) {
     c.last = 0.001f * static_cast<float>(++c.n);
     c.bus.set_out("port1.duty", c.last);
@@ -316,7 +333,10 @@ void welcome_resets_backoff(Ctx &c) {
 }  // namespace
 
 int main() {
-  alarm(20);  // a blocking hub would hang here; SIGALRM turns that into a failed make
+  // A blocking hub would hang here; SIGALRM turns that into a failed make (exit 3) and removes the
+  // temp socket and directory first.
+  std::signal(SIGALRM, on_watchdog);
+  alarm(20);
   Ctx c;
   if (!c.env.init()) {
     std::fprintf(stderr, "cannot set up the test socket\n");
