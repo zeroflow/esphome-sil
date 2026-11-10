@@ -595,6 +595,57 @@ func TestSetRollbackDoesNotRaceSet(t *testing.T) {
 	}
 }
 
+// raceWait waits up to 5 s of real time for ch to deliver and reports whether it did.
+func raceWait[T any](ch <-chan T) (v T, ok bool) {
+	tm := realClock.NewTimer(5 * time.Second)
+	defer tm.Stop()
+	select {
+	case v = <-ch:
+		return v, true
+	case <-tm.C():
+		return v, false
+	}
+}
+
+// F2 (03.1 re-review, audit IN-09): shutdown() closes downReq before it can take opMu, and stopAll sets
+// s.stopping only after that. In between, a SimRestart whose gap sleep is aborted has cleared engGap
+// while the slot still holds the stopped engine, so a Set used to find "no gap, not stopping" and
+// answer engine_failed (exit class 2) for an instance that is shutting down. It must answer
+// stopping and leave the record as it was.
+func TestSetInTheShutdownWindowIsStopping(t *testing.T) {
+	s := fanSupervisor(t)
+	s.inputs = engine.Env{Temperature: DefaultTemperature, Humidity: DefaultHumidity}
+	old := s.slot
+
+	restarted := make(chan error, 1)
+	go func() {
+		_, err := s.SimRestart(context.Background(), control.SimRestartRequest{GapS: 5})
+		restarted <- err
+	}()
+	// The old engine is stopped, then the gap sleep is registered on the manual clock.
+	if _, ok := raceWait(old.done); !ok {
+		t.Fatal("timed out waiting for SimRestart to stop the old engine")
+	}
+	s.clk.(*clock.Manual).BlockUntil(1)
+
+	// The first step of shutdown(): the request is made, stopAll has not run yet (s.stopping is false).
+	s.downOnce.Do(func() { close(s.downReq) })
+	err, ok := raceWait(restarted)
+	if !ok || errCode(err) != "stopping" {
+		t.Fatalf("SimRestart after the shutdown request = %v (returned %v), want stopping", err, ok)
+	}
+
+	_, err = s.Set(context.Background(), control.SetRequest{Values: rawVals(map[string]string{"temperature": "31"})})
+	if errCode(err) != "stopping" {
+		t.Fatalf("Set in the shutdown window: %v, want stopping", err)
+	}
+	s.inMu.Lock()
+	defer s.inMu.Unlock()
+	if s.inputs.Temperature != DefaultTemperature {
+		t.Fatalf("record kept a value of a Set that answered stopping: %+v", s.inputs)
+	}
+}
+
 // WR-02 (second review): a SimRestart that cannot start the new engine while another failure is held
 // records no engine_failed (the held diagnosis wins), yet the slot keeps a stopped engine. Set must
 // decide on the real state, not on the failure code: it reports engine_failed and keeps the record
