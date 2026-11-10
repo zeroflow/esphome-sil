@@ -27,7 +27,7 @@ fmt-check:
 	@out=$$(find . \( -path ./.git -o -path ./prototype -o -path ./.planning -o -path ./.gsd \) -prune -o -name '*.go' -print | xargs -r gofmt -l); \
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
-# test-cpp (host g++) is part of check. test-cpp-image runs the same test with the gcc of the pinned
+# test-cpp (host g++) is part of check. test-cpp-image runs the same tests with the gcc of the pinned
 # ESPHome image; it needs docker and the image present, so it is run next to check, not inside it.
 check: fmt-check vet test test-cpp
 
@@ -48,7 +48,7 @@ test-cpp:
 test-cpp-image:
 	@docker run --rm --pull=never --user "$$(id -u):$$(id -g)" -v "$(CURDIR):$(CURDIR):ro" -w "$(CURDIR)" \
 		--entrypoint sh $(CPP_IMAGE) -c \
-		'g++ --version | head -n 1 && g++ $(CPP_TEST_FLAGS) -Icomponents/sim_bus -o /tmp/test_protocol tests/cpp/test_protocol.cpp && /tmp/test_protocol protocol/vectors/frames.tsv'
+		'g++ --version | head -n 1 && g++ $(CPP_TEST_FLAGS) -Icomponents/sim_bus -o /tmp/test_protocol tests/cpp/test_protocol.cpp && /tmp/test_protocol protocol/vectors/frames.tsv && g++ $(CPP_TEST_FLAGS) -Itests/cpp/stubs -Icomponents/sim_bus -o /tmp/test_txcap tests/cpp/test_txcap.cpp components/sim_bus/sim_bus.cpp && /tmp/test_txcap'
 
 mod-verify:
 	$(GO) mod verify
