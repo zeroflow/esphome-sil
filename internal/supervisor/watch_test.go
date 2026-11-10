@@ -344,10 +344,27 @@ func TestSimRestartReleasesAHeldButton(t *testing.T) {
 	heldSnapshot(t, w, "usr2")
 
 	errc := make(chan error, 1)
+	finished := make(chan struct{})
 	go func() {
+		defer close(finished)
 		_, err := s.SimRestart(context.Background(), control.SimRestartRequest{GapS: 2})
 		errc <- err
 	}()
+	// Registered before any failure point (LIFO: it runs before watchSup's cleanup). A failing run
+	// must not leave SimRestart blocked on the manual clock nor the engine it installs running. The
+	// shutdown request aborts the gap sleep and the resync wait; then whatever engine is in the slot
+	// is stopped (stopping an already stopped engine is a no-op).
+	t.Cleanup(func() {
+		s.downOnce.Do(func() { close(s.downReq) })
+		if _, ok := raceWait(finished); !ok {
+			t.Error("SimRestart did not return after the shutdown request")
+			return
+		}
+		s.mu.Lock()
+		cur := s.slot
+		s.mu.Unlock()
+		s.stopEngine(cur)
+	})
 	rel := w.next(t)
 	if rel["k"] != "button" || rel["id"] != "usr2" || rel["v"] != false || rel["reason"] != "engine_stopped" {
 		t.Fatalf("line %v, want the usr2 release with reason engine_stopped", rel)
@@ -383,11 +400,6 @@ func TestSimRestartReleasesAHeldButton(t *testing.T) {
 	case <-tm.C():
 		t.Fatal("SimRestart did not return")
 	}
-	// SimRestart left a new engine in the slot; watchSup's cleanup only knows the first one.
-	s.mu.Lock()
-	cur := s.slot
-	s.mu.Unlock()
-	t.Cleanup(func() { s.stopEngine(cur) })
 }
 
 // Tech debt #1: `sil down` with a held button puts the release on the stream before the stopped line.
