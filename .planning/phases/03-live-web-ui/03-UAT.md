@@ -3,38 +3,39 @@ status: testing
 phase: 03-live-web-ui
 source: [03-VERIFICATION.md]
 started: 2026-11-09T18:00:00Z
-updated: 2026-11-09T18:00:00Z
+updated: 2026-11-10T10:21:54Z
 ---
 
 ## Current Test
 
-number: 1
-name: Phone on the LAN
+number: 6
+name: Visual character
 expected: |
-  The page loads from another device, fits the phone width, scrolls in one column, plots move, LINK reads LIVE.
+  Dark, sober bench-instrument look (D-01), channel colours per port (yellow, green, blue, magenta), the only glow on the LED lenses, no vendor names.
 awaiting: user response
 
 ## Tests
 
 ### 1. Phone on the LAN. `sil up uat`, open the printed `web.url` on a phone on the same LAN (optionally a second PC too).
 expected: The page loads from another device, fits the phone width, scrolls in one column, plots move, LINK reads LIVE.
-result: [pending]
+result: pass
+note: "plots moving did not work with the command, but with usr1 button" - the suggested `sil set port1.duty=0.5` was a wrong instruction (duty is a firmware output; sil set only takes inputs), not a product defect"
 
 ### 2. Touch and hold USR2 for about 2 s on the phone page (UAT 2), with Home Assistant connected to the instance if possible.
 expected: All four fans go to 100 %, and HA's Fan N Speed entities follow, exactly as for `sil press usr2 --long`.
-result: [pending]
+result: pass
 
 ### 3. Touch slide-off on a real phone browser (UAT 3): touch USR1, slide the finger off the cap and keep it on the screen; also touch the cap and then bring up a system overlay or switch app.
 expected: The cap goes dark within a moment (no stuck hold); after a system overlay it does not stay lit (the 10 s max hold is the backstop). Try Safari and/or Firefox as well as Chrome.
-result: [pending]
+result: pass
 
 ### 4. Temperature reaches HA (UAT 4): set TEMPERATURE to 26 on the phone page and press Enter.
 expected: Home Assistant's Temperature entity shows 26.
-result: [pending]
+result: pass
 
 ### 5. Sim restart recovery on a real phone (UAT 5): run `sil sim restart uat` on the bench machine while the phone page is open.
 expected: The phone page recovers by itself without a reload (stale overlay, then LIVE, plots repaint).
-result: [pending]
+result: pass
 
 ### 6. Visual character (UAT 6): look at the desktop page at 1280 x 720 or larger (screenshots 03-06-layout-1280x720.png, 03-06-layout-390x844.png are in the phase directory).
 expected: Dark, sober bench-instrument look (D-01), channel colours per port (yellow, green, blue, magenta), the only glow on the LED lenses, no vendor names.
@@ -59,9 +60,9 @@ result: [pending]
 ## Summary
 
 total: 10
-passed: 0
+passed: 5
 issues: 0
-pending: 10
+pending: 5
 skipped: 0
 blocked: 0
 
