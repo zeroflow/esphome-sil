@@ -52,7 +52,17 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The RPM the firmware reports (and Home Assistant shows) moves in the fan's pulse quantisation steps (30 rpm per pulse at ppr 2) with seeded noise of the amplitude set in `fan.toml`; two runs with the same seed and duty sequence give identical traces even when tick timing differs. The sim-bus protocol is still version 1, and the contract test shows the firmware-visible steps.
   4. Each port shows airflow (m³/h, ∝ RPM) and power (W, ∝ RPM³) derived from the fan's datasheet values in `sil status`, `sil watch` and on the web page.
   5. Every shipped schema 1 `fan.toml` loads and behaves exactly as in v0.1.0 (the existing test suite passes unchanged), a schema 2 file with an unknown key is rejected with its file:line:col, and `sil fans` lists each fan's schema version and the provenance (assumed / datasheet / measured / unobservable) of every value.
-**Plans**: TBD
+**Plans**: 8 plans (6 waves: 01 → 02 ∥ 03 → 04 → 05 → 06 ∥ 07 → 08)
+
+Plans:
+- [ ] 04-01-PLAN.md — Tracer: a schema 2 curve fan from fan.toml drives a port through model.Plant and the engine; separate up/down curves; strict v2 loader with provenance
+- [ ] 04-02-PLAN.md — Start delay, immediate stop, coast tau, never-stops form; frozen v0.1.0 differential test and pinned v0.1.0 fixtures
+- [ ] 04-03-PLAN.md — `sil fans` shows schema and per-value provenance (JSON + stderr summary/--verbose); loader errors located per table, tach/datasheet/measured tables
+- [ ] 04-04-PLAN.md — Pulse-accumulator tach in the bus frames, keyed-hash seeded noise, spike S7a, math/rand lint, `sil up --seed`
+- [ ] 04-05-PLAN.md — tach_rpm, airflow_m3h and power_w in status, watch and history (null when unknown)
+- [ ] 04-06-PLAN.md — Page: stepped tach trace, TACH RPM / AIRFLOW / POWER readouts, parity and layout tests, real-bench page check
+- [ ] 04-07-PLAN.md — Shipped fans rewritten as schema 2 with provenance; exact tests pinned to v0.1.0 fixtures; e2e acceptance on the shipped library
+- [ ] 04-08-PLAN.md — Spike S7b in the contract test (firmware-visible 30 rpm steps via aioesphomeapi); README; all gates
 **UI hint**: yes
 
 ### Phase 5: Fault Injection
@@ -125,7 +135,7 @@ Phases execute in numeric order: 4 → 5 → 6 → 7 → 8. After Phase 4, Phase
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 4. Fan Model v2 | v0.2.0 | 0/TBD | Not started | - |
+| 4. Fan Model v2 | v0.2.0 | 0/8 | Planned | - |
 | 5. Fault Injection | v0.2.0 | 0/TBD | Not started | - |
 | 6. fan-analyze Offline Core | v0.2.0 | 0/TBD | Not started | - |
 | 7. Measuring Firmware and Board Link | v0.2.0 | 0/TBD | Not started | - |
