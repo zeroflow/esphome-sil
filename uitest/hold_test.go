@@ -357,6 +357,7 @@ func TestUSRSimRestartRelease(t *testing.T) {
 // snapshot would fix the limit and flip this test; that change updates the test and the ROADMAP
 // criterion 2 note together.
 func TestUSRSimRestartWithoutReleaseSendsAnUp(t *testing.T) {
+	t.Log("pins known limit A-03.1-09, see ROADMAP Phase 3.1 criterion 2")
 	b, p := liveWithCaps(t)
 	x, y := holdFresh(t, b, p, "usr1", 1)
 	// The engine released the button, but no event reaches the page...
