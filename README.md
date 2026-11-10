@@ -72,8 +72,10 @@ Four additions exist for the web page and are available to every client:
   "max_hold"}`, so a client that goes away cannot leave a button held.
 - When the simulator stops with a button held (`sil sim restart`, `sil down` or
   an engine failure), the stream first gets the release `{"v": false,
-  "reason": "engine_stopped"}`, `sil status` shows the button released, and the
-  firmware sees the release when it resyncs with the next simulator.
+  "reason": "engine_stopped"}` and `sil status` shows the button released. After
+  a simulator restart the firmware sees the release when it resyncs with the
+  new simulator; after `sil down` or an engine failure the whole instance stops,
+  firmware included, so there is no later resync.
 
 A `sim` event with the value `restarted` means the simulator state was rebuilt.
 Values set during the restart gap (`sil set`) seed the new simulator but arrive
