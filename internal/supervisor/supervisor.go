@@ -735,7 +735,10 @@ func (s *supervisor) statusFrom(have *engine.Snapshot) control.Status {
 		Error:    failure,
 	}
 	for _, p := range snap.Ports {
-		st.Ports = append(st.Ports, control.PortStatus{Port: p.Port, Fan: p.Fan, Duty: p.Duty, RPM: p.RPM, State: p.State})
+		st.Ports = append(st.Ports, control.PortStatus{
+			Port: p.Port, Fan: p.Fan, Duty: p.Duty, RPM: p.RPM, State: p.State,
+			TachRPM: copyFloat(p.TachRPM), AirflowM3h: copyFloat(p.AirflowM3h), PowerW: copyFloat(p.PowerW),
+		})
 	}
 	for _, id := range engine.ButtonIDs {
 		st.Buttons[id] = snap.Buttons[id]
@@ -1401,4 +1404,13 @@ func lanHostPtr(h string) *string {
 		return nil
 	}
 	return &h
+}
+
+// copyFloat returns a fresh copy of *p, or nil: status never shares a pointer with the snapshot.
+func copyFloat(p *float64) *float64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }

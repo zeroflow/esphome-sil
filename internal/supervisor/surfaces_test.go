@@ -54,16 +54,7 @@ func advanceSim(t *testing.T, s *supervisor, d time.Duration) {
 	target := eng.Snapshot().SimTime + d
 	s.clk.(*clock.Manual).BlockUntil(1)
 	s.clk.(*clock.Manual).Advance(d)
-	tm := realClock.NewTimer(5 * time.Second)
-	defer tm.Stop()
-	for eng.Snapshot().SimTime != target {
-		select {
-		case <-tm.C():
-			t.Fatalf("engine did not reach sim time %v", target)
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
+	waitFor(t, fmt.Sprintf("engine sim time %v", target), func() bool { return eng.Snapshot().SimTime == target })
 }
 
 // statusPorts is the ports array of the status JSON, decoded generically so that an absent key and

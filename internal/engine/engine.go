@@ -282,6 +282,10 @@ type portRuntime struct {
 	evRPM   float32
 	nextRPM time.Duration
 	evState string
+	// The tach reading of the last tach event: its value (float32, like evRPM) and whether it was
+	// a number (false = null).
+	evTach   float32
+	evTachOK bool
 }
 
 // New builds an engine; nothing runs until Run.
@@ -343,6 +347,9 @@ func (e *Engine) build() *Snapshot {
 			state = "running"
 		}
 		s.Ports[i] = PortState{Port: p.cfg.Port, Fan: p.cfg.FanID, Duty: p.duty, RPM: p.plant.Shaft(), State: state}
+		if v, ok := p.plant.Reading(); ok {
+			s.Ports[i].TachRPM = &v
+		}
 	}
 	for id, v := range e.buttons {
 		s.Buttons[id] = v
@@ -378,6 +385,30 @@ func (e *Engine) emitState(p *portRuntime) {
 		p.evState = st
 		e.emit(events.Event{K: "state", Port: p.cfg.Port, V: st})
 	}
+}
+
+// emitTach emits a tach event when port p's tach reading (the last completed 1 s gate of its plant)
+// differs from the last tach event in float32 or in presence; force emits regardless, for a new
+// plant (engine start, fan swap), so a stream sees the null of the new plant's first second. The
+// reading changes only at gate ends, so the events are at most one per sim second per port, for an
+// ideal-tach fan (the 1 s shaft mean) as for a tach fan. A missing reading goes out as a nil
+// *float64 inside V, which encodes as "v":null.
+func (e *Engine) emitTach(p *portRuntime, force bool) {
+	rpm, ok := p.plant.Reading()
+	v := float32(rpm)
+	if !ok {
+		v = 0
+	}
+	if !force && ok == p.evTachOK && v == p.evTach {
+		return
+	}
+	p.evTach, p.evTachOK = v, ok
+	var val *float64
+	if ok {
+		f := float64(v)
+		val = &f
+	}
+	e.emit(events.Event{K: "tach", Port: p.cfg.Port, V: val})
 }
 
 // emitRPM samples every port's rpm for an rpm event (once per RPMEventStep, only on a change).
@@ -464,6 +495,9 @@ func (e *Engine) emitSample() {
 		if e.connected {
 			duty, rpm := p.duty, p.plant.Shaft()
 			v[i].Duty, v[i].RPM = &duty, &rpm
+			if tach, ok := p.plant.Reading(); ok {
+				v[i].Tach = &tach
+			}
 		}
 	}
 	e.emit(events.Event{K: events.SampleKind, V: v, Gap: !e.sampled})
@@ -532,6 +566,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		p := &e.ports[i]
 		p.evState = ""
 		e.emitState(p)
+		e.emitTach(p, true)
 	}
 	e.publish()
 	ticker := clk.NewTicker(tick)
@@ -561,6 +596,7 @@ func (e *Engine) Run(ctx context.Context) error {
 				p := &e.ports[i]
 				p.plant.Step(p.duty, dt)
 				e.emitState(p)
+				e.emitTach(p, false)
 			}
 			e.emitRPM()
 			e.emitSample()
@@ -801,6 +837,7 @@ func (e *Engine) handleApply(op applyOp) {
 			p.plant = model.NewPlant(pc.Fan, pc.Port, e.cfg.Seed)
 			e.emit(events.Event{K: "fan", Port: pc.Port, V: pc.FanID})
 			e.emitState(p)
+			e.emitTach(p, true) // the new plant has no reading for its first second
 		}
 	}
 	e.publish() // before the reply, so a status read after Apply returned already shows the change
