@@ -1,7 +1,7 @@
 ---
 phase: 04-fan-model-v2
-verified: 2026-11-11T14:30:00Z
-status: human_needed
+verified: 2026-11-11T16:10:00Z
+status: passed
 score: 5/5 must-haves verified
 covered_files:
   - .planning/phases/04-fan-model-v2/04-01-PLAN.md
@@ -62,6 +62,7 @@ covered_files:
   - internal/model/derive.go
   - internal/model/derive_test.go
   - internal/model/fan.go
+  - internal/model/fan_test.go
   - internal/model/fan_v010_test.go
   - internal/model/noise.go
   - internal/model/plant.go
@@ -93,43 +94,30 @@ covered_files:
   - uitest/live_test.go
   - uitest/parity_test.go
   - uitest/plot_test.go
-covered_digest: "v2:sha256:1e1ce6ba09252d0ee0a9b8274205fe1b8a89553e1d6050396138a6cfee287c41"
+covered_digest: "v2:sha256:90b9332a7f961dfed4858d4b4c686c009681ef7f5adde257168925b58d7697d3"
 behavior_unverified: 0
 overrides_applied: 0
-warnings:
-  - id: WR-01
-    summary: "D-10 never-stops floor rule (loader rule e) checks curve.up only; a curve.down that drops to 0 rpm is accepted for a stop.duty = 0 fan"
-    file: "internal/fanlib/v2.go:283-288"
-    impact: "Does not affect either shipped fan or any tested form; a contradictory hand-written (or, later, fit-written) file would give a fan reported 'running' at 0 rpm"
-  - id: WR-02
-    summary: "Control characters in name/[sources]/[measured] strings are accepted and printed raw by the `sil fans` stderr summary"
-    file: "internal/fanlib/v2.go, internal/cli/cli.go (writeFansSummary)"
-  - id: WR-03
-    summary: "locate() loses the line number after a string holding an escaped quote followed by a bracket"
-    file: "internal/fanlib/v2.go:568-590"
-human_verification:
-  - test: "Open the web page (`sil up`, then the printed URL) on the shipped Arctic fan and sweep Fan 1 up and down"
-    expected: "Per port scope: solid smooth shaft RPM trace plus a dimmer stepped tach trace in the same port colour; the readout row shows TACH RPM / M3/H / W without crowding the existing readouts, and shows an em dash for null values"
-    why_human: "Visual look and layout of the stepped trace and the readout row (coverage item D5) cannot be judged from DOM assertions"
-  - test: "Read fans/arctic-p12-pwm-pst.toml and fans/noctua-nf-a12x25-pwm.toml against the vendor pages and decide whether the assumed numbers (interior curve points, down curve, start delay 0.4 s, tau values, coast_tau 6 s, noise_rpm 20, Noctua 450 rpm floor) are plausible enough to ship until Phase 8 measures them"
-    expected: "Values labelled `assumed` look plausible; `datasheet` entries are backed by the recorded sources"
-    why_human: "Plausibility of assumed physical constants is a judgment call (D-03); the code only proves they are labelled and honoured"
-  - test: "Skim README.md schema 2 / provenance / tach / airflow-power / --seed sections"
-    expected: "Reads clearly to a developer and matches `sil fans`, `sil status` and `sil watch` output"
-    why_human: "Readability is judgment; presence of the topics was checked mechanically"
-  - test: "Decide whether to close WR-01 (and optionally WR-02/WR-03) before Phase 6 `fit` starts writing schema 2 files"
-    expected: "Maintainer disposition recorded in 04-REVIEW-DISPOSITION.md (all six findings are still `open`)"
-    why_human: "Scope/priority decision, not a verifiable fact"
+re_verification:
+  previous_status: human_needed
+  previous_score: 5/5
+  gaps_closed: []
+  gaps_remaining: []
+  regressions: []
+  warnings_closed:
+    - "WR-01 never-stops floor rule now also applied to curve.down (6ebeb3f)"
+    - "WR-02 control characters rejected by the loader and quoted by sil fans (fdac7ae)"
+    - "WR-03 locate follows escapes and multi-line strings (34ddfd9)"
+  human_items_closed_by: "04-UAT.md (status complete, 4 of 4 passed, 0 issues)"
 ---
 
 # Phase 4: Fan Model v2 Verification Report
 
 **Phase Goal:** A simulated fan behaves like a real one: separate up and down duty to RPM curves, distinct start and stop thresholds with start delay and coast-down, a tach that quantises and jitters like the firmware's `pulse_counter` window, and airflow and power from datasheet values. All of it driven by an explicit `fan.toml` schema 2 with per-value provenance, while every v0.1.0 fan file still behaves exactly as before.
 **Verified:** 2026-11-11
-**Status:** human_needed
-**Re-verification:** No, initial verification
+**Status:** passed
+**Re-verification:** Yes. The prior report (human_needed, 14:30Z) was made stale by six code-review fixes (6ebeb3f..62091f8). It had no `gaps:` section, so the five truths were re-derived from ROADMAP and every one was re-checked against HEAD, with full scrutiny on the three fix areas called out below.
 
-All five ROADMAP success criteria (with the amended wording for 2, 3 and 5) are met in the code. Nothing failed. The status is `human_needed` because a few items are judgment calls (visual look, plausibility of assumed numbers, README) and because the three open code-review warnings need a maintainer disposition. One of them (WR-01) is a real validation hole worth closing before Phase 6.
+No truth failed, no regression was found, and no human item is outstanding. The four human items of the prior report were run as UAT and all passed. The three review warnings (WR-01..03) and three infos are fixed and covered by tests that pass at HEAD.
 
 ## Goal Achievement
 
@@ -137,57 +125,68 @@ All five ROADMAP success criteria (with the amended wording for 2, 3 and 5) are 
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | A schema 2 fan sweeps up then down through the firmware's fan entity; `sil status` / `sil watch` show separate, monotone, interpolated up and down curves, lower on the way down at the same duty | VERIFIED | `model.Step`/`advance` picks `upCurve()` or `downCurve()` by sticky direction (`internal/model/fan.go:212-241`); `Curve.At` interpolates linearly (`curve.go:28-42`); loader enforces strictly increasing duty and non-decreasing rpm (`v2.go:404-433`). Re-ran e2e this session: `TestModelV2Curves` PASS (rpm 599.18 at 20 %, 999.15 at 40 %, interpolated 1150 at 50 %, down 1200 at 60 % vs 1300 up) and `TestLibraryV2/curves` PASS on the shipped Arctic (820/1150/1480 up, 1100/780 down, rpm event on `watch`) |
-| 2 | From rest: 0 rpm until duty is at or above start duty, spin-up after the start delay; once running it keeps turning down to stop duty, below that stops and coasts with its own dynamics; a "never stops" fan holds its floor rpm at 0 % duty | VERIFIED (see WR-01 caveat) | `advance` start/stop branch: `duty >= p.StartDuty`, delay accumulated in `State.StartElapsed`, step split at expiry; stop immediate, `segment` uses `CoastTau` for a stopped fan (`fan.go:184-203, 258-266`); never-stops = `stop.duty = 0` with a curve point at duty 0 (`v2.go:283-288, 318-320`). Model tests PASS (`TestStartDelaySplitsTheStep`, `TestStartAtExactStartDuty`, `TestStopIsImmediateAndCoasts`, `TestNeverStopsForm`). e2e `TestLibraryV2/start_stop` PASS: rest at duty 0.08, start at exactly 0.10 after 390-410 ms, keeps running at 0.06, stops at once at 0.03 and coasts with ratio exp(-dt/6), Noctua holds 450 rpm at duty 0 |
-| 3 | The firmware-reported RPM moves in 30 rpm pulse steps with the defined step signature; noise seeded and set by `noise_rpm`; same seed and duty sequence give identical traces regardless of tick timing; bus protocol still 1 | VERIFIED | `Plant.stepTach` counts whole pulses from the exact rpm integral; `Frame()` sends pulses*60/(BoardPPR*elapsed) (`plant.go:83-152`). Noise is a stateless keyed hash of (seed, port, 100 ms bucket) (`noise.go`), no `math/rand` in non-test model code. S7a (hermetic firmware-window emulation) `TestS7aFirmwareWindowKeepsSteps` PASS, asserting mean bias, spread 12..90, side share >= 25 %, and at most three residues mod 30 with one 0. `TestTachIgnoresTickTiming`, `TestNoiseIsKeyed`, `TestNoiseAmplitudeIsGateStd` PASS. S7b through the real firmware (`tests/test_tach_steps.py`) asserts mean within 5, spread 12..90, >= 2 levels, both sides >= 25 %, status tach only 1080/1110, `bus_proto == 1`; the executor reported it green in `make test-contract` 7/7 (not re-run here, see Behavioral Spot-Checks) |
-| 4 | Each port shows airflow (m3/h, proportional to rpm) and power (W, proportional to rpm^3) from datasheet values in `sil status`, `sil watch` and the page | VERIFIED | `Datasheet.Airflow/Power` and `Plant.Outputs` (`derive.go`); engine fills `PortState.AirflowM3h/PowerW` (`engine.go:356`) and a `load` event (`engine.go:425-437`); `control.PortStatus` carries `tach_rpm`, `airflow_m3h`, `power_w` as always-present nullable fields (`control.go:140-148`); supervisor copies them (`supervisor.go:740`); page has TACH RPM / M3/H / W readouts with `—` for null (`ui/web/index.html:62-64`, `view.js`). e2e `TestLibraryV2/loads_and_tach` PASS: airflow = 95.7*rpm/1800 and power = 1.2*(rpm/1800)^3 to 1e-6 |
-| 5 | Every v0.1.0 schema 1 file loads and behaves exactly as in v0.1.0 (shipped files become schema 2, v0.1.0 files hash-pinned in `testdata/fans-v0.1.0`, existing assertions pass against them); a schema 2 unknown key is rejected with file:line:col; `sil fans` lists schema version and provenance of every value | VERIFIED | Independently confirmed: sha256 of both `testdata/fans-v0.1.0/*.toml` equals `git show v0.1.0:fans/<file>` (`d9fb55c7...`, `d7dacb32...`), and `TestV010FixturesArePinned` guards them. `internal/model/fan_v010_test.go` holds a frozen copy of the v0.1.0 `Step` (I diffed its body against `git show v0.1.0:internal/model/fan.go`: identical logic) and `TestStepMatchesV010` / `TestPlantMatchesV010ForLegacyParams` compare with `==` over random parameters, scripts, dts: PASS. Shipped fans are `schema = 2` with a complete `[provenance]` table. Loader is strict (`DisallowUnknownFields`, errors carry line/col via `decodeError`). e2e `TestFanTomlUnknownKey` (schema 2 shipped and schema 1 fixture) PASS, `TestFansProvenance` PASS, `TestLibraryV2/fans_schema2` PASS (schema 2, provenance counts: Arctic 4 datasheet / 9 assumed, Noctua 3 / 10) |
+| 1 | A schema 2 fan sweeps up then down through the firmware's fan entity; `sil status` / `sil watch` show separate, monotone, interpolated up and down curves, lower on the way down at the same duty | VERIFIED | Unchanged code paths (`model/fan.go` direction-sticky `upCurve()`/`downCurve()`, `curve.go` interpolation, loader monotonicity rules). Re-ran at HEAD against the real firmware: `TestModelV2Curves` and `TestLibraryV2` (curves subtest on the shipped Arctic) PASS. `TestStepMatchesV010` and the model suite pass with the new `Params.Clone` in `NewPlant` |
+| 2 | From rest 0 rpm until duty is at or above start duty, spin-up after the start delay; once running it keeps turning down to stop duty, below that stops and coasts with its own dynamics; a "never stops" fan holds its floor rpm at 0 % duty | VERIFIED | Runtime evidence: `TestLibraryV2` (start_stop subtest: start at exactly 0.10 after the delay, runs at 0.06, stops at 0.03 and coasts, Noctua holds 450 rpm at 0 % duty) PASS at HEAD. The WR-01 hole noted last time is closed: `validateV2` rule (e) now requires the first `curve.down` point at duty 0 with rpm > 0 when `stop.duty = 0` and a down curve exists (`internal/fanlib/v2.go`, error key `curve.down.duty`). `TestV2NeverStopsFormDerivesHold` covers three rejected down curves plus a never-stops file without a down curve; `TestShippedNoctuaFan` shows the shipped never-stops fan (down curve starts at 450) still loads |
+| 3 | Firmware-reported RPM moves in 30 rpm steps with the defined step signature; noise seeded, amplitude from `noise_rpm`; same seed and duty sequence give identical traces regardless of tick timing; bus protocol still 1 | VERIFIED | `plant.go`, `tach.go`, `noise.go` untouched in logic by the fixes (only `NewPlant`/`Params()` clone). S7a (`TestS7aFirmwareWindowKeepsSteps`), `TestTachIgnoresTickTiming`, `TestNoiseIsKeyed`, `TestNoiseAmplitudeIsGateStd` pass in `go test -count=1 ./internal/model/`. `TestLibraryV2` loads_and_tach subtest PASS (tach whole multiples of 30). The S7b firmware contract test (`tests/test_tach_steps.py`) was not re-run (15+ min Docker); no fix touched the tach path, bus, or firmware components, and S7a covers the same window hermetically |
+| 4 | Each port shows airflow (m3/h, proportional to rpm) and power (W, proportional to rpm^3) from datasheet values in `sil status`, `sil watch` and the page | VERIFIED | `derive.go`, engine `load` events, `control.PortStatus` unchanged. `TestLibraryV2` loads_and_tach (airflow and power match the fan laws to 1e-6) PASS at HEAD. Page readouts and the stepped tach trace were checked by a human in UAT test 1 (pass) |
+| 5 | Every v0.1.0 schema 1 file loads and behaves exactly as in v0.1.0; shipped files are schema 2; v0.1.0 files hash-pinned; schema 2 unknown key rejected with file:line:col; `sil fans` lists schema and provenance of every value | VERIFIED | sha256 of `testdata/fans-v0.1.0/*.toml` still equals `git show v0.1.0:fans/<file>` (`d9fb55c7...`, `d7dacb32...`); `TestV010FixturesArePinned`, `TestV010FixturesLoadAsV010`, `TestStepMatchesV010`, `TestPlantMatchesV010ForLegacyParams` PASS (`go test -count=1`). The IN-03 change to `loadFrom` only touches the no-`schema`-key branch and only appends a hint to an already-failing error; a valid schema 1 file takes the same `loadV1` path and a typo such as `max_rmp` keeps its old message. A freshly built scratchpad `sil fans` prints both shipped fans as `schema: 2` with provenance counts (Arctic 4 datasheet / 9 assumed, Noctua 3 / 10) and a per-value `values` map. e2e `TestFansProvenance` and `TestFanTomlUnknownKey` PASS at HEAD |
 
 **Score:** 5/5 truths verified (0 present-but-behavior-unverified)
+
+### Regression Check of the Six Review Fixes
+
+| Fix | Change | Regression risk | Result |
+|-----|--------|-----------------|--------|
+| WR-01 (6ebeb3f) | Rule (e) also validates `curve.down[0]` for `stop.duty = 0` | Rejects a shipped or fixture file | No: shipped Noctua (the only never-stops file) satisfies it; schema 1 never reaches `validateV2`. `TestShippedNoctuaFan`, `TestShippedProvenanceMatchesEvidence`, `TestV2NeverStopsFormDerivesHold` PASS |
+| WR-02 (fdac7ae) | `hasControl` (`unicode.IsControl`) on `name`, `[sources]`, `[measured]` strings; `terminalSafe` quoting in `sil fans` | Rejects legitimate text or changes normal output | No: shipped files contain no control characters and load; output is byte-identical for clean text (existing summary tests unchanged and green). `TestV2RejectsControlCharacters`, `TestFansSummaryQuotesControlCharacters` PASS |
+| WR-03 (34ddfd9) | `bracketDelta` replaced by `valueScan` (escapes, literal strings, multi-line strings) | Wrong line numbers or an infinite or missed header on a normal file | Read the state machine: the escape, quote, triple-quote and comment cases are ordered correctly and a `]` with depth 0 cannot underflow. `TestLocateStringsAndEscapes` (end-to-end case plus nine direct `locate` cases) PASS, as do the pre-existing located-error tests for shipped-style multi-line arrays |
+| IN-01 (39c2f09) | Comment only | none | n/a |
+| IN-02 (a9760fe) | `Params.Clone`, `NewPlant` clones, `Plant.Params()` returns a clone | Missing a reference field in `Clone`, behaviour drift in the plant | `Params` fields are scalars, `Curve` (two slices of value-type `Point`), `Provenance` slice, `Sources` map and `*Datasheet` (flat value struct); all are copied, so no alias remains. The v0.1.0 differential tests and `TestPlantOwnsItsParams` PASS, and the real-firmware e2e (`TestModelV2Curves`, `TestLibraryV2`) PASS through the cloned plant |
+| IN-03 (62091f8) | Hint appended for a schema 2 body without `schema = 2` | Alters v0.1.0 semantics | No, message only (see Truth 5). `TestMissingSchemaKeyHintsAtSchema2` PASS |
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `internal/model/{fan,curve,plant,tach,noise,derive}.go` | Plant seam, curves, start/stop/coast, tach accumulator, keyed noise, fan laws | VERIFIED | Substantive (hundreds of lines of logic, no stubs), wired through `engine.go` (`model.NewPlant`, `plant.Step/Frame/Current/Reading/Outputs`) |
-| `internal/fanlib/v2.go`, `v1.go`, `fanlib.go` | Strict schema 1/2 loader with provenance and located errors | VERIFIED | Schema probe dispatches v1/v2; required keys, finiteness, ranges, curve shape, floor rule, provenance in fixed order |
-| `fans/*.toml` | Shipped fans as schema 2 with provenance | VERIFIED | Both `schema = 2`, `[sources]`, `[provenance]` for every value, `noise_rpm = 20` |
-| `testdata/fans-v0.1.0/*` | Byte-identical v0.1.0 fixtures | VERIFIED | Hashes match `git show v0.1.0:...` |
-| `internal/control/control.go`, `internal/events/events.go`, `internal/supervisor/supervisor.go` | tach_rpm / airflow_m3h / power_w in status, events | VERIFIED | Additive nullable fields, Status schema stays 1 |
-| `internal/cli/cli.go`, `internal/lifecycle/lifecycle.go` | `sil fans` summary/verbose, `sil up --seed`, DefaultSeed | VERIFIED | `--seed` flag, `specSeed`, `DefaultSeed = 0x5EED`, supervisor puts it into every engine config (`supervisor.go:220`) and into `sim.seed` in status |
-| `ui/web/{index.html,js/*}` | Tach trace, three readouts | VERIFIED | Ring has a `tach` array, plot has a fourth series, readouts use `data-src` bindings. `TestScopeTach`, `TestTachFixedAxis`, `TestTachReadoutFollowsEvents` PASS under headless Chrome this session |
-| `tests/test_tach_steps.py` | S7b contract test | VERIFIED (exists, substantive) | Runs the real firmware via aioesphomeapi; not re-run here |
+| `internal/model/{fan,curve,plant,tach,noise,derive}.go` | Plant seam, curves, start/stop/coast, pulse tach, keyed noise, fan laws | VERIFIED | Substantive and wired into `engine.go`; `Clone` added without changing step logic |
+| `internal/fanlib/{fanlib,v1,v2}.go` | Strict schema 1/2 loader, provenance, located errors | VERIFIED | Stricter validation from WR-01 and WR-02, sturdier `locate` from WR-03 |
+| `fans/*.toml` | Shipped fans as schema 2 with complete provenance | VERIFIED | Both load at HEAD under the stricter rules |
+| `testdata/fans-v0.1.0/*` | Byte-identical v0.1.0 fixtures | VERIFIED | Hashes match `v0.1.0` |
+| `internal/control`, `events`, `supervisor`, `cli`, `lifecycle` | tach_rpm / airflow_m3h / power_w, `--seed`, `sil fans` summary | VERIFIED | Unchanged apart from `terminalSafe` in `cli.go` |
+| `ui/web/*` | Stepped tach trace, TACH RPM / M3/H / W readouts | VERIFIED | Not touched by the fixes; human-checked in UAT test 1 |
+| `tests/test_tach_steps.py` | S7b contract test | VERIFIED (exists) | Not re-run |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |------|----|-----|--------|---------|
-| fan.toml (schema 2) | `model.Params` | `fanlib.loadV2` | WIRED | Used by `Load`/`loadFrom`; e2e proves a schema 2 file drives a port |
-| `model.Plant` | engine tick and bus frames | `p.plant.Step(p.duty, dt)` (`engine.go:627`), `p.plant.Frame()` (`engine.go:1093`), `Current()` for hello (`engine.go:763`) | WIRED | The old `model.Step`/`model.Initial` call sites are gone from non-test code |
-| `--seed` | every plant | `lifecycle.specSeed` -> spec.json -> `supervisor.engCfg.Seed` -> `model.NewPlant(..., cfg.Seed)` (also on fan swap, `engine.go:867`) | WIRED | Kept across SimRestart (same `engCfg`) |
-| Plant outputs | status / watch / page | `PortState` -> `control.PortStatus`; `tach` and `load` events -> `store.js` -> `view.js` | WIRED | e2e and uitest cover all three surfaces |
-| Pulse tach | firmware | Bus frame value at 50 ms cadence, protocol still v1 | WIRED | S7a hermetic and S7b firmware contract tests |
+| fan.toml schema 2 | `model.Params` | `fanlib.loadV2` | WIRED | Real-firmware e2e at HEAD |
+| `model.Plant` | engine tick and bus frames | `NewPlant` (now cloning), `Step`, `Frame` | WIRED | Clone happens only at engine start and on a replug; e2e green |
+| `--seed` | every plant | `lifecycle.specSeed` to `engCfg.Seed` to `NewPlant` | WIRED | Unchanged; IN-01 only reworded the comment |
+| Plant outputs | status / watch / page | `PortStatus`, `tach` and `load` events | WIRED | e2e and UAT |
 
 ### Data-Flow Trace (Level 4)
 
 | Artifact | Data Variable | Source | Produces Real Data | Status |
 |----------|---------------|--------|--------------------|--------|
-| Page TACH RPM readout | `ports.{i}.tach_rpm` | `Plant.Reading()` (1 s gate of the pulse count) via `tach` events | Yes (e2e: whole multiples of 30) | FLOWING |
-| Page AIRFLOW / POWER | `airflow_m3h`, `power_w` | `Plant.Outputs()` from `[datasheet]` and shaft rpm via `load` events | Yes (e2e: matches fan laws to 1e-6); null for a fan without datasheet | FLOWING |
-| Scope tach trace | `ring.tach` | `sample` frames carrying tach, live `tach` events | Yes (uitest `TestScopeTach`) | FLOWING |
+| Page TACH RPM / AIRFLOW / POWER | `tach_rpm`, `airflow_m3h`, `power_w` | `Plant.Reading()` / `Plant.Outputs()` | Yes (e2e: fan laws to 1e-6, tach on the 30 rpm grid) | FLOWING |
+| Scope tach trace | `ring.tach` | sample frames and `tach` events | Yes (human-viewed in UAT test 1) | FLOWING |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Fast gate (fmt, vet, race unit tests, C++ tests) | `make check` | exit 0; all packages `ok`, txcap 66 passed | PASS |
-| Model start/stop/curve/tach/noise/S7a/v0.1.0-differential tests | `go test -run 'S7\|Quant\|Step\|Noise\|Tach\|Curve\|Coast\|Start\|NeverStops\|V010' ./internal/model/` | all PASS | PASS |
-| Real-firmware e2e on shipped library | `go test -tags sil_e2e -run 'TestLibraryV2\|TestModelV2Curves\|TestFansProvenance\|TestFanTomlUnknownKey' ./e2e/` | ok, 149 s | PASS |
-| Page tach trace and readout | `go test -tags sil_ui -run 'TestScopeTach\|TestTachReadoutFollowsEvents\|TestTachFixedAxis' ./uitest/` | ok | PASS |
-| v0.1.0 fixture bytes | `sha256sum` vs `git show v0.1.0:fans/...` | identical | PASS |
-| Firmware-visible steps (S7b) | `make test-contract` | not re-run (15+ min); executor reports 7/7 green. The hermetic S7a emulation of the same firmware window passes here | SKIP (covered by S7a plus executor evidence) |
+| Static analysis | `go vet ./...` (also compiles e2e and uitest) and `gofmt -l .` | clean, no files listed | PASS |
+| Unit suite | `go test ./internal/...` | all 16 packages `ok` | PASS |
+| Fix areas uncached | `go test -count=1 ./internal/fanlib/ ./internal/model/ ./internal/engine/ ./internal/cli/ ./internal/lint/` | all `ok` | PASS |
+| Named fix tests | `-run 'TestV2NeverStops\|TestLocate\|TestV2RejectsControl\|TestMissingSchemaKey\|TestShipped\|TestV010Fixtures\|TestFansSummaryQuotes\|TestPlantOwns\|TestStepMatchesV010\|TestPlantMatchesV010'` | 14 tests PASS | PASS |
+| v0.1.0 fixture bytes | `sha256sum` against `git show v0.1.0:fans/...` | identical | PASS |
+| `sil fans` on the shipped library | scratchpad build (not `bin/sil`) run outside the repo | both fans `schema: 2` with provenance maps | PASS |
+| Loader e2e | `go test -tags sil_e2e -run 'TestFansProvenance\|TestFanTomlUnknownKey' ./e2e/` | ok, 6 s | PASS |
+| Real-firmware e2e on the shipped library | `go test -tags sil_e2e -run 'TestLibraryV2\|TestModelV2Curves' ./e2e/` | ok, 143 s | PASS |
+| S7b firmware tach steps | `make test-contract` | not re-run (15+ min, nothing in the tach, bus or firmware path changed) | SKIP, covered by S7a and the unchanged e2e tach assertions |
 
-Spawned instances were checked afterwards: no leftover `sil` or firmware processes.
+The `uat` instance (`bin/sil serve uat`) was still running after all checks and was not touched. It runs the pre-fix loader, as the fix report notes; that only matters after the maintainer rebuilds `bin/sil`.
 
 ### Probe Execution
 
@@ -195,69 +194,41 @@ Step 7c: SKIPPED. The phase declares no `scripts/*/tests/probe-*.sh` probes.
 
 ### Requirements Coverage
 
-Every requirement ID from the PLAN frontmatter is accounted for in REQUIREMENTS.md, and REQUIREMENTS.md maps no additional Phase 4 ID that no plan claimed (no orphans).
+Union of PLAN `requirements:` across 04-01..04-10 is exactly MODEL-05..MODEL-12. REQUIREMENTS.md maps the same eight IDs to Phase 4 (all marked Complete) and no other, so there are no orphans.
 
 | Requirement | Source Plans | Description | Status | Evidence |
 |-------------|--------------|-------------|--------|----------|
 | MODEL-05 | 04-01, 04-08, 04-09 | Separate up/down curves, monotone, interpolated | SATISFIED | Truth 1 |
-| MODEL-06 | 04-02, 04-08, 04-09 | Start at or above start duty after delay; stop below separate stop duty (amended wording) | SATISFIED | Truth 2; `TestStartAtExactStartDuty`, e2e start at exactly 0.10 |
-| MODEL-07 | 04-02, 04-08, 04-09 | Coast-down with own dynamics; never-stops floor at 0 % | SATISFIED | Truth 2; coast ratio e2e, Noctua 450 rpm e2e |
+| MODEL-06 | 04-02, 04-08, 04-09 | Start at or above start duty after delay; stop below separate stop duty | SATISFIED | Truth 2 |
+| MODEL-07 | 04-02, 04-08, 04-09 | Coast-down with own dynamics; never-stops floor at 0 % | SATISFIED | Truth 2; the floor rule is now enforced on both curves (WR-01) |
 | MODEL-08 | 04-01, 04-02, 04-03, 04-08 | Explicit `schema = 2`; schema 1 unchanged; unknown keys rejected | SATISFIED | Truth 5 |
 | MODEL-09 | 04-04, 04-06, 04-07, 04-09, 04-10 | Pulse accumulator, 30 rpm steps, protocol stays 1 | SATISFIED | Truth 3 |
-| MODEL-10 | 04-04, 04-05, 04-08, 04-10 | Deterministic seeded noise, amplitude from fan.toml | SATISFIED | Truth 3; `sil up --seed`, `sim.seed` in status |
+| MODEL-10 | 04-04, 04-05, 04-08, 04-10 | Deterministic seeded noise, amplitude from fan.toml | SATISFIED | Truth 3 |
 | MODEL-11 | 04-06, 04-07, 04-08, 04-09, 04-10 | Airflow and power in status, watch, page | SATISFIED | Truth 4 |
-| MODEL-12 | 04-03, 04-08, 04-10 | Provenance on every value; `sil fans` shows schema and provenance | SATISFIED | Truth 5; `TestFansProvenance`, loader rule (f) |
-
-### CONTEXT Decisions Honoured (spot check of amendments)
-
-| Decision | Status | Evidence |
-|----------|--------|----------|
-| D-01 shipped fans schema 2, v0.1.0 files kept as fixtures | Honoured | See Truth 5 |
-| D-03 amended: noise on tach path only, `noise_rpm = 20` (std of a 1 s reading) | Honoured | `plant.go:92-99` adds noise only to the pulse count; shaft stays noise-free (`TestOutputsAreNoiseFree`); both files `noise_rpm = 20.0` |
-| D-09 `coast_tau_s` required, no fallback | Honoured | `v2.go:174` required key; schema 2 never leaves `CoastTau` zero |
-| D-10 never-stops = `stop.duty = 0` plus curve point at 0, no mode flag | Honoured for the up curve (see WR-01) | `v2.go:283-288` |
-| D-11 amended: start boundary at or above | Honoured | `duty >= p.StartDuty`; e2e uses exactly 0.10 |
-| D-13 amended: `tach_rpm` for ideal tach is the 1 s shaft mean, null only in the first second | Honoured | `Plant.stepIdeal`, `Reading()` doc; `TestIdealTachIsShaft` |
-| D-15 default seed constant mixed with port, `--seed` override, kept across restarts | Honoured | `DefaultSeed`, `z(seed, port, bucket)` |
-| D-16 amended: `—` only for the three new readouts, `--` elsewhere | Honoured | `view.js` `NULL_TEXT` has only tach/flow/watt |
-| D-12 no kick | Honoured | No kick keys in the schema (rejected as unknown) |
+| MODEL-12 | 04-03, 04-08, 04-10 | Provenance on every value; `sil fans` shows schema and provenance | SATISFIED | Truth 5 |
 
 ### Anti-Patterns Found
 
-Scanned the 69 files changed since `v0.1.0` (code, tests, fans, UI, README, testdata).
+Debt-marker scan (`TBD`, `FIXME`, `XXX`, `TODO`, `HACK`) over the non-test lines added by the six fix commits and over `internal/`, `fans/`, `ui/`, `README.md`: no hits. No stub returns feed any output. The earlier WR-01..03 and IN-01..03 entries are resolved; none remains.
 
-| File | Line | Pattern | Severity | Impact |
-|------|------|---------|----------|--------|
-| (none) | - | No `TBD`/`FIXME`/`XXX`, no `TODO`/`HACK`, no stub returns feeding output | - | - |
-| `internal/fanlib/v2.go` | 283-288 | WR-01: floor rule only on `curve.up` | Warning | See below |
-| `internal/fanlib/v2.go`, `internal/cli/cli.go` | 239-243, 469-494 | WR-02: control characters accepted, printed raw to stderr | Warning | Low impact, terminal escape injection via a hostile fan file |
-| `internal/fanlib/v2.go` | 568-590 | WR-03: `locate` loses line numbers after an escaped quote plus bracket | Warning | Errors still reject the file; only the `:line` is lost |
-| `internal/engine/engine.go` | 132-134 | IN-01 stale comment on `Config.Seed` | Info | None |
-| `internal/model/plant.go` | 127-128 | IN-02 `Params()` aliases slices | Info | None today |
-| `internal/fanlib/fanlib.go` | 139-141 | IN-03 schema key missing gives a v1 "unknown field" error | Info | Message quality only |
+### Human Verification
 
-#### Weighing WR-01 against the must-haves
+None outstanding. The four items of the prior report were executed as `04-UAT.md` (status complete, 4 of 4 passed, 0 issues):
 
-I confirmed by reading `validateV2` that rule (e) tests only `upCurve[0]`. A file with `stop.duty = 0`, `curve.up = [(0,450),(1,2000)]` and `curve.down = [(0.5,0),(1,2000)]` loads and gives `BelowMin = "hold"`, `Running = true`, but the falling branch targets `downCurve().At(duty) = 0`, so the fan decays to 0 rpm while reporting `running`. That contradicts "a fan marked never stops holds its floor RPM at 0 % duty" for that file.
+| Prior item | UAT result |
+|------------|-----------|
+| Web page look of the stepped tach trace and readout row | pass (UAT 1) |
+| Plausibility of the assumed values in the shipped fan files | pass (UAT 2) |
+| README readability | pass (UAT 3) |
+| Disposition of the review findings | pass (UAT 4); `04-REVIEW-DISPOSITION.md` shows 6 fixed, 0 open |
 
-It does not fail Truth 2 as delivered, because:
-- both shipped fans (Noctua: `curve.down` starts at 450) and every tested never-stops form satisfy the rule on both curves, and the e2e Noctua check passes;
-- the defect is a missing validation on a contradictory, hand-written input, not a wrong behaviour of a valid fan.
-
-It is a loader gap worth closing before Phase 6, because `fan-analyze fit` will start writing schema 2 files with both curves. I classify it as a WARNING with a maintainer decision requested, not a BLOCKER. The review's suggested fix (apply the duty-0 floor check to `curve.down` when present, plus a v2 test) is small. All six review findings are still `open` in `04-REVIEW-DISPOSITION.md`.
-
-### Human Verification Required
-
-1. **Page look of the stepped tach trace and readout row (coverage item D5).** Run `sil up`, open the page, sweep Fan 1. Expect a solid shaft trace plus a dimmer stepped tach trace in the port colour, and a readout row (TACH RPM, M3/H, W) that fits next to the existing readouts. Why human: visual layout and legibility.
-2. **Plausibility of assumed fan numbers.** Interior curve points, the down curve, start delay 0.4 s, taus, `coast_tau_s = 6`, `noise_rpm = 20` and the Noctua 450 rpm floor are all `assumed` (D-03) and will be replaced by Phase 8 measurements (Arctic) or v0.3 (Noctua). Why human: judgment about physical plausibility. Assumption A11 (Rev 3.3 counts its tach at 30 rpm per pulse) is explicitly carried to Phase 7/8.
-3. **README readability** for the new schema 2, provenance, tach, airflow/power and `--seed` sections. Why human: topics were checked mechanically only.
-4. **Disposition of the review warnings** (WR-01 recommended before Phase 6; WR-02 and WR-03 optional). Why human: scope decision.
+Standing assumption, not a verification gap: A11 (Rev 3.3 counts its tach at 30 rpm per pulse) is explicitly carried to Phase 7/8 in ROADMAP, and the assumed fan values stay labelled `assumed` until Phase 8 measures them.
 
 ### Gaps Summary
 
-No gaps: every ROADMAP success criterion and all eight requirements are met, verified against the code and by tests I re-ran (`make check`, the model suite, the shipped-library and curve e2e tests against the real firmware, and the page tach tests). Items left for a human are judgment calls only: the visual look, the plausibility of assumed numbers, README readability and the triage of the three review warnings. The status is `human_needed`, not `passed`, for that reason.
+No gaps. All five ROADMAP success criteria and all eight requirements hold at HEAD (f644525) after the review fixes. The three fix areas the re-run was asked to scrutinise (WR-01 curve.down validation, WR-03 `locate` rewrite, IN-02 plant parameter cloning) were read in full, are covered by tests that pass uncached, and cause no regression in the v0.1.0 differential tests, the shipped-fan loader tests, or the real-firmware e2e acceptance tests. The one check not re-run is the slow S7b firmware contract test, which exercises code the fixes did not touch.
 
 ---
 
-_Verified: 2026-11-11T14:30:00Z_
+_Verified: 2026-11-11T16:10:00Z_
 _Verifier: Claude (gsd-verifier)_
