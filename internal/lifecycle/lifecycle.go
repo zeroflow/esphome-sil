@@ -225,6 +225,7 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 		Schema: 1, Instance: o.Name, Program: res.Program,
 		Fans:   []string{fan, fan, fan, fan},
 		Listen: o.Listen, AllowHosts: o.AllowHosts, UIDir: o.UIDir,
+		Seed: specSeed(o),
 	}); err != nil {
 		return UpResult{}, err
 	}
@@ -661,5 +662,8 @@ const DefaultSeed uint64 = 0x5EED
 
 // specSeed is the seed Up writes into spec.json.
 func specSeed(o UpOptions) uint64 {
-	return 0
+	if o.Seed != nil {
+		return *o.Seed
+	}
+	return DefaultSeed
 }

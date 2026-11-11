@@ -215,6 +215,9 @@ func Serve(ctx context.Context, name string) error {
 		stopped:  make(chan struct{}),
 		downReq:  make(chan struct{}),
 	}
+	// The noise seed of the run (D-15). Every engine of the instance, the one a SimRestart builds
+	// included, is made from engCfg, so every plant gets this seed.
+	s.engCfg.Seed = spec.Seed
 	s.probe = s.probeLoop
 
 	sigCtx, stopSignals := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -718,7 +721,7 @@ func (s *supervisor) statusFrom(have *engine.Snapshot) control.Status {
 			Ready: apiReady, // Noise handshake with the instance key and name/MAC match
 		},
 		Firmware: control.FirmwareStatus{PID: pid, Running: running, BusConnected: snap.BusConnected, Restarts: restarts, LastExit: lastExit},
-		Sim:      control.SimStatus{TimeS: snap.SimTime.Seconds(), TimeFactor: 1, BehindRealTime: snap.BehindRealTime, EngineRestarts: engRestarts, BusProto: snap.BusProto},
+		Sim:      control.SimStatus{TimeS: snap.SimTime.Seconds(), TimeFactor: 1, BehindRealTime: snap.BehindRealTime, EngineRestarts: engRestarts, BusProto: snap.BusProto, Seed: s.spec.Seed},
 		Web: control.WebStatus{
 			Listen: s.webListen, Port: s.id.WebPort, URL: instance.WebURL(s.webListen, s.lanHost, s.id.WebPort),
 		},
