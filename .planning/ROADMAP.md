@@ -55,7 +55,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Each port shows airflow (m³/h, ∝ RPM) and power (W, ∝ RPM³) derived from the fan's datasheet values in `sil status`, `sil watch` and on the web page.
   5. Every v0.1.0 schema 1 `fan.toml` loads and behaves exactly as in v0.1.0 (amended 2026-11-10 at plan revision). The shipped files become schema 2 (D-01), and the v0.1.0 files live on byte for byte as hash-pinned fixtures in `testdata/fans-v0.1.0`. The existing v0.1.0 test assertions pass unchanged against those pinned fixtures (D-02). A schema 2 file with an unknown key is rejected with its file:line:col, and `sil fans` lists each fan's schema version and the provenance (assumed / datasheet / measured / unobservable) of every value.
 
-**Plans**: 6/10 plans executed (8 waves: 01 → 02 ∥ 03 → 04 ∥ 05 → 06 → 07 → 08 → 09 → 10)
+**Plans**: 7/10 plans executed (8 waves: 01 → 02 ∥ 03 → 04 ∥ 05 → 06 → 07 → 08 → 09 → 10)
 
 Plans:
 **Wave 1**
@@ -73,7 +73,7 @@ Plans:
 - [x] 04-06-PLAN.md — tach_rpm (1 s gate reading; the 1 s shaft mean for an ideal tach), airflow_m3h and power_w in status, watch and history (null when unknown)
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 04-07-PLAN.md — Page: stepped tach trace, TACH RPM / AIRFLOW / POWER readouts (`—` for null), parity and layout tests
+- [x] 04-07-PLAN.md — Page: stepped tach trace, TACH RPM / AIRFLOW / POWER readouts (`—` for null), parity and layout tests
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 04-08-PLAN.md — Shipped fans rewritten as schema 2 with provenance and 20 rpm tach noise; exact tests pinned to v0.1.0 fixtures; schema 2 library and typo checks on a default `sil up`
@@ -164,7 +164,7 @@ Phases execute in numeric order: 4 → 5 → 6 → 7 → 8. After Phase 4, Phase
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 4. Fan Model v2 | v0.2.0 | 6/10 | In Progress|  |
+| 4. Fan Model v2 | v0.2.0 | 7/10 | In Progress|  |
 | 5. Fault Injection | v0.2.0 | 0/TBD | Not started | - |
 | 6. fan-analyze Offline Core | v0.2.0 | 0/TBD | Not started | - |
 | 7. Measuring Firmware and Board Link | v0.2.0 | 0/TBD | Not started | - |

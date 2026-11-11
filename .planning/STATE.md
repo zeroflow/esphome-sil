@@ -5,16 +5,16 @@ milestone_name: Real Fans
 current_phase: 04
 current_phase_name: Fan Model v2
 status: executing
-stopped_at: Completed 04-06-PLAN.md
-last_updated: "2026-11-11T06:15:55.027Z"
+stopped_at: Completed 04-07-PLAN.md
+last_updated: "2026-11-11T06:30:56.256Z"
 last_activity: 2026-11-11
 last_activity_desc: Phase 04 execution started
-state_head: a901dbfc02a17c89193530c1e14d8cb3ff4024d2
+state_head: 33475b4111a36ccccedb679643ab30d2d413e5ec
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 10
-  completed_plans: 6
+  completed_plans: 7
   percent: 0
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-11-10)
 ## Current Position
 
 Phase: 04 (Fan Model v2) — EXECUTING
-Plan: 7 of 10
+Plan: 8 of 10
 Status: Ready to execute
 Last activity: 2026-11-11 — Phase 04 execution started
 
@@ -103,6 +103,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 04 P04 | 10 min | 2 tasks | 8 files |
 | Phase 04 P05 | 5 min | 2 tasks | 9 files |
 | Phase 04 P06 | 14 min | 2 tasks | 11 files |
+| Phase 04 P07 | 15 min | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -211,6 +212,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-05: noise seed travels in spec.json (sil up) and is copied into run.json and status sim.seed by the supervisor; default lifecycle.DefaultSeed 0x5EED, cap 2^53-1 (A-SEED resolved)
 - [Phase 04]: 04-06: tach and load events are forced once per port at engine start and after a fan swap, so streams see a new plant's state without the page deriving anything
 - [Phase 04]: 04-06: fan-law exponents fixed at 1 (airflow) and 3 (power) on the noise-free shaft; cubic law underestimates low-speed power (PITFALLS 31)
+- [Phase 04]: 04-07: the null text belongs to the format (view.js NULL_TEXT): em dash for tach, flow and watt (D-16 amended), -- for every other readout
+- [Phase 04]: 04-07: loads row is 28 px and the strip sits above the grid (z-index) so strip controls stay reachable in a short window
 
 ### Pending Todos
 
@@ -249,8 +252,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T06:15:54.995Z
-Stopped at: Completed 04-06-PLAN.md
+Last session: 2026-11-11T06:30:56.223Z
+Stopped at: Completed 04-07-PLAN.md
 Resume file: None
 
 ## Needs Human
