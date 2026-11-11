@@ -443,7 +443,10 @@ func (p *busPeer) Send(t testing.TB, line string) {
 // worktree) cache directories, driving the real sil binary built by TestMain.
 type Env struct {
 	State, Runtime, Cache, Repo, Bin string
-	// Extra is appended (KEY=VALUE) to the environment of every sil call.
+	// Extra is appended (KEY=VALUE) to the environment of every sil call. It starts with the pin of
+	// SIL_FAN_DIR to the byte-for-byte v0.1.0 fixtures (D-02), because the exact-rpm tests compare against v0.1.0
+	// numbers. It is appended last, so a test that appends its own SIL_FAN_DIR overrides the pin; an
+	// empty value means the embedded (schema 2) library.
 	Extra []string
 
 	ports    map[string]int
@@ -461,6 +464,7 @@ func newEnv(t *testing.T) *Env {
 		Cache:   cacheRoot(t),
 		Repo:    repoRoot(t),
 		Bin:     silBin,
+		Extra:   []string{"SIL_FAN_DIR=" + filepath.Join(repoRoot(t), "testdata", "fans-v0.1.0")},
 		ports:   map[string]int{},
 
 		webPorts: map[string]int{},

@@ -155,54 +155,67 @@ func TestModelThreshold(t *testing.T) {
 	}
 }
 
-// TestFanTomlUnknownKey proves criterion 5: a typo in a fan file stops
-// `sil up` with a located message before any firmware build starts.
+// TestFanTomlUnknownKey proves criterion 5: a typo in a fan file stops `sil up` with a located
+// message before any firmware build starts, in the shipped schema 2 library and in a schema 1 file.
 func TestFanTomlUnknownKey(t *testing.T) {
-	env := newEnv(t)
-	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "fans", "arctic-p12-pwm-pst.toml"))
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name  string
+		file  string // path of the original, relative to the repo root
+		key   string // the key the typo is made in, and the start of its line
+		typo  string // the misspelt key
+		name2 string // instance name
+	}{
+		{"schema2_shipped", "fans/arctic-p12-pwm-pst.toml", "noise_rpm", "noise_rmp", "e2e-badfan2"},
+		{"schema1_fixture", "testdata/fans-v0.1.0/arctic-p12-pwm-pst.toml", "max_rpm", "max_rmp", "e2e-badfan1"},
 	}
-	lines := strings.Split(string(raw), "\n")
-	typoLine := 0
-	for i, l := range lines {
-		if strings.HasPrefix(l, "max_rpm") {
-			lines[i] = strings.Replace(l, "max_rpm", "max_rmp", 1)
-			typoLine = i + 1
-			break
-		}
-	}
-	if typoLine == 0 {
-		t.Fatal("fans/arctic-p12-pwm-pst.toml has no max_rpm line")
-	}
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "arctic-p12-pwm-pst.toml"), []byte(strings.Join(lines, "\n")), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	env.Extra = append(env.Extra, "SIL_FAN_DIR="+dir)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := newEnv(t)
+			raw, err := os.ReadFile(filepath.Join(repoRoot(t), filepath.FromSlash(c.file)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(string(raw), "\n")
+			typoLine := 0
+			for i, l := range lines {
+				if strings.HasPrefix(l, c.key) {
+					lines[i] = strings.Replace(l, c.key, c.typo, 1)
+					typoLine = i + 1
+					break
+				}
+			}
+			if typoLine == 0 {
+				t.Fatalf("%s has no line starting with %s", c.file, c.key)
+			}
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "arctic-p12-pwm-pst.toml"), []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			env.Extra = append(env.Extra, "SIL_FAN_DIR="+dir)
 
-	const name = "e2e-badfan"
-	out, exit, stderr := env.Sil(t, "up", name)
-	if exit != 1 {
-		t.Fatalf("sil up with a typo in fan.toml: exit %d, want 1: %v", exit, out)
-	}
-	if jget(out, "error", "code") != "fan_toml_invalid" {
-		t.Fatalf("error.code = %v, want fan_toml_invalid: %v", jget(out, "error", "code"), out)
-	}
-	msg, _ := jget(out, "error", "message").(string)
-	if !strings.Contains(msg, "max_rmp") {
-		t.Errorf("message %q does not name max_rmp", msg)
-	}
-	if want := fmt.Sprintf(":%d:", typoLine); !strings.Contains(msg, want) {
-		t.Errorf("message %q does not carry the line (%s)", msg, want)
-	}
-	if !strings.Contains(msg, filepath.Join(dir, "arctic-p12-pwm-pst.toml")) {
-		t.Errorf("message %q does not name the file under SIL_FAN_DIR", msg)
-	}
-	if strings.Contains(stderr, "building firmware") {
-		t.Errorf("a firmware build was started: stderr %q", stderr)
-	}
-	if _, err := os.Stat(filepath.Join(env.Runtime, "sil", name, "build.log")); !os.IsNotExist(err) {
-		t.Errorf("build.log exists after a rejected fan file (stat err: %v)", err)
+			out, exit, stderr := env.Sil(t, "up", c.name2)
+			if exit != 1 {
+				t.Fatalf("sil up with a typo in the fan file: exit %d, want 1: %v", exit, out)
+			}
+			if jget(out, "error", "code") != "fan_toml_invalid" {
+				t.Fatalf("error.code = %v, want fan_toml_invalid: %v", jget(out, "error", "code"), out)
+			}
+			msg, _ := jget(out, "error", "message").(string)
+			if !strings.Contains(msg, c.typo) {
+				t.Errorf("message %q does not name %s", msg, c.typo)
+			}
+			if want := fmt.Sprintf(":%d:", typoLine); !strings.Contains(msg, want) {
+				t.Errorf("message %q does not carry the line (%s)", msg, want)
+			}
+			if !strings.Contains(msg, filepath.Join(dir, "arctic-p12-pwm-pst.toml")) {
+				t.Errorf("message %q does not name the file under SIL_FAN_DIR", msg)
+			}
+			if strings.Contains(stderr, "building firmware") {
+				t.Errorf("a firmware build was started: stderr %q", stderr)
+			}
+			if _, err := os.Stat(filepath.Join(env.Runtime, "sil", c.name2, "build.log")); !os.IsNotExist(err) {
+				t.Errorf("build.log exists after a rejected fan file (stat err: %v)", err)
+			}
+		})
 	}
 }

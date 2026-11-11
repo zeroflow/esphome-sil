@@ -17,6 +17,8 @@ import (
 // loopPorts is the four-port configuration of the skeleton firmware.
 func loopPorts(t testing.TB) []engine.PortConfig {
 	t.Helper()
+	// The in-process engine runs the exact v0.1.0 numbers (D-02): pin the library to the fixtures.
+	t.Setenv(fanlib.EnvFanDir, filepath.Join(repoRoot(t), "testdata", "fans-v0.1.0"))
 	fan, err := fanlib.Load(fanlib.DefaultFan)
 	if err != nil {
 		t.Fatalf("load default fan: %v", err)

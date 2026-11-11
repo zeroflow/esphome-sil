@@ -113,6 +113,9 @@ class Bench:
             SIL_REPO=str(REPO),
             XDG_STATE_HOME=str(state),
             XDG_RUNTIME_DIR=str(runtime),
+            # The contract tests compare exact v0.1.0 numbers (789.5 rpm at duty 0.4, the Noctua swap), so
+            # they run on the byte-for-byte v0.1.0 fixtures, not on the shipped schema 2 library (D-02).
+            SIL_FAN_DIR=str(REPO / "testdata" / "fans-v0.1.0"),
         )
         return cls(sil_bin, state, runtime, env)
 

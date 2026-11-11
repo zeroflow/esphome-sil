@@ -1468,7 +1468,9 @@ func TestWebAcceptance(t *testing.T) {
 			prev = cur
 		}
 		skip := map[string]bool{"sim.time_s": true, "sim.behind_real_time": true}
-		near := map[string]float64{"ports.*.rpm": 1}
+		// tach_rpm reaches the page as a float32 event value and status holds the float64 gate reading,
+		// so the two differ in the sixth digit even at rest.
+		near := map[string]float64{"ports.*.rpm": 1, "ports.*.tach_rpm": 1}
 		var state map[string]any
 		eval(t, `(await import('/js/store.js')).getState()`, &state)
 		code, _, raw := webDo(t, port, http.MethodGet, "/api/v1/status")
