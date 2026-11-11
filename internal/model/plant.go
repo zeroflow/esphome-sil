@@ -17,12 +17,16 @@ type Plant struct {
 	port   int
 	seed   uint64
 	t      time.Duration // plant time: the sum of every positive dt stepped so far
+	tach   Tach
 }
 
 // NewPlant returns a plant at rest (Initial) for port with noise seed seed.
 func NewPlant(p Params, port int, seed uint64) *Plant {
-	return &Plant{params: p, state: Initial(p), port: port, seed: seed}
+	return &Plant{params: p, state: Initial(p), port: port, seed: seed, tach: Tach{gateEnd: TachGate}}
 }
+
+// Reading is the last completed 1 s gate reading in rpm (stub: filled in with the tach path).
+func (pl *Plant) Reading() (rpm float64, ok bool) { return 0, false }
 
 // Step advances the plant by dt under the commanded duty. A non-positive dt
 // changes nothing.
