@@ -75,6 +75,7 @@ type UpCmd struct {
 	UIDir     string   `name:"ui-dir" help:"Serve the page from this directory instead of the binary (UI development)."`
 	Rebuild   bool     `help:"Discard the previous build output of this instance first."`
 	Fan       string   `help:"Library fan plugged into all four ports (default arctic-p12-pwm-pst); change one port later with: sil set portN.fan=ID."`
+	Seed      *uint64  `name:"seed" help:"Noise seed of the simulated tachs, 0 to 9007199254740991 (default: a fixed seed, so every run repeats)."`
 }
 
 // StatusCmd is `sil status`.
@@ -304,7 +305,7 @@ func (c *UpCmd) options(env *runEnv) lifecycle.UpOptions {
 	return lifecycle.UpOptions{
 		Name: c.Name, ConfigPath: c.Config, APIPort: c.APIPort,
 		WebPort: c.WebPort, Listen: c.Listen, AllowHosts: c.AllowHost, UIDir: c.UIDir,
-		Rebuild: c.Rebuild, Fan: c.Fan, Quiet: env.quiet, Progress: env.stderr,
+		Rebuild: c.Rebuild, Fan: c.Fan, Seed: c.Seed, Quiet: env.quiet, Progress: env.stderr,
 	}
 }
 

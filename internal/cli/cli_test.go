@@ -991,6 +991,35 @@ func TestUpFanFlagReachesUpOptions(t *testing.T) {
 	}
 }
 
+// --seed reaches UpOptions.Seed as a pointer so that 0 and "not given" differ (D-15).
+func TestUpSeedFlagReachesUpOptions(t *testing.T) {
+	parse := func(args ...string) UpCmd {
+		t.Helper()
+		var c CLI
+		parser, err := kong.New(&c, kong.Name("sil"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := parser.Parse(args); err != nil {
+			t.Fatalf("parse %v: %v", args, err)
+		}
+		return c.Up
+	}
+	env := &runEnv{quiet: true}
+	with := parse("up", "x", "--seed", "42")
+	if got := with.options(env); got.Seed == nil || *got.Seed != 42 {
+		t.Fatalf("options with --seed 42: Seed = %v, want a pointer to 42", got.Seed)
+	}
+	without := parse("up", "x")
+	if got := without.options(env); got.Seed != nil {
+		t.Fatalf("options without --seed: Seed = %v, want nil (the default seed)", *got.Seed)
+	}
+	zero := parse("up", "x", "--seed", "0")
+	if got := zero.options(env); got.Seed == nil || *got.Seed != 0 {
+		t.Fatalf("options with --seed 0: Seed = %v, want a pointer to 0", got.Seed)
+	}
+}
+
 // The up help names --fan and the portN.fan way to change one port later.
 func TestUpHelpMentionsFan(t *testing.T) {
 	var so, se bytes.Buffer

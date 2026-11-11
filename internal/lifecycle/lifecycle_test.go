@@ -155,3 +155,19 @@ func TestCheckWebOptions(t *testing.T) {
 		}
 	})
 }
+
+// specSeed is the seed written to spec.json: --seed when given (0 included), else the fixed default (D-15).
+func TestSpecSeed(t *testing.T) {
+	if DefaultSeed != 24301 {
+		t.Fatalf("DefaultSeed = %d, want 24301 (0x5EED)", DefaultSeed)
+	}
+	if got := specSeed(UpOptions{}); got != DefaultSeed {
+		t.Errorf("specSeed without a seed = %d, want DefaultSeed %d", got, DefaultSeed)
+	}
+	for _, v := range []uint64{42, 0} {
+		v := v
+		if got := specSeed(UpOptions{Seed: &v}); got != v {
+			t.Errorf("specSeed with %d = %d", v, got)
+		}
+	}
+}

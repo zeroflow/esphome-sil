@@ -496,6 +496,9 @@ type Spec struct {
 	Listen     string   `json:"listen,omitempty"`
 	AllowHosts []string `json:"allow_hosts,omitempty"`
 	UIDir      string   `json:"ui_dir,omitempty"`
+	// Seed is the noise seed of the run (`sil up --seed`, D-15): written by sil up, read by the
+	// supervisor, which hands it to every engine of the instance. 0 is a valid seed.
+	Seed uint64 `json:"seed"`
 }
 
 // WriteSpec writes spec.json into the run dir.

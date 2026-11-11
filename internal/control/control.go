@@ -125,6 +125,8 @@ type SimStatus struct {
 	BehindRealTime bool `json:"behind_real_time"`
 	EngineRestarts int  `json:"engine_restarts"`
 	BusProto       int  `json:"bus_proto"`
+	// Seed is the noise seed of the instance (`sil up --seed`, D-15); always present, 0 is a valid seed.
+	Seed uint64 `json:"seed"`
 }
 
 // PortStatus is one fan port.

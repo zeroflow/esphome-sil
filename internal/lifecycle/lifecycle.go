@@ -54,6 +54,8 @@ type UpOptions struct {
 	Rebuild, Quiet bool
 	// Fan is the library fan plugged into all four ports; "" means fanlib.DefaultFan.
 	Fan string
+	// Seed is --seed, the noise seed of the run; nil means DefaultSeed (D-15).
+	Seed *uint64
 	// Progress receives human progress lines; nil or Quiet discards them.
 	Progress io.Writer
 }
@@ -650,4 +652,14 @@ func lanHostPtr(h string) *string {
 		return nil
 	}
 	return &h
+}
+
+// DefaultSeed is the noise seed of a run without --seed (D-15): a fixed constant, so that every run
+// repeats out of the box. The plant mixes the port into the seed, so each port still gets its own
+// stream.
+const DefaultSeed uint64 = 0x5EED
+
+// specSeed is the seed Up writes into spec.json.
+func specSeed(o UpOptions) uint64 {
+	return 0
 }

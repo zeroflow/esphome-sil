@@ -816,3 +816,34 @@ func TestSetInARestartGapIsKept(t *testing.T) {
 		t.Fatalf("gap Set not recorded: %+v", s.inputs)
 	}
 }
+
+// Status shows the seed spec.json carried, which Serve also put into engCfg (D-15); it is always
+// present in the JSON.
+func TestStatusShowsSeed(t *testing.T) {
+	s := fanSupervisor(t)
+	s.spec.Seed = 42
+	s.engCfg.Seed = 42
+	st, err := s.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Sim.Seed != 42 {
+		t.Fatalf("Status.Sim.Seed = %d, want 42", st.Sim.Seed)
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back struct {
+		Sim map[string]any `json:"sim"`
+	}
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := back.Sim["seed"].(float64); !ok || got != 42 {
+		t.Fatalf("status JSON sim.seed = %v, want 42 (sim = %v)", back.Sim["seed"], back.Sim)
+	}
+	if st.Schema != control.SchemaVersion || control.SchemaVersion != 1 {
+		t.Fatalf("status schema %d (const %d), want 1", st.Schema, control.SchemaVersion)
+	}
+}
