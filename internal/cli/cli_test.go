@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -915,6 +917,35 @@ func TestFansSummaryOnStderr(t *testing.T) {
 	}
 	if len(r.object(t)) != 1 {
 		t.Errorf("--quiet stdout %s, want one top-level key", r.stdout)
+	}
+}
+
+// Prohibition (MODEL-12): a [sources] entry is plain text. `sil fans` prints a URL as given and
+// never fetches or resolves it.
+func TestFansNeverDereferencesSources(t *testing.T) {
+	cliEnv(t)
+	var hits int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+	}))
+	defer srv.Close()
+	p := model.Params{
+		Name: "Linked", Schema: 2, BelowMin: "stop",
+		Provenance: []model.ProvEntry{{Path: "stop.duty", Kind: model.KindDatasheet, Source: "page"}},
+		Sources:    map[string]string{"page": srv.URL + "/datasheet.pdf"},
+	}
+	liveInstance(t, "x", &fakeControl{status: readyStatus("x"), fans: control.FansResult{Fans: []control.FanInfo{control.NewFanInfo("linked", p)}}})
+	r := run(t, "fans", "--verbose", "-i", "x")
+	if !strings.Contains(r.stderr, "datasheet  page "+srv.URL+"/datasheet.pdf") || !strings.Contains(r.stdout, srv.URL+"/datasheet.pdf") {
+		t.Errorf("the source text is not printed as plain text\nstdout %s\nstderr %s", r.stdout, r.stderr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits != 0 {
+		t.Errorf("the source URL was requested %d times, want 0", hits)
 	}
 }
 

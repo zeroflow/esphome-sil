@@ -2,7 +2,10 @@ package fanlib
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -786,5 +789,23 @@ func TestSchemaProbeVariants(t *testing.T) {
 			body := strings.Replace(v2base, "schema = 2", "schema = "+c.schema, 1)
 			wantError(t, body, "schema", 1, c.msg)
 		})
+	}
+}
+
+// Prohibition (MODEL-12): loading never dereferences a [sources] entry, not even one that is a URL.
+func TestV2LoadNeverFetchesASource(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer srv.Close()
+	body := strings.Replace(v2base, "test fixture, not a real fan", srv.URL+"/datasheet.pdf", 1)
+	p, err := load(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Sources["test"] != srv.URL+"/datasheet.pdf" {
+		t.Errorf("Sources = %v, want the URL kept as plain text", p.Sources)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("the source URL was requested %d times while loading, want 0", n)
 	}
 }
