@@ -816,3 +816,63 @@ func TestSetInARestartGapIsKept(t *testing.T) {
 		t.Fatalf("gap Set not recorded: %+v", s.inputs)
 	}
 }
+
+// Status shows the seed spec.json carried, which Serve also put into engCfg (D-15); it is always
+// present in the JSON.
+func TestStatusShowsSeed(t *testing.T) {
+	s := fanSupervisor(t)
+	s.spec.Seed = 42
+	s.engCfg.Seed = 42
+	st, err := s.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Sim.Seed != 42 {
+		t.Fatalf("Status.Sim.Seed = %d, want 42", st.Sim.Seed)
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back struct {
+		Sim map[string]any `json:"sim"`
+	}
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := back.Sim["seed"].(float64); !ok || got != 42 {
+		t.Fatalf("status JSON sim.seed = %v, want 42 (sim = %v)", back.Sim["seed"], back.Sim)
+	}
+	if st.Schema != control.SchemaVersion || control.SchemaVersion != 1 {
+		t.Fatalf("status schema %d (const %d), want 1", st.Schema, control.SchemaVersion)
+	}
+}
+
+// A simulator restart builds the new engine from the same engCfg: the seed stays in the config and in
+// status (D-15), and the slot holds a new engine.
+func TestSeedSurvivesSimRestart(t *testing.T) {
+	s := fanSupervisor(t)
+	s.spec.Seed = 42
+	s.engCfg.Seed = 42
+	before := s.currentEngine()
+
+	// No firmware runs in this fixture, so the resync step ends with firmware_not_running; by then the
+	// new engine is in the slot.
+	if _, err := s.SimRestart(context.Background(), control.SimRestartRequest{}); errCode(err) != "firmware_not_running" {
+		t.Fatalf("SimRestart = %v, want firmware_not_running", err)
+	}
+	t.Cleanup(func() { s.stopEngine(s.slot) })
+	if s.currentEngine() == before {
+		t.Fatal("the slot still holds the old engine")
+	}
+	if s.engCfg.Seed != 42 {
+		t.Fatalf("engCfg.Seed after SimRestart = %d, want 42", s.engCfg.Seed)
+	}
+	st, err := s.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Sim.Seed != 42 || st.Sim.EngineRestarts != 1 {
+		t.Fatalf("Status.Sim = %+v, want seed 42 after one engine restart", st.Sim)
+	}
+}

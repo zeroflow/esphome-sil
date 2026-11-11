@@ -28,9 +28,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/alecthomas/kong"
 
@@ -39,6 +41,7 @@ import (
 	"github.com/zeroflow/esphome-sil/internal/control"
 	"github.com/zeroflow/esphome-sil/internal/instance"
 	"github.com/zeroflow/esphome-sil/internal/lifecycle"
+	"github.com/zeroflow/esphome-sil/internal/model"
 	"github.com/zeroflow/esphome-sil/internal/supervisor"
 )
 
@@ -54,9 +57,9 @@ type CLI struct {
 	Fw     FwCmd     `cmd:"" help:"Operate on the firmware of an instance."`
 	Press  PressCmd  `cmd:"" help:"Press a button (usr1..usr3): 200 ms by default, --long holds 1500 ms, --hold DUR sets the hold; --down/--up set the level and return."`
 	Set    SetCmd    `cmd:"" help:"Set inputs: key=value pairs (temperature in degrees Celsius, humidity in %RH, portN.fan=ID to plug a library fan into port N), validated first and applied together."`
-	Fans   FansCmd   `cmd:"" help:"List the fans of the instance's fan library."`
+	Fans   FansCmd   `cmd:"" help:"List the fan library: JSON on stdout, a provenance summary per fan on stderr (--verbose: every value)."`
 	// History is registered next to Fans: both are read-only JSON lookups.
-	History HistoryCmd `cmd:"" help:"Print the plot history: one duty and RPM sample per port every 100 ms of sim time, the last 5 minutes."`
+	History HistoryCmd `cmd:"" help:"Print the plot history: one duty, RPM and tach sample per port every 100 ms of sim time, the last 5 minutes."`
 	Watch   WatchCmd   `cmd:"" help:"Follow the instance live as NDJSON: one snapshot line, then one line per change, until it stops (Ctrl-C ends it too)."`
 	Logs    LogsCmd    `cmd:"" help:"Print the last lines of the firmware's and the simulator's logs (colour removed, the API key redacted); --follow keeps streaming."`
 	Serve   ServeCmd   `cmd:"" hidden:"" help:"Run the detached supervisor (internal)."`
@@ -74,6 +77,7 @@ type UpCmd struct {
 	UIDir     string   `name:"ui-dir" help:"Serve the page from this directory instead of the binary (UI development)."`
 	Rebuild   bool     `help:"Discard the previous build output of this instance first."`
 	Fan       string   `help:"Library fan plugged into all four ports (default arctic-p12-pwm-pst); change one port later with: sil set portN.fan=ID."`
+	Seed      *uint64  `name:"seed" help:"Noise seed of the simulated tachs, 0 to 9007199254740991 (default: a fixed seed, so every run repeats)."`
 }
 
 // StatusCmd is `sil status`.
@@ -127,6 +131,7 @@ type SetCmd struct {
 
 // FansCmd is `sil fans`. Like set, the instance is selected with --instance/-i.
 type FansCmd struct {
+	Verbose  bool   `help:"Also list every value with its provenance and source (stderr)."`
 	Instance string `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
 }
 
@@ -139,7 +144,7 @@ type HistoryCmd struct {
 // WatchCmd is `sil watch`. Like press, the instance is selected with --instance/-i. It is a
 // streaming command: it writes NDJSON lines to stdout as they arrive instead of one JSON value.
 type WatchCmd struct {
-	Kind     []string `sep:"," help:"Only these event kinds, comma separated (duty, rpm, state, fan, button, env, leds, firmware, sim; sample is opt-in: 10 events a second, only when named); the snapshot, lagged and stopped lines always come."`
+	Kind     []string `sep:"," help:"Only these event kinds, comma separated (duty, rpm, tach, state, fan, load, button, env, leds, firmware, sim; sample is opt-in: 10 events a second, only when named); the snapshot, lagged and stopped lines always come."`
 	Count    int      `help:"Exit 0 after this many event lines following the snapshot (0 = until the instance stops)."`
 	Instance string   `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
 }
@@ -302,7 +307,7 @@ func (c *UpCmd) options(env *runEnv) lifecycle.UpOptions {
 	return lifecycle.UpOptions{
 		Name: c.Name, ConfigPath: c.Config, APIPort: c.APIPort,
 		WebPort: c.WebPort, Listen: c.Listen, AllowHosts: c.AllowHost, UIDir: c.UIDir,
-		Rebuild: c.Rebuild, Fan: c.Fan, Quiet: env.quiet, Progress: env.stderr,
+		Rebuild: c.Rebuild, Fan: c.Fan, Seed: c.Seed, Quiet: env.quiet, Progress: env.stderr,
 	}
 }
 
@@ -455,7 +460,49 @@ func (c *FansCmd) Run(env *runEnv) error {
 		return err
 	}
 	env.result = res
+	writeFansSummary(env.stderr, res, c.Verbose)
 	return nil
+}
+
+// writeFansSummary prints the human view of `sil fans` to w (stderr, discarded by --quiet): one line
+// per fan and, with verbose, one line per value in model.ValuePaths order. It is text only: a source
+// is printed, never opened or fetched.
+func writeFansSummary(w io.Writer, res control.FansResult, verbose bool) {
+	for _, f := range res.Fans {
+		id, name := terminalSafe(f.ID), terminalSafe(f.Name)
+		if f.Provenance == nil {
+			fmt.Fprintf(w, "%s  %s  schema %d  no per-value provenance (flat v0.1.0 file)\n", id, name, f.Schema)
+			continue
+		}
+		fmt.Fprintf(w, "%s  %s  schema %d  measured %d · datasheet %d · assumed %d · unobservable %d\n",
+			id, name, f.Schema, f.Provenance.Measured, f.Provenance.Datasheet, f.Provenance.Assumed, f.Provenance.Unobservable)
+		if !verbose {
+			continue
+		}
+		for _, path := range model.ValuePaths {
+			v, ok := f.Values[path]
+			if !ok {
+				continue
+			}
+			line := fmt.Sprintf("    %-22s%s", path, v.Kind)
+			if v.Source != nil {
+				line += "  " + terminalSafe(*v.Source)
+				if text, ok := f.Sources[*v.Source]; ok {
+					line += " " + terminalSafe(text)
+				}
+			}
+			fmt.Fprintln(w, line)
+		}
+	}
+}
+
+// terminalSafe returns s as is, or its Go-quoted form when it holds a control character, so that fan
+// text from a file (a name, a source) can never inject an escape sequence into the terminal.
+func terminalSafe(s string) string {
+	if strings.ContainsFunc(s, unicode.IsControl) {
+		return strconv.Quote(s)
+	}
+	return s
 }
 
 // Run implements `sil history`: the supervisor's sample ring as one JSON value. An out-of-range

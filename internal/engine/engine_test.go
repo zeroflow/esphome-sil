@@ -1799,7 +1799,7 @@ func TestSampleCadence(t *testing.T) {
 		}
 	}
 	raw, err := json.Marshal(dv[0][0])
-	if err != nil || string(raw) != `{"port":1,"duty":null,"rpm":null}` {
+	if err != nil || string(raw) != `{"port":1,"duty":null,"rpm":null,"tach":null}` {
 		t.Fatalf("a null entry marshals as %s (%v), want explicit nulls", raw, err)
 	}
 }

@@ -206,11 +206,14 @@ func repoRoot(t testing.TB) string {
 }
 
 // TestNoWallClock scans every .go file in the repository, whatever its build
-// tags, and fails on any wall-clock use outside internal/clock.
+// tags, and fails on any wall-clock use outside internal/clock. Under
+// internal/model (tests included) it also fails on any use of the global source
+// of math/rand or math/rand/v2 (checkGlobalRand, MODEL-10).
 func TestNoWallClock(t *testing.T) {
 	root := repoRoot(t)
 	scanned := 0
 	sawE2E := false
+	sawModel := 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -243,6 +246,15 @@ func TestNoWallClock(t *testing.T) {
 			t.Errorf("%s: cannot parse: %v", rel, err)
 			return nil
 		}
+		if strings.HasPrefix(rel, "internal/model/") { // MODEL-10: tests included
+			sawModel++
+			randFindings, err := checkGlobalRand(rel, src)
+			if err != nil {
+				t.Errorf("%s: cannot parse: %v", rel, err)
+				return nil
+			}
+			findings = append(findings, randFindings...)
+		}
 		for _, f := range findings {
 			t.Error(f)
 		}
@@ -251,8 +263,8 @@ func TestNoWallClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk %s: %v", root, err)
 	}
-	if scanned == 0 || !sawE2E {
-		t.Fatalf("scan looked at %d files (e2e seen: %v); the walk is broken", scanned, sawE2E)
+	if scanned == 0 || !sawE2E || sawModel == 0 {
+		t.Fatalf("scan looked at %d files (e2e seen: %v, internal/model files %d); the walk is broken", scanned, sawE2E, sawModel)
 	}
 }
 
@@ -442,6 +454,176 @@ func TestLintSelfTest(t *testing.T) {
 			}
 			if len(want) > 0 && len(findings) < len(want) {
 				t.Errorf("%d findings for %d expected lines: %v", len(findings), len(want), findings)
+			}
+		})
+	}
+}
+
+// randImports are the packages whose package-level functions draw from the global source.
+var randImports = setOf("math/rand", "math/rand/v2")
+
+// randAllowed are the names of math/rand and math/rand/v2 that do not touch the global source:
+// the constructors of a local generator and the types.
+var randAllowed = setOf(
+	"New", "NewSource", "NewPCG", "NewChaCha8", "NewZipf", // constructors
+	"Rand", "Source", "Source64", "PCG", "ChaCha8", "Zipf", // types
+)
+
+const useLocalRand = "use the stateless keyed hash (internal/model noise) or a local rand.New generator: the global source breaks deterministic traces (MODEL-10)"
+
+// checkGlobalRand parses one file and returns a finding "file:line: message" for every use of a
+// package-level name of math/rand or math/rand/v2 other than the constructors and types of
+// randAllowed. A name used as a value (g := rand.Int63) counts like a call: it is the same global
+// source. Pure AST, like checkSource: an identifier that the parser resolved to a local declaration
+// shadows the import.
+func checkGlobalRand(filename string, src any) ([]string, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filename, src, 0)
+	if err != nil {
+		return nil, err
+	}
+	type finding struct {
+		line int
+		msg  string
+	}
+	var found []finding
+	add := func(pos token.Pos, format string, args ...any) {
+		found = append(found, finding{fset.Position(pos).Line, fmt.Sprintf(format, args...)})
+	}
+
+	names := map[string]string{}
+	for _, spec := range file.Imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil || !randImports[path] {
+			continue
+		}
+		local := "rand" // the package name of both math/rand and math/rand/v2
+		if spec.Name != nil {
+			switch spec.Name.Name {
+			case "_":
+				continue
+			case ".":
+				add(spec.Pos(), "dot import of %q hides the global source from this lint; import it by name (MODEL-10)", path)
+				continue
+			default:
+				local = spec.Name.Name
+			}
+		}
+		names[local] = path
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		id, ok := sel.X.(*ast.Ident)
+		if !ok || id.Obj != nil || names[id.Name] == "" || randAllowed[sel.Sel.Name] {
+			return true
+		}
+		add(sel.Pos(), "%s.%s draws from the global random source; %s", id.Name, sel.Sel.Name, useLocalRand)
+		return true
+	})
+
+	sort.SliceStable(found, func(i, j int) bool { return found[i].line < found[j].line })
+	out := make([]string, len(found))
+	for i, f := range found {
+		out[i] = fmt.Sprintf("%s:%d: %s", filename, f.line, f.msg)
+	}
+	return out, nil
+}
+
+var randFixtures = []fixture{
+	{"global source functions, aliased and as values", `package x
+
+import (
+	"math/rand"
+	r2 "math/rand/v2"
+)
+
+func f() {
+	_ = rand.Intn(5) // want
+	_ = r2.Float64() // want
+	rand.Seed(1) // want
+	g := rand.Int63 // want
+	_ = g
+	_ = r2.N(10) // want
+	rand.Shuffle(3, func(i, j int) {}) // want
+}
+`},
+	{"local generators and types are allowed", `package x
+
+import (
+	"math/rand"
+	r2 "math/rand/v2"
+)
+
+func f(src rand.Source, z *rand.Zipf, g *r2.Rand) {
+	r := rand.New(rand.NewSource(1))
+	_ = r.Intn(5)
+	p := r2.New(r2.NewPCG(1, 2))
+	_ = p.Float64()
+	_ = r2.New(r2.NewChaCha8([32]byte{}))
+	_ = rand.NewZipf(r, 1.5, 2, 10)
+	var _ r2.PCG
+	_ = src
+	_ = z
+	_ = g
+}
+`},
+	{"a local identifier named rand is not the package", `package x
+
+type gen struct{}
+
+func (gen) Intn(int) int { return 0 }
+
+func f() {
+	rand := gen{}
+	_ = rand.Intn(5)
+}
+`},
+}
+
+// TestGlobalRandSelfTest proves checkGlobalRand fires on the global source with file:line, accepts
+// local generators and types, and is not fooled by a shadowing identifier.
+func TestGlobalRandSelfTest(t *testing.T) {
+	const fname = "fixture.go"
+	for _, fx := range randFixtures {
+		t.Run(fx.name, func(t *testing.T) {
+			want := map[int]bool{}
+			for i, line := range strings.Split(fx.src, "\n") {
+				if strings.Contains(line, "// want") {
+					want[i+1] = true
+				}
+			}
+			findings, err := checkGlobalRand(fname, fx.src)
+			if err != nil {
+				t.Fatalf("fixture does not parse: %v", err)
+			}
+			got := map[int]bool{}
+			for _, f := range findings {
+				rest, ok := strings.CutPrefix(f, fname+":")
+				if !ok {
+					t.Fatalf("finding %q does not start with %s:", f, fname)
+				}
+				numText, msg, _ := strings.Cut(rest, ":")
+				line, err := strconv.Atoi(numText)
+				if err != nil {
+					t.Fatalf("finding %q has no line number", f)
+				}
+				if !strings.Contains(msg, "MODEL-10") {
+					t.Errorf("finding %q does not name MODEL-10", f)
+				}
+				got[line] = true
+			}
+			for line := range want {
+				if !got[line] {
+					t.Errorf("line %d not reported", line)
+				}
+			}
+			for line := range got {
+				if !want[line] {
+					t.Errorf("line %d reported but is clean: %v", line, findings)
+				}
 			}
 		})
 	}

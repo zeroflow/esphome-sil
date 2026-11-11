@@ -1,6 +1,7 @@
 // The page's mirror of GET /api/v1/status. A snapshot frame replaces the whole state; every event
 // frame after it changes the one field it names. The store holds what the API reported and
-// derives nothing: no connected or behind flags, no timing.
+// derives nothing: no connected or behind flags, no timing. A tach event sets the port's tach_rpm
+// and a load event its airflow_m3h and power_w exactly as the API reported them (null stays null).
 
 let state = null;
 
@@ -41,6 +42,21 @@ export function apply(frame) {
       const p = portAt(frame.port);
       if (p) {
         p[frame.k] = frame.v;
+      }
+      return none;
+    }
+    case "tach": {
+      const p = portAt(frame.port);
+      if (p) {
+        p.tach_rpm = frame.v === undefined ? null : frame.v;
+      }
+      return none;
+    }
+    case "load": {
+      const p = portAt(frame.port);
+      if (p && frame.v !== null && typeof frame.v === "object") {
+        p.airflow_m3h = frame.v.airflow_m3h === undefined ? null : frame.v.airflow_m3h;
+        p.power_w = frame.v.power_w === undefined ? null : frame.v.power_w;
       }
       return none;
     }

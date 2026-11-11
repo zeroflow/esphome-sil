@@ -120,6 +120,11 @@ func TestLayoutDesktop(t *testing.T) {
 			W                        float64
 		}
 		Family string
+		Loads  []struct {
+			Row, First, Panel, Scope box
+			Units                    []string
+			Srcs                     []string
+		}
 	}
 	js := `(() => { ` + rectJS + `
 	  const panels = [...document.querySelectorAll('#ports .port')];
@@ -135,6 +140,10 @@ func TestLayoutDesktop(t *testing.T) {
 	    Rpm: panels.map((q) => cap(val(q.querySelector('.readout .value[data-fmt="rpm"]')))),
 	    Duty: panels.map((q) => cap(val(q.querySelector('.readout .value[data-fmt="pct"]')))),
 	    Family: getComputedStyle(document.body).fontFamily,
+	    Loads: panels.map((q) => { const row = q.querySelector('.row.loads');
+	      return {Row: row ? rect(row) : rect(q), First: rect(q.querySelector('.row')), Panel: rect(q), Scope: rect(q.querySelector('.scope')),
+	        Units: row ? [...row.querySelectorAll('.readout .unit')].map((e) => e.textContent) : [],
+	        Srcs: row ? [...row.querySelectorAll('.readout .value')].map((e) => e.dataset.src) : []}; }),
 	  };
 	})()`
 	if err := p.Eval(within(t, 10*time.Second), js, &g); err != nil {
@@ -235,6 +244,23 @@ func TestLayoutDesktop(t *testing.T) {
 			}
 		}
 	}
+	// The second readout row (TACH RPM, AIRFLOW, POWER) sits below the main row, inside its panel, and
+	// leaves the scope its 128 px.
+	for i, l := range g.Loads {
+		if got := strings.Join(l.Units, "|"); got != "TACH RPM|M³/H|W" {
+			t.Errorf("panel %d loads row units = %q, want TACH RPM|M³/H|W", i+1, got)
+		}
+		want := fmt.Sprintf("ports.%[1]d.tach_rpm|ports.%[1]d.airflow_m3h|ports.%[1]d.power_w", i)
+		if got := strings.Join(l.Srcs, "|"); got != want {
+			t.Errorf("panel %d loads row data-src = %q, want %q", i+1, got, want)
+		}
+		if l.Row.T < l.First.B-0.5 || l.Row.R > l.Panel.R+0.5 || l.Row.B > l.Panel.B+0.5 || l.Row.L < l.Panel.L-0.5 {
+			t.Errorf("panel %d: loads row %+v is not below the first row %+v and inside the panel %+v", i+1, l.Row, l.First, l.Panel)
+		}
+		if l.Scope.H < 128 {
+			t.Errorf("panel %d: scope is %v px high at 1280 x 720, want at least 128", i+1, l.Scope.H)
+		}
+	}
 	if !strings.HasPrefix(g.Family, "system-ui") {
 		t.Errorf("font-family = %q, want the system stack starting with system-ui", g.Family)
 	}
@@ -267,8 +293,8 @@ func TestLayoutDesktop(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range sweep.Sizes {
-		if s != "12px" && s != "14px" && s != "20px" && s != "28px" {
-			t.Errorf("font size %s is not one of 12, 14, 20, 28 px (all: %v)", s, sweep.Sizes)
+		if s != "12px" && s != "14px" && s != "16px" && s != "20px" && s != "28px" {
+			t.Errorf("font size %s is not one of 12, 14, 16, 20, 28 px (all: %v)", s, sweep.Sizes)
 		}
 	}
 	for _, w := range sweep.Weights {
@@ -298,6 +324,26 @@ func TestLayoutDesktop(t *testing.T) {
 	for i := range before {
 		if !near(before[i], after[i], 0.5) {
 			t.Errorf("readout %d changed width from %v to %v with its value", i, before[i], after[i])
+		}
+	}
+	// The same for the TACH RPM, AIRFLOW and POWER readouts: a number replaces the em dash, and a
+	// wider number replaces a shorter one, with no width change.
+	if len(before) < 4*5 {
+		t.Errorf("%d readout values on the page, want 5 per panel (RPM, DUTY, TACH RPM, AIRFLOW, POWER)", len(before))
+	}
+	b.Emit(events.Event{K: "tach", Port: 2, V: f64(1110)}, func(st *control.Status) { st.Ports[1].TachRPM = f64(1110) })
+	b.Emit(events.Event{K: "load", Port: 2, V: events.Load{AirflowM3h: f64(61.2), PowerW: f64(0.32)}},
+		func(st *control.Status) { st.Ports[1].AirflowM3h, st.Ports[1].PowerW = f64(61.2), f64(0.32) })
+	waitText(t, p, `[data-src="ports.1.tach_rpm"]`, "1110", 5*time.Second)
+	waitText(t, p, `[data-src="ports.1.airflow_m3h"]`, "61.2", 5*time.Second)
+	b.Emit(events.Event{K: "tach", Port: 2, V: f64(9)}, func(st *control.Status) { st.Ports[1].TachRPM = f64(9) })
+	b.Emit(events.Event{K: "load", Port: 2, V: events.Load{AirflowM3h: f64(5.5), PowerW: f64(0.01)}},
+		func(st *control.Status) { st.Ports[1].AirflowM3h, st.Ports[1].PowerW = f64(5.5), f64(0.01) })
+	waitText(t, p, `[data-src="ports.1.tach_rpm"]`, "9", 5*time.Second)
+	waitText(t, p, `[data-src="ports.1.power_w"]`, "0.01", 5*time.Second)
+	for i, w := range widths() {
+		if i < len(before) && !near(before[i], w, 0.5) {
+			t.Errorf("readout %d changed width from %v to %v with a tach or load value", i, before[i], w)
 		}
 	}
 
@@ -416,6 +462,8 @@ func TestLayoutPhone(t *testing.T) {
 			box
 		}
 		Scopes []box
+		Loads  []box
+		Row    box
 	}
 	js := `(() => { ` + rectJS + `
 	  const q = document.querySelector('#ports .port');
@@ -425,10 +473,25 @@ func TestLayoutPhone(t *testing.T) {
 	    Chip: rect(q.querySelector('.chip')), Fan: rect(q.querySelector('.fan')),
 	    Rpm: rect(q.querySelector('.readout .value[data-fmt="rpm"]')), Duty: rect(q.querySelector('.readout .value[data-fmt="pct"]')),
 	    Controls: [...document.querySelectorAll('button, select, input')].map((el) => Object.assign({name: name(el)}, rect(el))),
-	    Scopes: [...document.querySelectorAll('#ports .scope')].map(rect)};
+	    Scopes: [...document.querySelectorAll('#ports .scope')].map(rect),
+	    Row: rect(q.querySelector('.row.loads')), Loads: [...q.querySelectorAll('.row.loads .readout')].map(rect)};
 	})()`
 	if err := p.Eval(within(t, 10*time.Second), js, &g); err != nil {
 		t.Fatal(err)
+	}
+	if len(g.Loads) != 3 {
+		t.Errorf("%d readouts in the loads row, want 3 (TACH RPM, AIRFLOW, POWER)", len(g.Loads))
+	}
+	for i, a := range g.Loads {
+		if a.R > g.InnerW+0.5 || a.R > g.Row.R+0.5 {
+			t.Errorf("loads readout %d runs past the viewport or its row: %+v row %+v", i, a, g.Row)
+		}
+		for j := i + 1; j < len(g.Loads); j++ {
+			c := g.Loads[j]
+			if a.L < c.R-0.5 && c.L < a.R-0.5 && a.T < c.B-0.5 && c.T < a.B-0.5 {
+				t.Errorf("loads readouts %d and %d overlap: %+v %+v", i, j, a, c)
+			}
+		}
 	}
 	for i, q := range g.Panels {
 		if !near(q.L, g.Panels[0].L, 1) || !near(q.W, g.Panels[0].W, 1) {

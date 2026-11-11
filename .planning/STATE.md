@@ -1,40 +1,44 @@
 ---
 gsd_state_version: "1.0"
-milestone: v0.1.0
-status: Awaiting next milestone
-stopped_at: Milestone v0.1.0 MVP shipped and archived
-last_updated: "2026-11-10T18:33:03.953Z"
-last_activity: 2026-11-10
-last_activity_desc: Milestone v0.1.0 completed and archived
-state_head: bed941a006006a6572822ce52ef47aeb16707384
+milestone: v0.2.0
+milestone_name: Real Fans
+current_phase: 5
+current_phase_name: Fault Injection
+status: "Phase 4 shipped — PR #1"
+stopped_at: Phase 4 complete, ready to plan Phase 5
+last_updated: "2026-11-11T14:44:06.648Z"
+last_activity: 2026-11-11
+state_head: 994300adedcd2aa83cb628df858abfcbef7921fd
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 36
-  completed_plans: 36
-current_phase: "03.1"
+  total_phases: 5
+  completed_phases: 1
+  total_plans: 10
+  completed_plans: 10
+  percent: 20
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-11-10)
+See: .planning/PROJECT.md (updated 2026-11-11)
 
 **Core value:** A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
-**Current focus:** Planning next milestone (`/gsd-new-milestone`); v0.1.0 MVP shipped 2026-11-10
+**Current focus:** Phase 05 — Fault Injection
 
 ## Current Position
 
-Phase: Milestone v0.1.0 complete
-Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-11-10 — Milestone v0.1.0 completed and archived
+Phase: 5 — Fault Injection
+Plan: Not started
+Status: Phase 4 shipped — PR #1
+Last activity: 2026-11-11
+
+Progress: [██░░░░░░░░] 20%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 36
+- Total plans completed: 46
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -46,6 +50,7 @@ Last activity: 2026-11-10 — Milestone v0.1.0 completed and archived
 | 1 | 13 | - | - |
 | 3 | 12 | - | - |
 | 03.1 | 3 | - | - |
+| 4 | 10 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -92,6 +97,16 @@ Last activity: 2026-11-10 — Milestone v0.1.0 completed and archived
 | Phase 03.1 P01 | 7 min | 3 tasks | 7 files |
 | Phase 03.1 P02 | 6 min | 2 tasks | 3 files |
 | Phase 03.1 P03 | 4 min | 2 tasks | 8 files |
+| Phase 04 P01 | 20 min | 2 tasks | 12 files |
+| Phase 04 P02 | 3 min | 2 tasks | 8 files |
+| Phase 04 P03 | 25 min | 2 tasks | 11 files |
+| Phase 04 P04 | 10 min | 2 tasks | 8 files |
+| Phase 04 P05 | 5 min | 2 tasks | 9 files |
+| Phase 04 P06 | 14 min | 2 tasks | 11 files |
+| Phase 04 P07 | 15 min | 2 tasks | 12 files |
+| Phase 04 P08 | 35 min | 2 tasks | 11 files |
+| Phase 04 P09 | 25min | 2 tasks | 1 files |
+| Phase 04 P10 | 45min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -179,6 +194,35 @@ Recent decisions affecting current work:
 - [Phase 03.1]: Set answers stopping with a rollback once a shutdown is requested or cancels its Apply; a shutdown is terminal so the rollback cannot desync a later engine (F2, F6)
 - [Phase 03.1]: Concurrency review kept as 03.1-CONCURRENCY-REVIEW.md; F3 documented, F5 and F7 left unchanged
 - [Phase 03.1]: 03.1-03: hub TX cap tested on host via stub ESPHome headers (tests/cpp/stubs); SimChild::on_value unnamed param keeps -Werror
+- [Roadmap v0.2.0]: Five phases 4-8, continuing numbering after 3.1: Fan Model v2 → Fault Injection ∥ fan-analyze Offline Core → Measuring Firmware and Board Link → Arctic P12 Calibration (granularity coarse; five kept because the user-set research order defines five distinct slices)
+- [Roadmap v0.2.0]: No separate spike phase; the MEAS-01 hardware spikes open Phase 7 (user decision)
+- [Roadmap v0.2.0]: ANLZ-07 (synthetic-fan recovery) maps to Phase 7, not 6: its host-firmware leg needs the Go native API client (MEAS-05). The fake-board recovery already proves ANLZ-04 in Phase 6. "Before any real hardware is used" is read as "before any real-fan recording is fitted"; the MEAS-01 spikes characterise the instrument only
+- [Roadmap v0.2.0]: Fault lifecycle per FAULT-09 is decided: cleared by `sil sim restart` and `sil down`, kept across firmware restart, cleared with an event on fan swap; unplug is a fault, replug clears it
+- [Roadmap v0.2.0]: Done criterion is the Arctic P12 only, verified on a held-out recording (CAL-02); Noctua NF-A12x25 stays `assumed` (CAL-03, v0.3)
+- [Roadmap v0.2.0]: UI hint on Phase 4 (airflow/power readouts on the page, MODEL-11) and Phase 5 (fault controls and scope markers, FAULT-10/11); Phases 6-8 explicitly `UI hint: no` (`report.html` is a generated offline report, not the page)
+- [Roadmap v0.2.0]: Hardware/human-gated: Phase 7 (board on the bench for spikes, first flash, fail-safe checks) and Phase 8 (bench setup, preflight, run with repeatability pass, report review). Deeper research: Phase 6 (identifiability in the count domain, fitter robustness, estimator/tolerance) and Phase 7 (instrument design, PCNT limits, device-stamped delivery, api.proto IDs)
+- [Phase 04]: 04-01: direction (LastDuty/Falling) is tracked in State only for fans with a separate down curve, so legacy State stays bit-identical to v0.1.0
+- [Phase 04]: 04-01: schema 2 loader errors use a table-aware lineOf (duty/rpm repeat across tables); provenance entry typos reported before missing entries
+- [Phase 04]: 04-01: A1 sticky direction without deadband reviewed and accepted for Phase 4; carried to Phase 8 measured sweeps
+- [Phase 04]: 04-02: start boundary is at or above (duty >= start.duty, v0.1.0 operator); a delay expiring exactly on a tick leaves rpm 0 until the next tick
+- [Phase 04]: 04-02: coast_tau_s applies only to a non-running segment; a running fan slowing down uses tau_down_s; snap stays at segment end, only the integral uses the analytic crossing time
+- [Phase 04]: 04-03: locate scanner matches full dotted paths (bare, quoted, dotted-in-table, multi-line arrays); replaces lineOf/entryLine — duty and rpm repeat across tables; one mechanism covers provenance keys too
+- [Phase 04]: 04-03: [measured] optional table of five strings; only measured.tolerance carries provenance (A7 accepted, flagged for Phase 6/8) — MODEL-08 names measured tables; MODEL-12 needs provenance on every fan value
+- [Phase 04]: 04-03: v1 files load with Params.Schema 1; schema >= 3 says it needs a newer sil — explicit schema = 1 is accepted; sil fans reports schema 1 with null provenance
+- [Phase 04]: 04-04: pulse count uses floor(phase + 1e-9) so on-grid fans read the same on every tick pattern
+- [Phase 04]: 04-04: checkGlobalRand flags every non-constructor, non-type name of math/rand(/v2) under internal/model, not only calls
+- [Phase 04]: 04-04: EDGE-MODEL-09 accepted as bounded (first Frame after a bus gap is the true mean over the gap); A11 stays open for Phase 7/8
+- [Phase 04]: 04-05: noise seed travels in spec.json (sil up) and is copied into run.json and status sim.seed by the supervisor; default lifecycle.DefaultSeed 0x5EED, cap 2^53-1 (A-SEED resolved)
+- [Phase 04]: 04-06: tach and load events are forced once per port at engine start and after a fan swap, so streams see a new plant's state without the page deriving anything
+- [Phase 04]: 04-06: fan-law exponents fixed at 1 (airflow) and 3 (power) on the noise-free shaft; cubic law underestimates low-speed power (PITFALLS 31)
+- [Phase 04]: 04-07: the null text belongs to the format (view.js NULL_TEXT): em dash for tach, flow and watt (D-16 amended), -- for every other readout
+- [Phase 04]: 04-07: loads row is 28 px and the strip sits above the grid (z-index) so strip controls stay reachable in a short window
+- [Phase 04]: 04-08: uitest incl. parity_test stays unpinned on the shipped schema 2 library (D-02 exemption, user 2026-11-11); exact suites run on testdata/fans-v0.1.0
+- [Phase 04]: 04-08: shipped fan provenance pinned to evidence by TestShippedProvenanceMatchesEvidence (Arctic datasheet 4/assumed 9, Noctua datasheet 3/assumed 10, none measured); A9 assumed-values stays a maintainer judgment until Phase 8
+- [Phase 04]: 04-09: start-delay window asserted from watch events is 390 to 410 ms (start.delay_s 0.4 within one 10 ms engine tick), because the duty event carries the bus frame time while the model counts the delay in whole ticks
+- [Phase 04]: S7b passed on the first live runs (spread 40-62 rpm vs 90 limit): no analytic quantisation fallback applied, bus tach value stays the 50 ms pulse drain, protocol 1
+- [Phase 04]: Contract bench uses one session fan library (v0.1.0 fixtures plus s7-steady) in its private runtime dir; firmware-visible tach read through aioesphomeapi is a recorded exception
+- [Phase 04]: UAT 4/4 passed 2026-11-11; all six review findings (WR-01..03, IN-01..03) fixed in 6ebeb3f..62091f8 (WR-01 now also enforces the never-stops floor on curve.down); re-verification passed; SECURITY 22/22 closed
 
 ### Pending Todos
 
@@ -192,11 +236,19 @@ None yet.
 - [Phase 2] `TestSupervisorRebootExit` flake fixed in 8542d9d (test race); watch for recurrence
 - [Later] Static linking with real product modules (DNS, `json:`) is unverified; run-in-image fallback stays available
 - [Later] Host `select()` timeout lives in `core/wake/wake_host.cpp::wakeable_delay` in 2026.10.1, not `core/application.cpp` as PROJECT.md says (affects the time-factor milestone)
-- 01-05 A1 (non-blocking): Arctic start_duty 0.10, tau_up 1.0 s, tau_down 2.5 s are ASSUMED; maintainer to confirm or measure (fans/arctic-p12-pwm-pst.toml)
+- 01-05 A1 (non-blocking): Arctic start_duty 0.10, tau_up 1.0 s, tau_down 2.5 s are ASSUMED; closed by measurement in Phase 8 (CAL-01/CAL-02)
+- [Phase 4] RESOLVED: tach accumulator — S7b passed on live runs (spread 40-62 rpm vs 90 limit), no analytic quantisation fallback needed
+- [Phase 6] Fit identifiability of tau and start delay in the count domain is MEDIUM confidence; Nelder-Mead may need the LM fallback on real data
+- [Phase 7] ESP32-S2 PCNT unit count and ISR latency unverified; Rev 3.3 schematic (tach pull-up, supply) unchecked; 100 ms device-stamped sample publish rate over the API unconfirmed (fallback: host-stamped `total` with Wi-Fi jitter)
+- [Phase 7] Native API: confirm message IDs/fields from the pinned 2026.10.1 `api.proto` and that no password/`ConnectRequest` step is needed for an encrypted API
+- [Phase 8] Arctic P12 SKU mismatch: repo cites ACFAN00120A, research fetched ACFAN00170A; record the real SKU at bench setup. PST daisy-chain topology: measure a single fan
+- [Phase 8] Tolerance numbers (`floor`, `k`) are the maintainer's call, frozen after the repeatability pass and before the held-out recording
+- [Phase 8] Real fan may show behaviour model v2 cannot express (rpm-dependent tau, low-duty hunting, PWM-frequency effects); budget one model iteration as a decimal phase
 
 ### Roadmap Evolution
 
 - Phase 3.1 inserted after Phase 3: Address tech debt: sim-restart button release, Set/SimRestart re-review, TX-cap test (URGENT)
+- v0.2.0 Real Fans roadmap created 2026-11-10: Phases 4-8 (Fan Model v2, Fault Injection, fan-analyze Offline Core, Measuring Firmware and Board Link, Arctic P12 Calibration); 32/32 requirements mapped
 
 ## Deferred Items
 
@@ -209,8 +261,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-10
-Stopped at: Milestone v0.1.0 MVP shipped; phase dirs archived to .planning/milestones/v0.1.0-phases/
+Last session: 2026-11-11T16:00:00Z
+Stopped at: Phase 4 complete (UAT 4/4, verification passed, security secured), ready to plan Phase 5
 Resume file: None
 
 ## Needs Human
@@ -267,4 +319,6 @@ Items recorded during the unattended `/gsd-autonomous --from 1 --to 3` run (2026
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Phase 4 (Fan Model v2) carries `UI hint: yes` (airflow/power readouts on the page): run `/gsd-ui-phase 4` if a design contract is wanted, then `/gsd-discuss-phase 4` or `/gsd-plan-phase 4`
+- Phases 5 and 6 can run in parallel once Phase 4 is done; Phase 5 needs `/gsd-ui-phase 5` (fault controls, scope markers)
+- Phases 7 and 8 need the Rev 3.3 board on the bench and the maintainer present at the checkpoints

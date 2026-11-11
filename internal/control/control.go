@@ -27,6 +27,7 @@ import (
 	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/clock"
 	"github.com/zeroflow/esphome-sil/internal/events"
+	"github.com/zeroflow/esphome-sil/internal/model"
 )
 
 // SchemaVersion is the Status.Schema value written by this version.
@@ -124,15 +125,26 @@ type SimStatus struct {
 	BehindRealTime bool `json:"behind_real_time"`
 	EngineRestarts int  `json:"engine_restarts"`
 	BusProto       int  `json:"bus_proto"`
+	// Seed is the noise seed of the instance (`sil up --seed`, D-15); always present, 0 is a valid seed.
+	Seed uint64 `json:"seed"`
 }
 
-// PortStatus is one fan port.
+// PortStatus is one fan port. RPM is the shaft truth (unchanged since v0.1.0). TachRPM is what the
+// tach reads: the last completed 1 s gate reading, i.e. what the firmware's tach path reports for
+// a tach fan and the 1 s mean of the shaft rpm for an ideal-tach fan (D-13 as amended 2026-11-11).
+// It is null only during the first second after sim start, sim restart or a fan swap on the port,
+// and 0 for a fan at rest. AirflowM3h and PowerW follow from the fan's [datasheet] values by the
+// fan laws on the shaft rpm; they are null exactly when the fan has no datasheet, never 0 (D-16).
+// The three keys are always present, so the Status schema stays 1.
 type PortStatus struct {
-	Port  int     `json:"port"`
-	Fan   string  `json:"fan"`
-	Duty  float64 `json:"duty"`
-	RPM   float64 `json:"rpm"`
-	State string  `json:"state"`
+	Port       int      `json:"port"`
+	Fan        string   `json:"fan"`
+	Duty       float64  `json:"duty"`
+	RPM        float64  `json:"rpm"`
+	State      string   `json:"state"`
+	TachRPM    *float64 `json:"tach_rpm"`
+	AirflowM3h *float64 `json:"airflow_m3h"`
+	PowerW     *float64 `json:"power_w"`
 }
 
 // DownResult is the outcome of stopping an instance.
@@ -225,13 +237,75 @@ type SetResult struct {
 	Applied map[string]any `json:"applied"`
 }
 
-// FanInfo describes one fan of the instance's fan library.
+// FanInfo describes one fan of the instance's fan library. Schema, Provenance, Values and Sources
+// describe where the fan's numbers come from (MODEL-12). For a schema 1 fan they are null: that
+// format records no per-value provenance and none is made up. The source texts are plain text:
+// nothing in sil fetches, resolves or links them.
 type FanInfo struct {
 	ID       string  `json:"id"`
 	Name     string  `json:"name"`
 	MinRPM   float64 `json:"min_rpm"`
 	MaxRPM   float64 `json:"max_rpm"`
 	BelowMin string  `json:"below_min"`
+	// Schema is the fan file format, 1 or 2.
+	Schema int `json:"schema"`
+	// Provenance counts the values per kind; null for schema 1. A curve table counts once.
+	Provenance *ProvenanceCounts `json:"provenance"`
+	// Values maps each value path to its kind and source; null for schema 1.
+	Values map[string]ValueProvenance `json:"values"`
+	// Sources maps a source id to its text; {} for a schema 2 fan without any, null for schema 1.
+	Sources map[string]string `json:"sources"`
+}
+
+// ProvenanceCounts is the number of values of a schema 2 fan per provenance kind.
+type ProvenanceCounts struct {
+	Measured     int `json:"measured"`
+	Datasheet    int `json:"datasheet"`
+	Assumed      int `json:"assumed"`
+	Unobservable int `json:"unobservable"`
+}
+
+// ValueProvenance is the provenance of one value: its kind and the id of its source, null when the
+// entry names none.
+type ValueProvenance struct {
+	Kind   string  `json:"kind"`
+	Source *string `json:"source"`
+}
+
+// NewFanInfo is the single builder of a FanInfo from a loaded fan.
+func NewFanInfo(id string, p model.Params) FanInfo {
+	fi := FanInfo{ID: id, Name: p.Name, MinRPM: p.MinRPM, MaxRPM: p.MaxRPM, BelowMin: p.BelowMin, Schema: p.Schema}
+	if fi.Schema == 0 {
+		fi.Schema = 1
+	}
+	if fi.Schema == 1 {
+		return fi
+	}
+	fi.Provenance = &ProvenanceCounts{}
+	fi.Values = make(map[string]ValueProvenance, len(p.Provenance))
+	for _, e := range p.Provenance {
+		switch e.Kind {
+		case model.KindMeasured:
+			fi.Provenance.Measured++
+		case model.KindDatasheet:
+			fi.Provenance.Datasheet++
+		case model.KindAssumed:
+			fi.Provenance.Assumed++
+		case model.KindUnobservable:
+			fi.Provenance.Unobservable++
+		}
+		v := ValueProvenance{Kind: e.Kind}
+		if e.Source != "" {
+			src := e.Source
+			v.Source = &src
+		}
+		fi.Values[e.Path] = v
+	}
+	fi.Sources = make(map[string]string, len(p.Sources))
+	for id, text := range p.Sources {
+		fi.Sources[id] = text
+	}
+	return fi
 }
 
 // FansResult is the body of GET /api/v1/fans: the library fans sorted by id.

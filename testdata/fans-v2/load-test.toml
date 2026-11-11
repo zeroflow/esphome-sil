@@ -1,0 +1,53 @@
+# Test fixture of Phase 4 (fan model v2), not a real fan: curve-test with a pulse tach
+# (ppr 2, noise 0) and datasheet values, so tach, airflow and power can be asserted
+# exactly. ref_rpm is the curve maximum, so the datasheet values are the full-speed
+# airflow and power. The real-bench page test of plan 04-10 uses this file.
+schema = 2
+name = "Load test fan"
+
+[sources]
+test = "test fixture, not a real fan"
+
+[stop]
+duty = 0.05
+
+[start]
+duty = 0.10
+delay_s = 0.0
+
+[dynamics]
+tau_up_s = 0.5
+tau_down_s = 0.8
+coast_tau_s = 1.0
+
+[curve.up]
+duty = [0.05, 0.20, 0.40, 0.60, 0.80, 1.00]
+rpm = [300, 600, 1000, 1300, 1550, 1700]
+
+[curve.down]
+duty = [0.05, 0.20, 0.40, 0.60, 0.80, 1.00]
+rpm = [300, 520, 900, 1200, 1480, 1700]
+
+[tach]
+ppr = 2
+noise_rpm = 0.0
+
+[datasheet]
+airflow_m3h = 100.0
+power_w = 2.0
+ref_rpm = 1700
+
+[provenance]
+"stop.duty" = "assumed:test"
+"start.duty" = "assumed:test"
+"start.delay_s" = "assumed:test"
+"dynamics.tau_up_s" = "assumed:test"
+"dynamics.tau_down_s" = "assumed:test"
+"dynamics.coast_tau_s" = "assumed:test"
+"curve.up" = "assumed:test"
+"curve.down" = "assumed:test"
+"tach.ppr" = "assumed:test"
+"tach.noise_rpm" = "assumed:test"
+"datasheet.airflow_m3h" = "assumed:test"
+"datasheet.power_w" = "assumed:test"
+"datasheet.ref_rpm" = "assumed:test"

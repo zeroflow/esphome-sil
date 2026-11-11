@@ -54,6 +54,8 @@ type UpOptions struct {
 	Rebuild, Quiet bool
 	// Fan is the library fan plugged into all four ports; "" means fanlib.DefaultFan.
 	Fan string
+	// Seed is --seed, the noise seed of the run; nil means DefaultSeed (D-15).
+	Seed *uint64
 	// Progress receives human progress lines; nil or Quiet discards them.
 	Progress io.Writer
 }
@@ -161,6 +163,9 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 	if err := checkWebOptions(&o); err != nil {
 		return UpResult{}, err
 	}
+	if err := checkSeed(o); err != nil {
+		return UpResult{}, err
+	}
 	configPath, repo, err := resolveConfig(o.ConfigPath)
 	if err != nil {
 		return UpResult{}, err
@@ -223,6 +228,7 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 		Schema: 1, Instance: o.Name, Program: res.Program,
 		Fans:   []string{fan, fan, fan, fan},
 		Listen: o.Listen, AllowHosts: o.AllowHosts, UIDir: o.UIDir,
+		Seed: specSeed(o),
 	}); err != nil {
 		return UpResult{}, err
 	}
@@ -650,4 +656,28 @@ func lanHostPtr(h string) *string {
 		return nil
 	}
 	return &h
+}
+
+// DefaultSeed is the noise seed of a run without --seed (D-15): a fixed constant, so that every run
+// repeats out of the box. The plant mixes the port into the seed, so each port still gets its own
+// stream.
+const DefaultSeed uint64 = 0x5EED
+
+// specSeed is the seed Up writes into spec.json.
+func specSeed(o UpOptions) uint64 {
+	if o.Seed != nil {
+		return *o.Seed
+	}
+	return DefaultSeed
+}
+
+// maxSeed is the largest seed a JSON number carries exactly in a browser or a Python reader (2^53-1).
+const maxSeed uint64 = 1<<53 - 1
+
+// checkSeed is a pure check: Up runs it before anything is built, locked or written.
+func checkSeed(o UpOptions) error {
+	if o.Seed != nil && *o.Seed > maxSeed {
+		return apperr.Failed("invalid_argument", "--seed must be an integer from 0 to 9007199254740991", map[string]any{"seed": *o.Seed})
+	}
+	return nil
 }

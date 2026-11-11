@@ -108,11 +108,21 @@ class Bench:
         _private_dir(state)
         runtime = Path(tempfile.mkdtemp(prefix="sil-ct-", dir="/tmp"))
         runtime.chmod(0o700)
+        # One session fan library inside the private runtime dir (removed at teardown): the byte-for-byte
+        # v0.1.0 fixtures, so the exact v0.1.0 numbers hold (789.5 rpm at duty 0.4, the Noctua swap; D-02),
+        # plus the S7b fixture. A caller's own SIL_FAN_DIR is dropped below and never leaks in.
+        fans = runtime / "fans"
+        fans.mkdir(mode=0o700)
+        fans.chmod(0o700)
+        for src in sorted((REPO / "testdata" / "fans-v0.1.0").glob("*.toml")):
+            shutil.copy(src, fans / src.name)
+        shutil.copy(REPO / "testdata" / "fans-v2" / "s7-steady.toml", fans / "s7-steady.toml")
         env = {k: v for k, v in os.environ.items() if k not in _DROP_ENV}
         env.update(
             SIL_REPO=str(REPO),
             XDG_STATE_HOME=str(state),
             XDG_RUNTIME_DIR=str(runtime),
+            SIL_FAN_DIR=str(fans),
         )
         return cls(sil_bin, state, runtime, env)
 
@@ -307,6 +317,7 @@ class Api:
         self._thread.start()
         self._cond = threading.Condition()
         self._states = {}
+        self._log = {}  # entity name -> [(time.monotonic(), value)] for every state update
         self._cli: APIClient | None = None
         self._closed = False
         self._entities = []
@@ -349,6 +360,7 @@ class Api:
             value = st.state
         with self._cond:
             self._states[name] = value
+            self._log.setdefault(name, []).append((time.monotonic(), value))
             self._cond.notify_all()
 
     def device_info(self):
@@ -395,6 +407,14 @@ class Api:
                 if left <= 0:
                     pytest.fail(f"timed out after {timeout:g} s waiting on state of {name!r}; last value: {value!r}", pytrace=False)
                 self._cond.wait(min(left, 0.2))
+
+    def collect(self, name, seconds):
+        """Wait `seconds`, then return every value the entity reported in that window (None excluded)."""
+        start = time.monotonic()
+        time.sleep(seconds)
+        end = time.monotonic()
+        with self._cond:
+            return [v for t, v in self._log.get(name, ()) if start <= t <= end and v is not None]
 
     def close(self):
         """Disconnect; tolerates a connection the firmware already dropped."""

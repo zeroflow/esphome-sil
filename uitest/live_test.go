@@ -95,7 +95,8 @@ func TestConnectingShowsDashes(t *testing.T) {
 	  const bad = els.filter((e) => {
 	    if (e.dataset.fmt === 'pressed') { return e.hasAttribute('aria-pressed'); }
 	    if (e.tagName === 'INPUT' || e.tagName === 'SELECT') { return e.value !== '--'; }
-	    return e.textContent !== '--';
+	    // The readouts of tach, airflow and power show an em dash for no value (D-16), all others two hyphens.
+	    return e.textContent !== (['tach', 'flow', 'watt'].includes(e.dataset.fmt) ? '\u2014' : '--');
 	  }).map((e) => e.dataset.src);
 	  return {n: els.length, bad};
 	})()`

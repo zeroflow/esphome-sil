@@ -215,6 +215,9 @@ func Serve(ctx context.Context, name string) error {
 		stopped:  make(chan struct{}),
 		downReq:  make(chan struct{}),
 	}
+	// The noise seed of the run (D-15). Every engine of the instance, the one a SimRestart builds
+	// included, is made from engCfg, so every plant gets this seed.
+	s.engCfg.Seed = spec.Seed
 	s.probe = s.probeLoop
 
 	sigCtx, stopSignals := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -248,7 +251,7 @@ func (s *supervisor) run(sigCtx context.Context) error {
 	rf := instance.RunFile{
 		Schema: 1, Instance: s.id.Name, PID: os.Getpid(),
 		RunDir: s.paths.RunDir, APISock: s.paths.APISock(), BusSock: s.paths.BusSock(),
-		WebPort: s.id.WebPort, WebListen: s.webListen,
+		WebPort: s.id.WebPort, WebListen: s.webListen, Seed: s.spec.Seed,
 	}
 	if err := instance.WriteRunFile(s.paths, rf); err != nil {
 		return apperr.Infra("run_file_failed", "cannot write run.json", map[string]any{"error": err.Error()})
@@ -352,6 +355,8 @@ func (s *supervisor) mainLoop(sigCtx context.Context) (err error) {
 // waits until it listens on the bus socket. The caller holds inMu from before this call until the
 // engine is in the slot, so a concurrent Set cannot fall between the two.
 func (s *supervisor) startEngine() (*engineSlot, error) {
+	// engCfg carries the noise seed (D-15): a SimRestart builds its new engine from the same config,
+	// so the seed is kept, and `sil fw restart` never touches the engine at all.
 	cfg := s.engCfg
 	cfg.Env = s.inputs
 	cfg.Ports = append([]engine.PortConfig(nil), s.fans...)
@@ -718,7 +723,7 @@ func (s *supervisor) statusFrom(have *engine.Snapshot) control.Status {
 			Ready: apiReady, // Noise handshake with the instance key and name/MAC match
 		},
 		Firmware: control.FirmwareStatus{PID: pid, Running: running, BusConnected: snap.BusConnected, Restarts: restarts, LastExit: lastExit},
-		Sim:      control.SimStatus{TimeS: snap.SimTime.Seconds(), TimeFactor: 1, BehindRealTime: snap.BehindRealTime, EngineRestarts: engRestarts, BusProto: snap.BusProto},
+		Sim:      control.SimStatus{TimeS: snap.SimTime.Seconds(), TimeFactor: 1, BehindRealTime: snap.BehindRealTime, EngineRestarts: engRestarts, BusProto: snap.BusProto, Seed: s.spec.Seed},
 		Web: control.WebStatus{
 			Listen: s.webListen, Port: s.id.WebPort, URL: instance.WebURL(s.webListen, s.lanHost, s.id.WebPort),
 		},
@@ -730,7 +735,10 @@ func (s *supervisor) statusFrom(have *engine.Snapshot) control.Status {
 		Error:    failure,
 	}
 	for _, p := range snap.Ports {
-		st.Ports = append(st.Ports, control.PortStatus{Port: p.Port, Fan: p.Fan, Duty: p.Duty, RPM: p.RPM, State: p.State})
+		st.Ports = append(st.Ports, control.PortStatus{
+			Port: p.Port, Fan: p.Fan, Duty: p.Duty, RPM: p.RPM, State: p.State,
+			TachRPM: copyFloat(p.TachRPM), AirflowM3h: copyFloat(p.AirflowM3h), PowerW: copyFloat(p.PowerW),
+		})
 	}
 	for _, id := range engine.ButtonIDs {
 		st.Buttons[id] = snap.Buttons[id]
@@ -1266,7 +1274,7 @@ func (s *supervisor) Fans(_ context.Context) (control.FansResult, error) {
 		if err != nil {
 			return control.FansResult{}, apperr.Failed("fan_toml_invalid", err.Error(), map[string]any{"fan": id, "error": err.Error()})
 		}
-		res.Fans = append(res.Fans, control.FanInfo{ID: id, Name: p.Name, MinRPM: p.MinRPM, MaxRPM: p.MaxRPM, BelowMin: p.BelowMin})
+		res.Fans = append(res.Fans, control.NewFanInfo(id, p))
 	}
 	return res, nil
 }
@@ -1396,4 +1404,13 @@ func lanHostPtr(h string) *string {
 		return nil
 	}
 	return &h
+}
+
+// copyFloat returns a fresh copy of *p, or nil: status never shares a pointer with the snapshot.
+func copyFloat(p *float64) *float64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }

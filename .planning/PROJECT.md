@@ -8,6 +8,18 @@ A software-in-the-loop test bench ("labcar") for ESPHome firmware. The ESPHome `
 
 A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
 
+## Current Milestone: v0.2.0 Real Fans
+
+**Goal:** The simulated fan behaves like a real, measured fan, including when it breaks, and its parameters come from measuring real fans on a Rev 3.3 board instead of assumptions.
+
+**Target features:**
+- Better fan model: nonlinear duty→RPM (up/down curves), start/stop dynamics (kick-start vs. hold threshold, start delay, coast-down, fans that do not stop at duty 0), RPM noise and tach quirks (jitter, ppr, quantisation), airflow and power from datasheet values in `fan.toml` scaled by fan laws
+- Fault injection: stuck/blocked, late/no start, tach faults (dead tach, wrong ppr, intermittent), unplug/replug, degraded/worn; switched at runtime via CLI/JSON API and web UI, visible in status/watch
+- Companion `fan-analyze`: measuring ESPHome firmware for the Rev 3.3 board plus a `sil fan-analyze` host CLI (Go, native API) that runs sweeps, step and start/stop tests, fits `fan.toml` and writes `report.html`
+- Done when Arctic P12 and Noctua NF-A12x25 are measured and fitted, and a sim replay of the same sequence matches the measurement within a stated tolerance (closes assumptions A1/A2)
+
+**Later milestones (planned):** v0.3 product modules (fan control core: `rpm_pi_control`, `stall_guard`, `rpm_status_leds`, `globals`; curves: `temperature_curve_dual`, `temperature_curve_triple_independent`, `dual_curve`) → v0.4 rack thermals + simulator stimulus (noise, ramp, recorded/listed profiles for temperature and heat load). Overall aim: feature parity with the real product firmware.
+
 ## Requirements
 
 ### Validated
@@ -21,20 +33,24 @@ A simulated fan controller runs closed-loop on the developer's own machine: real
 - ✓ Fan model with start/min duty hysteresis and asymmetric first-order lag, parameters from a strict `fan.toml` library (Arctic P12, Noctua NF-A12x25) — v0.1.0
 - ✓ Local web UI served by the simulator, live over WebSocket, no build step, no runtime CDN: per-port duty/RPM with uPlot scopes, virtual LEDs, USR holds, environment controls, run info — v0.1.0
 - ✓ Injectable clock, `dt`-based model integration and sim timestamps on the sim-bus (wall-clock lint enforced), so the time factor can be added without a rewrite — v0.1.0
+- ✓ Fan model v2: separate up/down duty→RPM curves, start/stop thresholds with start delay and coast-down, fans that do not stop at duty 0, pulse tach with ppr, 1 s gate quantisation and seeded noise, airflow and power from datasheet values by fan laws; driven by `fan.toml` schema 2 with per-value provenance, v0.1.0 fan files behave exactly as before (MODEL-05..12) — Phase 4 (constants still `assumed`/`datasheet`; measurement is the Phase 8 item below)
 
 ### Active
 
-Next milestone: not yet defined (`/gsd-new-milestone`). Candidates from Out of Scope and carried-forward debt: time factor for headless runs, real wifi-fancontroller modules in the sim, fault models / Lua (P2), live Home Assistant UAT.
+- [ ] Fan faults (stuck, late/no start, tach faults, unplug/replug, degraded) can be injected and cleared at runtime from CLI/JSON and the web UI
+- [ ] `sil fan-analyze` measures a real fan on a Rev 3.3 board and produces a fitted `fan.toml` and `report.html`
+- [ ] Arctic P12 and Noctua NF-A12x25 library entries are measured, not assumed, and the sim matches the measurement within a stated tolerance
 
 ### Out of Scope
 
-- Time factor (x100+) in M1 — planned for a later milestone; HA in the loop forces x1 anyway, so sped-up runs will be headless test runs
-- Real wifi-fancontroller modules in the sim (`rpm_pi_control`, `stall_guard`, ...) in M1 — M1 proves the plumbing with a minimal example; the real modules follow
+- Time factor (x100+) — not in v0.2.0; planned for a later milestone; HA in the loop forces x1 anyway, so sped-up runs will be headless test runs
 - Rev 3.3 SiL YAML in the product repo in M1 — starts here, moves to `wifi-fancontroller` once the consumer interface settles (0.x → 1.0)
-- Fault models, Lua, plug/unplug, virtual supervisor — P2
+- Fault profile files (`fans/_faults/`), Lua, scheduled faults — v0.2.0 uses runtime-switched faults only; scheduled behaviour belongs to the v0.4 stimulus work
+- Virtual supervisor / `fallback_mode`, extra sensor modules (bme680, scd41, ds2484, oled) — not in the v0.3 module set
+- Measured airflow and power draw — Rev 3.3 has no current or airflow sensing; datasheet values with fan laws in v0.2.0
 - Web UI eye candy, fan photos, drag & drop — P3
-- `fan-analyze` companion tool — P4
-- Rack thermal model and control-quality KPIs — P5
+- Rack thermal model, stimulus profiles and control-quality KPIs — v0.4
+- Real product modules in the sim — v0.3
 - Lockstep / virtual time, CI runner — later
 - Cloud simulators (Wokwi etc.) and QEMU — local-only requirement; QEMU has no ESP32-S2 machine and would need custom peripheral models
 - Testing drivers, framework (arduino/esp-idf), Wi-Fi, OTA, `update: http_request`, ISRs, heap — not possible on `host:`, stays the HIL's job
@@ -56,6 +72,7 @@ Next milestone: not yet defined (`/gsd-new-milestone`). Candidates from Out of S
 ## Constraints
 
 - **Locality**: everything runs on own hardware and own code — a vendor shutdown must not kill the pipeline.
+- **Locality exception (v0.2.0, accepted 2026-11-10)**: the ESP32-S2 measuring firmware for `fan-analyze` needs a one-time PlatformIO toolchain/ArduinoJson fetch into the shared cache, then builds offline. The sim firmware build stays fully hermetic.
 - **Tech stack**: simulator, CLI and web server in Go (single static binary, embedded UI); no Python in the simulator. Product-repo tests may stay pytest and drive `sil` via CLI/JSON.
 - **ESPHome version**: pinned 2026.10.1 (matches the product repo); build via `esphome/esphome:2026.10.1` Docker image.
 - **Web UI**: no build step, no external CDN at runtime; vendored plot library (uPlot leaning).
@@ -83,6 +100,9 @@ Next milestone: not yet defined (`/gsd-new-milestone`). Candidates from Out of S
 | Phase 2 verification accepted on automated evidence (4/5; HA criterion proxied by aioesphomeapi) | User decision 2026-11-09 to proceed to Phase 3; live HA UAT tracked in STATE.md Needs Human | ⚠️ Revisit (02-UAT complete; live HA run still open) |
 | A stopping engine releases every held USR button itself (`button` event, `reason: engine_stopped`, final all-released snapshot) | One change in `Engine.stopped()` covers sim restart, `sil down` and engine failure; no firmware, protocol or page change. Known limit (user-approved 2026-11-10): a page that misses the frame still sends one refused best-effort `button.up` | ✓ Good (Phase 03.1) |
 | A failing `Set` rolls back, including when a shutdown cancels its Apply, and a `Set` racing shutdown answers `stopping` | Concurrency re-review F1/F2/F6 (user decision 2026-11-10); F7 (Set in a restart gap with shutdown already started answers success) recorded as a design question | ✓ Good (Phase 03.1) |
+| `fan.toml` schema 2 with required per-value provenance (`assumed` / `datasheet` / `measured`), no defaults; v0.1.0 files load unchanged as schema 1 and exact-RPM suites stay pinned to hash-pinned v0.1.0 fixtures | Makes every model constant auditable before Phase 6/8 fit and measure; differential tests prove v0.1.0 behaviour did not move | ✓ Good (Phase 4) |
+| Tach simulated as pulses (ppr, 1 s gate, seeded noise on the tach only; status `rpm` stays noise-free) | Supersedes "tach as RPM value" for v0.2.0: the firmware's `pulse_counter` window quantisation is what control logic sees; seed is reproducible (default 0x5EED, `--seed`, capped 2^53-1) | ✓ Good (Phase 4) |
+| Unknown airflow/power/tach is explicit `null` (page shows `—`), never 0 | Transparency: a fan without datasheet values must not look like a fan moving no air | ✓ Good (Phase 4) |
 
 ## Evolution
 
@@ -102,4 +122,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-10 after v0.1.0 milestone*
+*Last updated: 2026-11-11 after Phase 4*

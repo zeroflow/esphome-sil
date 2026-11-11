@@ -129,6 +129,11 @@ type Config struct {
 	// Seq returns the seq of the last event published by anyone; SnapshotSync stamps it on its
 	// snapshot. Nil means the last seq this engine emitted.
 	Seq func() uint64
+	// Seed keys the tach noise of every port's plant (model.NewPlant, in New and when an apply
+	// replaces a plant); the supervisor sets it from spec.json. A replug or an engine restart
+	// rebuilds the plant with the same seed, so the noise stream restarts at bucket 0: buckets are
+	// counted in plant time, not in wall time.
+	Seed uint64
 }
 
 // PortState is the observable state of one port.
@@ -138,6 +143,11 @@ type PortState struct {
 	Duty  float64
 	RPM   float64
 	State string // running|stopped
+	// TachRPM is the last completed 1 s tach gate reading of the port (what the firmware's tach
+	// path reports for a tach fan, the 1 s shaft mean for an ideal tach); nil during the plant's
+	// first second. AirflowM3h and PowerW come from the fan's datasheet by the fan laws and are
+	// nil without one. All three are fresh values per snapshot.
+	TachRPM, AirflowM3h, PowerW *float64
 }
 
 // Snapshot is an immutable view of the engine at one instant.
@@ -263,7 +273,7 @@ type Engine struct {
 
 type portRuntime struct {
 	cfg      PortConfig
-	state    model.State
+	plant    *model.Plant
 	duty     float64
 	dutyCh   string
 	rpmCh    string
@@ -274,6 +284,13 @@ type portRuntime struct {
 	evRPM   float32
 	nextRPM time.Duration
 	evState string
+	// The tach reading of the last tach event: its value (float32, like evRPM) and whether it was
+	// a number (false = null).
+	evTach   float32
+	evTachOK bool
+	// The airflow and power of the last load event (float32) and whether they were numbers.
+	evAir, evPow float32
+	evLoadOK     bool
 }
 
 // New builds an engine; nothing runs until Run.
@@ -291,12 +308,12 @@ func New(cfg Config) *Engine {
 	for _, pc := range cfg.Ports {
 		e.ports = append(e.ports, portRuntime{
 			cfg:    pc,
-			state:  model.Initial(pc.Fan),
+			plant:  model.NewPlant(pc.Fan, pc.Port, cfg.Seed),
 			dutyCh: fmt.Sprintf("port%d.duty", pc.Port),
 			rpmCh:  fmt.Sprintf("port%d.rpm", pc.Port),
 		})
 		p := &e.ports[len(e.ports)-1]
-		p.evRPM, p.evState = float32(p.state.RPM), stateName(p.state.Running)
+		p.evRPM, p.evState = float32(p.plant.Shaft()), stateName(p.plant.Running())
 	}
 	e.publish()
 	return e
@@ -331,10 +348,16 @@ func (e *Engine) build() *Snapshot {
 	for i := range e.ports {
 		p := &e.ports[i]
 		state := "stopped"
-		if p.state.Running {
+		if p.plant.Running() {
 			state = "running"
 		}
-		s.Ports[i] = PortState{Port: p.cfg.Port, Fan: p.cfg.FanID, Duty: p.duty, RPM: p.state.RPM, State: state}
+		s.Ports[i] = PortState{Port: p.cfg.Port, Fan: p.cfg.FanID, Duty: p.duty, RPM: p.plant.Shaft(), State: state}
+		if v, ok := p.plant.Reading(); ok {
+			s.Ports[i].TachRPM = &v
+		}
+		if a, w, ok := p.plant.Outputs(); ok {
+			s.Ports[i].AirflowM3h, s.Ports[i].PowerW = &a, &w
+		}
 	}
 	for id, v := range e.buttons {
 		s.Buttons[id] = v
@@ -366,10 +389,56 @@ func (e *Engine) emit(ev events.Event) {
 
 // emitState emits a state event when port p's running state differs from the last state event.
 func (e *Engine) emitState(p *portRuntime) {
-	if st := stateName(p.state.Running); st != p.evState {
+	if st := stateName(p.plant.Running()); st != p.evState {
 		p.evState = st
 		e.emit(events.Event{K: "state", Port: p.cfg.Port, V: st})
 	}
+}
+
+// emitTach emits a tach event when port p's tach reading (the last completed 1 s gate of its plant)
+// differs from the last tach event in float32 or in presence; force emits regardless, for a new
+// plant (engine start, fan swap), so a stream sees the null of the new plant's first second. The
+// reading changes only at gate ends, so the events are at most one per sim second per port, for an
+// ideal-tach fan (the 1 s shaft mean) as for a tach fan. A missing reading goes out as a nil
+// *float64 inside V, which encodes as "v":null.
+func (e *Engine) emitTach(p *portRuntime, force bool) {
+	rpm, ok := p.plant.Reading()
+	v := float32(rpm)
+	if !ok {
+		v = 0
+	}
+	if !force && ok == p.evTachOK && v == p.evTach {
+		return
+	}
+	p.evTach, p.evTachOK = v, ok
+	var val *float64
+	if ok {
+		f := float64(v)
+		val = &f
+	}
+	e.emit(events.Event{K: "tach", Port: p.cfg.Port, V: val})
+}
+
+// emitLoad emits a load event when port p's airflow or power (the fan laws on the shaft rpm, null
+// without a datasheet) differs from the last load event in float32 or in null-ness; force emits
+// regardless, for a new plant (engine start, fan swap). Called from the once-per-second rpm sample,
+// so a load event follows the rpm event cadence; values go out rounded to float32 like rpm events.
+func (e *Engine) emitLoad(p *portRuntime, force bool) {
+	air, pow, ok := p.plant.Outputs()
+	a, w := float32(air), float32(pow)
+	if !ok {
+		a, w = 0, 0
+	}
+	if !force && ok == p.evLoadOK && a == p.evAir && w == p.evPow {
+		return
+	}
+	p.evAir, p.evPow, p.evLoadOK = a, w, ok
+	var l events.Load
+	if ok {
+		av, wv := float64(a), float64(w)
+		l.AirflowM3h, l.PowerW = &av, &wv
+	}
+	e.emit(events.Event{K: "load", Port: p.cfg.Port, V: l})
 }
 
 // emitRPM samples every port's rpm for an rpm event (once per RPMEventStep, only on a change).
@@ -380,10 +449,11 @@ func (e *Engine) emitRPM() {
 			continue
 		}
 		p.nextRPM = e.simNow + RPMEventStep
-		if v := float32(p.state.RPM); v != p.evRPM {
+		if v := float32(p.plant.Shaft()); v != p.evRPM {
 			p.evRPM = v
 			e.emit(events.Event{K: "rpm", Port: p.cfg.Port, V: float64(v)})
 		}
+		e.emitLoad(p, false)
 	}
 }
 
@@ -454,8 +524,11 @@ func (e *Engine) emitSample() {
 		p := &e.ports[i]
 		v[i].Port = p.cfg.Port
 		if e.connected {
-			duty, rpm := p.duty, p.state.RPM
+			duty, rpm := p.duty, p.plant.Shaft()
 			v[i].Duty, v[i].RPM = &duty, &rpm
+			if tach, ok := p.plant.Reading(); ok {
+				v[i].Tach = &tach
+			}
 		}
 	}
 	e.emit(events.Event{K: events.SampleKind, V: v, Gap: !e.sampled})
@@ -524,6 +597,8 @@ func (e *Engine) Run(ctx context.Context) error {
 		p := &e.ports[i]
 		p.evState = ""
 		e.emitState(p)
+		e.emitTach(p, true)
+		e.emitLoad(p, true)
 	}
 	e.publish()
 	ticker := clk.NewTicker(tick)
@@ -551,8 +626,9 @@ func (e *Engine) Run(ctx context.Context) error {
 			e.noteTick(now, clk.Now(), dt)
 			for i := range e.ports {
 				p := &e.ports[i]
-				p.state = model.Step(p.cfg.Fan, p.state, p.duty, dt)
+				p.plant.Step(p.duty, dt)
 				e.emitState(p)
+				e.emitTach(p, false)
 			}
 			e.emitRPM()
 			e.emitSample()
@@ -686,7 +762,7 @@ func (e *Engine) inSnapshot() []bus.Frame {
 	frames := make([]bus.Frame, 0, len(e.ports)+2+len(ButtonIDs))
 	for i := range e.ports {
 		p := &e.ports[i]
-		p.sent, p.sentOnce = float32(p.state.RPM), true
+		p.sent, p.sentOnce = float32(p.plant.Current()), true
 		frames = append(frames, bus.NewFrame("in").Str("ch", p.rpmCh).Num("v", float64(p.sent)).Int("t", e.micros()))
 	}
 	frames = append(frames, e.envFrame(0), e.envFrame(1))
@@ -790,9 +866,11 @@ func (e *Engine) handleApply(op applyOp) {
 		if pc, ok := op.change.Fans[p.cfg.Port]; ok {
 			pc.Port = p.cfg.Port
 			p.cfg = pc
-			p.state = model.Initial(pc.Fan)
+			p.plant = model.NewPlant(pc.Fan, pc.Port, e.cfg.Seed)
 			e.emit(events.Event{K: "fan", Port: pc.Port, V: pc.FanID})
 			e.emitState(p)
+			e.emitTach(p, true) // the new plant has no reading for its first second
+			e.emitLoad(p, true)
 		}
 	}
 	e.publish() // before the reply, so a status read after Apply returned already shows the change
@@ -1006,10 +1084,15 @@ func (e *Engine) handleFrame(f bus.Frame) {
 
 // sendRPM sends an in frame per port whose float32 rpm changed since the last
 // send, or for every port when force is set.
+//
+// The value is Plant.Frame, never the shaft: a fan with a tach sends pulse-quantised rates (whole
+// pulses per rpmFrameStep, 600 rpm each at ppr 2) that the firmware's 1 s time-weighted mean turns
+// into 30 rpm steps; an ideal-tach fan sends its shaft rpm as in v0.1.0. The shaft (Plant.Shaft)
+// feeds only status, events and samples.
 func (e *Engine) sendRPM(force bool) {
 	for i := range e.ports {
 		p := &e.ports[i]
-		v := float32(p.state.RPM)
+		v := float32(p.plant.Frame())
 		if !force && p.sentOnce && v == p.sent {
 			continue
 		}

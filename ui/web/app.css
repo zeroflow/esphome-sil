@@ -372,6 +372,28 @@ input.error {
   line-height: 1.2;
 }
 
+/* The second readout row of a panel: TACH RPM, AIRFLOW and POWER at 16 px. It is 28 px high (not the
+   44 px of the control row) so a panel (main row + loads row + a 128 px scope) fits two to a column
+   at 1280 x 720. */
+.row.loads {
+  min-height: 28px;
+  gap: 16px;
+}
+
+.readout .value.tach,
+.readout .value.flow,
+.readout .value.watt {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+/* tach keeps the 5ch slot of every readout; airflow ("123.4") and power ("12.34") get 6ch, so a
+   value change moves no neighbour. */
+.readout .value.flow,
+.readout .value.watt {
+  width: 6ch;
+}
+
 /* The scope screen: a screen-black well, filled by the plot. */
 .scope {
   position: relative;
@@ -448,8 +470,11 @@ input.error {
   line-height: 1.2;
 }
 
-/* Bottom strip: 128 px, groups 16 px apart. */
+/* Bottom strip: 128 px, groups 16 px apart. In a window shorter than the panels need, the strip stays
+   on top of the grid, so its buttons and fields remain reachable. */
 #strip {
+  position: relative;
+  z-index: 1;
   flex: none;
   box-sizing: border-box;
   display: flex;
@@ -600,5 +625,9 @@ button.usr[aria-pressed="true"] {
 
   .readout {
     flex: 1 1 auto;
+  }
+
+  .row.loads {
+    gap: 8px;
   }
 }

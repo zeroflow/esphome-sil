@@ -155,3 +155,41 @@ func TestCheckWebOptions(t *testing.T) {
 		}
 	})
 }
+
+// specSeed is the seed written to spec.json: --seed when given (0 included), else the fixed default (D-15).
+func TestSpecSeed(t *testing.T) {
+	if DefaultSeed != 24301 {
+		t.Fatalf("DefaultSeed = %d, want 24301 (0x5EED)", DefaultSeed)
+	}
+	if got := specSeed(UpOptions{}); got != DefaultSeed {
+		t.Errorf("specSeed without a seed = %d, want DefaultSeed %d", got, DefaultSeed)
+	}
+	for _, v := range []uint64{42, 0} {
+		v := v
+		if got := specSeed(UpOptions{Seed: &v}); got != v {
+			t.Errorf("specSeed with %d = %d", v, got)
+		}
+	}
+}
+
+// checkSeed accepts 0 .. 2^53-1 and refuses a larger seed with invalid_argument (exit 1) naming --seed
+// (T-04-10).
+func TestCheckSeed(t *testing.T) {
+	u := func(v uint64) *uint64 { return &v }
+	for name, seed := range map[string]*uint64{"nil": nil, "zero": u(0), "max": u(9007199254740991)} {
+		if err := checkSeed(UpOptions{Seed: seed}); err != nil {
+			t.Errorf("%s: checkSeed = %v, want nil", name, err)
+		}
+	}
+	for name, v := range map[string]uint64{"2^53": 9007199254740992, "max uint64": ^uint64(0)} {
+		err := checkSeed(UpOptions{Seed: u(v)})
+		var ae *apperr.Error
+		if !errors.As(err, &ae) {
+			t.Errorf("%s: checkSeed = %v, want an apperr", name, err)
+			continue
+		}
+		if ae.Code != "invalid_argument" || ae.Exit != apperr.ExitFailed || !strings.Contains(ae.Message, "--seed") {
+			t.Errorf("%s: %+v, want invalid_argument, exit 1, a message naming --seed", name, ae)
+		}
+	}
+}

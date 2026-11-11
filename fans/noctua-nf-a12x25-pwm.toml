@@ -1,23 +1,60 @@
-# Noctua NF-A12x25 PWM, 120 mm case fan (second shipped fan: a "hold" fan that never stops, MODEL-03).
+# Noctua NF-A12x25 PWM, 120 mm case fan (second shipped fan: a fan that never stops, MODEL-03, D-10).
+#
+# Schema 2 (Phase 4). Every number carries a provenance entry in [provenance] that says where it comes
+# from. Values are ASSUMED unless their provenance says otherwise; this fan stays assumed until v0.3.
+# The v0.1.0 flat file lives on, byte for byte, as testdata/fans-v0.1.0/noctua-nf-a12x25-pwm.toml.
+schema = 2
 name = "Noctua NF-A12x25 PWM"
 
-# Provenance of every number below.
-#   max_rpm 2000 (+/- 10 %) and min_rpm 450 (+/- 20 %) at 20 % PWM:
-#     Noctua specification https://noctua.at/en/nf-a12x25-pwm/specification
-#     as quoted by retail listings; the page itself was not fetched when this file was written.
-#   min_duty 0.20: the 20 % PWM point of the minimum-speed figure above; ASSUMED to be the duty
-#     below which the fan stops following the PWM signal.
-#   below_min "hold": ASSUMED from Noctua's habit of keeping their PWM fans spinning at minimum speed
-#     at low PWM instead of stopping; not stated in the specification quoted above.
-#   start_duty 0.20, tau_up 1.0 s and tau_down 2.5 s are ASSUMED, not measured:
-#     the datasheet lists no value for them. They only shape the transient.
-#   Everything marked ASSUMED is for the maintainer to confirm or to replace by measurement.
-source = "https://noctua.at/en/nf-a12x25-pwm/specification (2000 rpm max, 450 rpm at 20 % PWM, as quoted by retail listings, not fetched); min_duty, start_duty, below_min, tau_up and tau_down are ASSUMED, not measured"
+[sources]
+# An official vendor datasheet PDF counts as `datasheet` wherever it is hosted (D-04 amendment, case b).
+noctua_datasheet = "https://123-3D.nl/pdf/DMO00072_info.pdf (official Noctua datasheet PDF, NOCTUA NF-A12x25 PWM Datasheet EN, retailer-hosted copy)"
+noctua_page = "https://noctua.at/en/nf-a12x25-pwm/specification (not fetched: HTTP 429; reference only)"
 
-min_duty   = 0.20    # ASSUMED: duty below which the fan holds min_rpm instead of following the PWM
-start_duty = 0.20    # ASSUMED (no datasheet value): duty at which a stopped fan starts to spin
-below_min  = "hold"  # ASSUMED: keeps spinning at min_rpm below min_duty, never stops
-min_rpm    = 450.0
-max_rpm    = 2000.0
-tau_up     = 1.0     # ASSUMED (no datasheet value): spin-up time constant in seconds
-tau_down   = 2.5     # ASSUMED (no datasheet value): coast-down time constant in seconds
+[stop]
+duty = 0.0             # never stops (D-10): the floor rpm is the first curve point at duty 0
+
+[start]
+duty = 0.20            # assumed
+delay_s = 0.0          # assumed: a never-stops fan runs from power-up, so neither start value takes effect
+
+[dynamics]
+tau_up_s = 1.0         # assumed
+tau_down_s = 2.5       # assumed
+coast_tau_s = 6.0      # assumed
+
+# The 450 rpm floor is from a search summary, not from the datasheet PDF, so it stays assumed; the 2000 rpm
+# maximum is on the datasheet. The interior points are assumed.
+[curve.up]
+duty = [0.0, 0.20, 0.40, 0.60, 0.80, 1.00]
+rpm = [450, 450, 860, 1260, 1640, 2000]
+
+[curve.down]
+duty = [0.0, 0.20, 0.40, 0.60, 0.80, 1.00]
+rpm = [450, 450, 820, 1220, 1600, 2000]
+
+[tach]
+ppr = 2                # assumed
+# The standard deviation of the noise in a 1 s reading: two thirds of the 30 rpm step, so the
+# firmware-visible trace jitters (D-03 amendment).
+noise_rpm = 20.0       # assumed
+
+[datasheet]
+airflow_m3h = 102.1
+power_w = 1.68         # the datasheet's maximum input power, at ref_rpm
+ref_rpm = 2000
+
+[provenance]
+"stop.duty" = "assumed"
+"start.duty" = "assumed"
+"start.delay_s" = "assumed"
+"dynamics.tau_up_s" = "assumed"
+"dynamics.tau_down_s" = "assumed"
+"dynamics.coast_tau_s" = "assumed"
+"curve.up" = "assumed:noctua_datasheet"
+"curve.down" = "assumed"
+"tach.ppr" = "assumed"
+"tach.noise_rpm" = "assumed"
+"datasheet.airflow_m3h" = "datasheet:noctua_datasheet"
+"datasheet.power_w" = "datasheet:noctua_datasheet"
+"datasheet.ref_rpm" = "datasheet:noctua_datasheet"

@@ -14,6 +14,7 @@ import (
 
 	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/events"
+	"github.com/zeroflow/esphome-sil/internal/model"
 )
 
 // fakeControl records the restart requests the handler forwards.
@@ -196,7 +197,7 @@ func TestFansRoute(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("GET /api/v1/fans = %d: %s", rec.Code, rec.Body)
 	}
-	if got, w := strings.TrimSpace(rec.Body.String()), `{"fans":[{"id":"a","name":"A","min_rpm":1,"max_rpm":2,"below_min":"stop"}]}`; got != w {
+	if got, w := strings.TrimSpace(rec.Body.String()), `{"fans":[{"id":"a","name":"A","min_rpm":1,"max_rpm":2,"below_min":"stop","schema":0,"provenance":null,"values":null,"sources":null}]}`; got != w {
 		t.Fatalf("body %s, want %s", got, w)
 	}
 	if rec := post(h, "/api/v1/fans", ""); rec.Code != http.StatusMethodNotAllowed {
@@ -847,4 +848,85 @@ func TestClientSetButtonBody(t *testing.T) {
 	if len(fc.downReqs) != 3 || fc.downReqs[0].MaxHoldMS != nil || fc.downReqs[1].MaxHoldMS == nil || *fc.downReqs[1].MaxHoldMS != 1500 || fc.downReqs[2].MaxHoldMS != nil {
 		t.Fatalf("server saw %+v, want no max hold, 1500, none", fc.downReqs)
 	}
+}
+
+// fanInfoKeys are the JSON keys of a FanInfo (MODEL-12): the five of v0.1.0 and the four additions.
+var fanInfoKeys = []string{"id", "name", "min_rpm", "max_rpm", "below_min", "schema", "provenance", "values", "sources"}
+
+func fanInfoObject(t *testing.T, fi FanInfo) map[string]json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(fi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != len(fanInfoKeys) {
+		t.Errorf("FanInfo JSON %s, want exactly the keys %v", b, fanInfoKeys)
+	}
+	for _, k := range fanInfoKeys {
+		if _, ok := m[k]; !ok {
+			t.Errorf("FanInfo JSON %s has no key %q", b, k)
+		}
+	}
+	return m
+}
+
+func TestNewFanInfo(t *testing.T) {
+	t.Run("schema 1 records no provenance and says so with null", func(t *testing.T) {
+		fi := NewFanInfo("old", model.Params{Name: "Old", MinRPM: 200, MaxRPM: 1800, BelowMin: "stop"})
+		if fi.Schema != 1 {
+			t.Errorf("Schema = %d, want 1 (0 counts as 1)", fi.Schema)
+		}
+		m := fanInfoObject(t, fi)
+		for _, k := range []string{"provenance", "values", "sources"} {
+			if string(m[k]) != "null" {
+				t.Errorf("%s = %s, want null", k, m[k])
+			}
+		}
+		if string(m["schema"]) != "1" || string(m["id"]) != `"old"` {
+			t.Errorf("schema %s id %s", m["schema"], m["id"])
+		}
+	})
+
+	t.Run("schema 2 counts per kind and fills the value map", func(t *testing.T) {
+		p := model.Params{
+			Name: "New", MinRPM: 300, MaxRPM: 1700, BelowMin: "stop", Schema: 2,
+			Provenance: []model.ProvEntry{
+				{Path: "stop.duty", Kind: model.KindDatasheet, Source: "page"},
+				{Path: "start.duty", Kind: model.KindMeasured},
+				{Path: "curve.up", Kind: model.KindAssumed},
+			},
+			Sources: map[string]string{"page": "vendor page"},
+		}
+		fi := NewFanInfo("new", p)
+		if fi.Provenance == nil || *fi.Provenance != (ProvenanceCounts{Measured: 1, Datasheet: 1, Assumed: 1}) {
+			t.Fatalf("Provenance = %+v, want measured 1 datasheet 1 assumed 1 unobservable 0", fi.Provenance)
+		}
+		if got := fi.Values["stop.duty"]; got.Kind != "datasheet" || got.Source == nil || *got.Source != "page" {
+			t.Errorf("stop.duty = %+v, want datasheet:page", got)
+		}
+		if got := fi.Values["start.duty"]; got.Kind != "measured" || got.Source != nil {
+			t.Errorf("start.duty = %+v, want measured without a source", got)
+		}
+		if len(fi.Values) != 3 || fi.Sources["page"] != "vendor page" || len(fi.Sources) != 1 {
+			t.Errorf("Values %v Sources %v", fi.Values, fi.Sources)
+		}
+		m := fanInfoObject(t, fi)
+		if string(m["provenance"]) != `{"measured":1,"datasheet":1,"assumed":1,"unobservable":0}` {
+			t.Errorf("provenance JSON %s", m["provenance"])
+		}
+		if want := `{"kind":"measured","source":null}`; !strings.Contains(string(m["values"]), want) {
+			t.Errorf("values JSON %s lacks %s", m["values"], want)
+		}
+	})
+
+	t.Run("schema 2 without sources shows an empty object", func(t *testing.T) {
+		fi := NewFanInfo("new", model.Params{Schema: 2, Provenance: []model.ProvEntry{{Path: "stop.duty", Kind: model.KindAssumed}}})
+		if m := fanInfoObject(t, fi); string(m["sources"]) != "{}" {
+			t.Errorf("sources = %s, want {}", m["sources"])
+		}
+	})
 }

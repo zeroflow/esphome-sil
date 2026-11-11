@@ -1,18 +1,22 @@
 // Package fanlib loads fan parameter files from the fan library.
 //
-// A fan file is a flat TOML document with nine required keys. Loading is
-// strict (D-14): an unknown key, a missing key or an out-of-range value stops
-// the load with an Error naming the key and its location; nothing is ever
-// defaulted or corrected silently.
+// There are two file formats, both strict. Schema 1 (no schema key, or
+// schema = 1; see v1.go) is a flat TOML document with nine required keys, the
+// v0.1.0 format. Schema 2 (schema = 2, see v2.go, which lists its keys and its
+// rule order) has tables for the stop and start thresholds, the dynamics, the
+// duty to rpm curves, the optional tach, datasheet and measured tables, and a
+// per-value provenance table. A schema above 2 is refused as needing a newer
+// sil. Loading is strict (D-14): an unknown key, a missing key or an
+// out-of-range value stops the load with an Error naming the key and its
+// location; nothing is ever defaulted or corrected silently. A file is read
+// once per load and the result depends only on its bytes.
 package fanlib
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -64,19 +68,6 @@ func (e *Error) Error() string {
 		}
 	}
 	return loc + ": " + e.Msg
-}
-
-// rawFan mirrors the file with pointer fields so a missing key is detectable.
-type rawFan struct {
-	Name      *string  `toml:"name"`
-	Source    *string  `toml:"source"`
-	MinDuty   *float64 `toml:"min_duty"`
-	StartDuty *float64 `toml:"start_duty"`
-	BelowMin  *string  `toml:"below_min"`
-	MinRPM    *float64 `toml:"min_rpm"`
-	MaxRPM    *float64 `toml:"max_rpm"`
-	TauUp     *float64 `toml:"tau_up"`
-	TauDown   *float64 `toml:"tau_down"`
 }
 
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -137,13 +128,53 @@ func loadFrom(fsys fs.FS, id, file string) (model.Params, error) {
 		return model.Params{}, &Error{File: file, Msg: "file is larger than 64 KiB"}
 	}
 
-	var raw rawFan
-	dec := toml.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&raw); err != nil {
+	// The schema probe is lenient on purpose: it tolerates every other key, so
+	// the format decides which decoder (and which strictness) applies.
+	var probe struct {
+		Schema *int `toml:"schema"`
+	}
+	if err := toml.Unmarshal(data, &probe); err != nil {
 		return model.Params{}, decodeError(file, err)
 	}
-	return validate(file, data, raw)
+	if probe.Schema == nil {
+		// No schema key means schema 1 (v0.1.0). A schema 2 body without `schema = 2` fails the
+		// strict v1 decode, so say what is missing.
+		p, err := loadV1(file, data)
+		return p, hintSchema2(err)
+	}
+	if *probe.Schema == 1 {
+		return loadV1(file, data)
+	}
+	switch n := *probe.Schema; {
+	case n == 2:
+		return loadV2(file, data)
+	case n > 2:
+		return model.Params{}, &Error{File: file, Line: locate(data, "", "schema"), Key: "schema",
+			Msg: fmt.Sprintf("schema %d needs a newer sil (this sil reads schema 1 and 2)", n)}
+	default:
+		return model.Params{}, &Error{File: file, Line: locate(data, "", "schema"), Key: "schema",
+			Msg: "schema must be 1 or 2"}
+	}
+}
+
+// schema2Tables are the top-level keys that exist only in a schema 2 file.
+var schema2Tables = map[string]bool{
+	"sources": true, "stop": true, "start": true, "dynamics": true, "curve": true,
+	"tach": true, "datasheet": true, "measured": true, "provenance": true,
+}
+
+// hintSchema2 appends a hint to the "unknown field" error of a file without a schema key when the
+// field is a schema 2 table: the likely cause is a schema 2 file that forgot `schema = 2`. Any other
+// error is returned unchanged.
+func hintSchema2(err error) error {
+	var fe *Error
+	if !errors.As(err, &fe) || !strings.HasPrefix(fe.Msg, "unknown field ") {
+		return err
+	}
+	if first, _, _ := strings.Cut(fe.Key, "."); schema2Tables[first] {
+		fe.Msg += " (a schema 2 file needs schema = 2 at the top)"
+	}
+	return err
 }
 
 // decodeError turns a go-toml error into a located *Error.
@@ -162,91 +193,4 @@ func decodeError(file string, err error) error {
 			Msg: strings.TrimPrefix(de.Error(), "toml: ")}
 	}
 	return &Error{File: file, Msg: err.Error()}
-}
-
-// validate applies the semantic rules in a fixed order; the first violation
-// is reported at the line of the offending key.
-func validate(file string, data []byte, r rawFan) (model.Params, error) {
-	fail := func(key, format string, args ...any) error {
-		return &Error{File: file, Line: keyLine(data, key), Key: key, Msg: fmt.Sprintf(format, args...)}
-	}
-
-	// All nine keys present.
-	type present struct {
-		key string
-		ok  bool
-	}
-	for _, p := range []present{
-		{"name", r.Name != nil}, {"source", r.Source != nil},
-		{"min_duty", r.MinDuty != nil}, {"start_duty", r.StartDuty != nil},
-		{"below_min", r.BelowMin != nil},
-		{"min_rpm", r.MinRPM != nil}, {"max_rpm", r.MaxRPM != nil},
-		{"tau_up", r.TauUp != nil}, {"tau_down", r.TauDown != nil},
-	} {
-		if !p.ok {
-			return model.Params{}, &Error{File: file, Key: p.key, Msg: "missing required key " + p.key}
-		}
-	}
-	if strings.TrimSpace(*r.Name) == "" {
-		return model.Params{}, fail("name", "name must not be empty")
-	}
-	if strings.TrimSpace(*r.Source) == "" {
-		return model.Params{}, fail("source", "source must not be empty")
-	}
-	if *r.BelowMin != "stop" && *r.BelowMin != "hold" {
-		return model.Params{}, fail("below_min", "below_min must be \"stop\" or \"hold\" (got %q)", *r.BelowMin)
-	}
-
-	minDuty, startDuty := *r.MinDuty, *r.StartDuty
-	minRPM, maxRPM := *r.MinRPM, *r.MaxRPM
-	tauUp, tauDown := *r.TauUp, *r.TauDown
-
-	for _, n := range []struct {
-		key string
-		v   float64
-	}{
-		{"min_duty", minDuty}, {"start_duty", startDuty},
-		{"min_rpm", minRPM}, {"max_rpm", maxRPM},
-		{"tau_up", tauUp}, {"tau_down", tauDown},
-	} {
-		if math.IsNaN(n.v) || math.IsInf(n.v, 0) {
-			return model.Params{}, fail(n.key, "%s (%g) must be finite", n.key, n.v)
-		}
-	}
-	switch {
-	case !(minDuty >= 0 && minDuty < 1):
-		return model.Params{}, fail("min_duty", "min_duty (%g) must be in [0, 1)", minDuty)
-	case !(startDuty >= 0 && startDuty <= 1):
-		return model.Params{}, fail("start_duty", "start_duty (%g) must be in [0, 1]", startDuty)
-	case startDuty < minDuty:
-		return model.Params{}, fail("start_duty", "start_duty (%g) must be >= min_duty (%g)", startDuty, minDuty)
-	case minRPM < 0:
-		return model.Params{}, fail("min_rpm", "min_rpm (%g) must be >= 0", minRPM)
-	case minRPM > maxRPM:
-		return model.Params{}, fail("min_rpm", "min_rpm (%g) must be <= max_rpm (%g)", minRPM, maxRPM)
-	case !(maxRPM > 0):
-		return model.Params{}, fail("max_rpm", "max_rpm (%g) must be > 0", maxRPM)
-	case !(tauUp > 0):
-		return model.Params{}, fail("tau_up", "tau_up must be > 0 (got %g)", tauUp)
-	case !(tauDown > 0):
-		return model.Params{}, fail("tau_down", "tau_down must be > 0 (got %g)", tauDown)
-	}
-
-	return model.Params{
-		Name: *r.Name, Source: *r.Source,
-		MinDuty: minDuty, StartDuty: startDuty, BelowMin: *r.BelowMin,
-		MinRPM: minRPM, MaxRPM: maxRPM, TauUp: tauUp, TauDown: tauDown,
-	}, nil
-}
-
-// keyLine returns the 1-based line of the first `key =` assignment in data,
-// or 0 when there is none.
-func keyLine(data []byte, key string) int {
-	re := regexp.MustCompile(`^\s*` + regexp.QuoteMeta(key) + `\s*=`)
-	for i, line := range strings.Split(string(data), "\n") {
-		if re.MatchString(line) {
-			return i + 1
-		}
-	}
-	return 0
 }

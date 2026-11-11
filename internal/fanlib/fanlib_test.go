@@ -3,12 +3,16 @@ package fanlib
 import (
 	"errors"
 	"io/fs"
+	"maps"
+	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/zeroflow/esphome-sil/internal/model"
 )
@@ -64,9 +68,9 @@ func TestLoadValidFile(t *testing.T) {
 	want := model.Params{
 		Name: "Test fan", Source: "unit test fixture",
 		MinDuty: 0.05, StartDuty: 0.10, BelowMin: "stop",
-		MinRPM: 200, MaxRPM: 1800, TauUp: 1.0, TauDown: 2.5,
+		MinRPM: 200, MaxRPM: 1800, TauUp: 1.0, TauDown: 2.5, Schema: 1,
 	}
-	if p != want {
+	if !reflect.DeepEqual(p, want) {
 		t.Errorf("params = %+v, want %+v", p, want)
 	}
 	// Integers where floats are expected are fine.
@@ -228,8 +232,13 @@ func TestEmbeddedLibraryLoadsCleanly(t *testing.T) {
 		if i > 0 && ids[i-1] >= id {
 			t.Errorf("IDs not sorted: %v", ids)
 		}
-		if _, err := Load(id); err != nil {
+		p, err := Load(id)
+		if err != nil {
 			t.Errorf("Load(%q): %v", id, err)
+			continue
+		}
+		if p.Schema != 2 {
+			t.Errorf("%s Schema = %d, want 2 (D-01: the shipped library is schema 2)", id, p.Schema)
 		}
 	}
 	if !found {
@@ -237,35 +246,173 @@ func TestEmbeddedLibraryLoadsCleanly(t *testing.T) {
 	}
 }
 
-func TestShippedArcticFan(t *testing.T) {
+// shipped loads one embedded fan.
+func shipped(t *testing.T, id string) model.Params {
+	t.Helper()
 	t.Setenv("SIL_FAN_DIR", "")
-	p, err := Load(DefaultFan)
+	p, err := Load(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.MinDuty != 0.05 || p.StartDuty != 0.10 || p.BelowMin != "stop" ||
-		p.MinRPM != 200 || p.MaxRPM != 1800 || p.TauUp != 1.0 || p.TauDown != 2.5 {
+	return p
+}
+
+func TestShippedArcticFan(t *testing.T) {
+	p := shipped(t, DefaultFan)
+	if p.Schema != 2 || p.BelowMin != "stop" || p.MinDuty != 0.05 || p.StartDuty != 0.10 ||
+		p.MinRPM != 200 || p.MaxRPM != 1800 {
 		t.Errorf("arctic params changed: %+v", p)
 	}
-	for _, want := range []string{"arctic.de", "ASSUMED", "start_duty", "tau_up", "tau_down", "TechPowerUp"} {
-		if !strings.Contains(p.Source, want) {
-			t.Errorf("source %q does not mention %q", p.Source, want)
+	up, down := p.Curve.Up, p.Curve.Down
+	if len(up) < 2 || up[0] != (model.Point{Duty: 0.05, RPM: 200}) || up[len(up)-1] != (model.Point{Duty: 1.0, RPM: 1800}) {
+		t.Errorf("curve.up = %v, want it to run from (0.05, 200) to (1.0, 1800) (the page-confirmed end points)", up)
+	}
+	if len(down) != len(up) {
+		t.Fatalf("curve.down has %d points, curve.up %d", len(down), len(up))
+	}
+	for i := 1; i < len(up)-1; i++ {
+		if down[i].Duty != up[i].Duty || !(down[i].RPM < up[i].RPM) {
+			t.Errorf("interior point %d: down %v is not strictly below up %v at the same duty", i, down[i], up[i])
 		}
 	}
-	// D-10: the assumed constants are labelled on their own lines.
-	raw, err := fs.ReadFile(Source(), DefaultFan+".toml")
-	if err != nil {
-		t.Fatal(err)
+	if p.StartDelay != 400*time.Millisecond || p.CoastTau != 6 {
+		t.Errorf("start delay %v coast tau %v, want 400ms and 6", p.StartDelay, p.CoastTau)
 	}
-	for _, key := range []string{"start_duty", "tau_up", "tau_down"} {
-		labelled := false
-		for _, l := range strings.Split(string(raw), "\n") {
-			if strings.HasPrefix(strings.TrimSpace(l), key) && strings.Contains(l, "=") && strings.Contains(l, "ASSUMED") {
-				labelled = true
+	if p.Tach != (model.TachParams{PPR: 2, NoiseRPM: 20}) {
+		t.Errorf("tach = %+v, want {2, 20}", p.Tach)
+	}
+	if p.Datasheet == nil || *p.Datasheet != (model.Datasheet{AirflowM3h: 95.7, PowerW: 1.2, RefRPM: 1800}) {
+		t.Errorf("datasheet = %+v, want {95.7, 1.2, 1800}", p.Datasheet)
+	}
+}
+
+func TestShippedNoctuaFan(t *testing.T) {
+	p := shipped(t, "noctua-nf-a12x25-pwm")
+	if p.Schema != 2 || p.BelowMin != "hold" || p.MinDuty != 0 || p.MaxRPM != 2000 || p.MinRPM != 450 {
+		t.Errorf("noctua params changed: %+v", p)
+	}
+	if len(p.Curve.Up) < 2 || p.Curve.Up[0] != (model.Point{Duty: 0, RPM: 450}) {
+		t.Errorf("curve.up = %v, want the first point (0, 450) (D-10 never-stops form)", p.Curve.Up)
+	}
+	if p.Tach != (model.TachParams{PPR: 2, NoiseRPM: 20}) {
+		t.Errorf("tach = %+v, want {2, 20}", p.Tach)
+	}
+	if p.Datasheet == nil || *p.Datasheet != (model.Datasheet{AirflowM3h: 102.1, PowerW: 1.68, RefRPM: 2000}) {
+		t.Errorf("datasheet = %+v, want {102.1, 1.68, 2000}", p.Datasheet)
+	}
+}
+
+// TestShippedProvenanceMatchesEvidence pins the exact path to kind[:source] map of both shipped files, so a
+// provenance upgrade without evidence fails here (T-04-17, MODEL-12). A value is `datasheet` only when a
+// fetched vendor page states it, when it is derived arithmetically from such page figures with the derivation
+// recorded in the file, or when an official vendor datasheet PDF states it with its URL in [sources] (D-04 as
+// amended). Nothing in the shipped library is `measured` before Phase 8.
+func TestShippedProvenanceMatchesEvidence(t *testing.T) {
+	assumed := map[string]string{
+		"start.duty": "assumed", "start.delay_s": "assumed",
+		"dynamics.tau_up_s": "assumed", "dynamics.tau_down_s": "assumed", "dynamics.coast_tau_s": "assumed",
+		"curve.down": "assumed", "tach.ppr": "assumed", "tach.noise_rpm": "assumed",
+	}
+	want := map[string]map[string]string{
+		"arctic-p12-pwm-pst": {
+			"stop.duty":             "datasheet:arctic_page",
+			"curve.up":              "assumed:arctic_page",
+			"datasheet.airflow_m3h": "datasheet:arctic_page",
+			"datasheet.power_w":     "datasheet:arctic_page",
+			"datasheet.ref_rpm":     "datasheet:arctic_page",
+		},
+		"noctua-nf-a12x25-pwm": {
+			"stop.duty":             "assumed",
+			"curve.up":              "assumed:noctua_datasheet",
+			"datasheet.airflow_m3h": "datasheet:noctua_datasheet",
+			"datasheet.power_w":     "datasheet:noctua_datasheet",
+			"datasheet.ref_rpm":     "datasheet:noctua_datasheet",
+		},
+	}
+	for id, w := range want {
+		maps.Copy(w, assumed)
+		p := shipped(t, id)
+		got := map[string]string{}
+		for _, e := range p.Provenance {
+			v := e.Kind
+			if e.Source != "" {
+				v += ":" + e.Source
+			}
+			got[e.Path] = v
+		}
+		if !reflect.DeepEqual(got, w) {
+			t.Errorf("%s provenance = %v, want %v", id, got, w)
+		}
+		if len(p.Sources) == 0 {
+			t.Errorf("%s has no [sources]", id)
+		}
+		for sid, text := range p.Sources {
+			if !strings.HasPrefix(text, "https://") {
+				t.Errorf("%s source %s = %q, want it to start with https://", id, sid, text)
 			}
 		}
-		if !labelled {
-			t.Errorf("the %s line does not carry an ASSUMED comment", key)
+		for _, e := range p.Provenance {
+			if e.Source != "" {
+				if _, ok := p.Sources[e.Source]; !ok {
+					t.Errorf("%s: %s cites %q, which [sources] does not define", id, e.Path, e.Source)
+				}
+			}
+		}
+	}
+}
+
+// TestShippedFansShowNoise is the deterministic check of D-03's intent: the default sim visibly jitters. Each
+// shipped fan is held at duty 0.6 under the default seed; 60 consecutive 1 s gate readings must take at least 3
+// distinct values and spread by more than 15 rpm (population standard deviation), the most a noise-free tach can
+// reach, toggling between two levels 30 rpm apart. With noise_rpm 0 the same fan gives at most 2 values.
+func TestShippedFansShowNoise(t *testing.T) {
+	// 0x5EED is lifecycle.DefaultSeed (fanlib cannot import lifecycle).
+	const seed = 0x5EED
+	readings := func(p model.Params) []float64 {
+		pl := model.NewPlant(p, 1, seed)
+		var out []float64
+		for i := 1; i <= 7000; i++ { // 70 s in 10 ms steps
+			pl.Step(0.6, 10*time.Millisecond)
+			if i%100 == 0 && i > 1000 {
+				r, ok := pl.Reading()
+				if !ok {
+					t.Fatalf("no gate reading at %d s", i/100)
+				}
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	distinct := func(v []float64) int {
+		m := map[float64]bool{}
+		for _, x := range v {
+			m[x] = true
+		}
+		return len(m)
+	}
+	for _, id := range []string{"arctic-p12-pwm-pst", "noctua-nf-a12x25-pwm"} {
+		p := shipped(t, id)
+		v := readings(p)
+		if len(v) != 60 {
+			t.Fatalf("%s: %d readings, want 60", id, len(v))
+		}
+		mean := 0.0
+		for _, x := range v {
+			mean += x
+		}
+		mean /= float64(len(v))
+		ss := 0.0
+		for _, x := range v {
+			ss += (x - mean) * (x - mean)
+		}
+		sd := math.Sqrt(ss / float64(len(v)))
+		if n := distinct(v); n < 3 || sd <= 15 {
+			t.Errorf("%s: %d distinct readings, sd %.1f rpm, want at least 3 and above 15 (noise_rpm %g)", id, n, sd, p.Tach.NoiseRPM)
+		}
+		quiet := p
+		quiet.Tach.NoiseRPM = 0
+		if n := distinct(readings(quiet)); n > 2 {
+			t.Errorf("%s with noise_rpm 0: %d distinct readings, want at most 2", id, n)
 		}
 	}
 }

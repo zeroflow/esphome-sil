@@ -58,11 +58,17 @@
       <span class="readout"><span class="value rpm" data-src="ports.{i}.rpm" data-fmt="rpm">--</span><span class="unit">RPM</span></span>
       <span class="readout"><span class="value duty" data-src="ports.{i}.duty" data-fmt="pct">--</span><span class="unit">% DUTY</span></span>
     </div>
+    <div class="row loads">
+      <span class="readout"><span class="value tach" data-src="ports.{i}.tach_rpm" data-fmt="tach">—</span><span class="unit">TACH RPM</span></span>
+      <span class="readout"><span class="value flow" data-src="ports.{i}.airflow_m3h" data-fmt="flow">—</span><span class="unit">M³/H</span></span>
+      <span class="readout"><span class="value watt" data-src="ports.{i}.power_w" data-fmt="watt">—</span><span class="unit">W</span></span>
+    </div>
     <div class="scope">
       <div class="plot"></div>
       <div class="legend" data-ui-only>
         <span class="key"><svg class="swatch" width="24" height="8" viewBox="0 0 24 8" aria-hidden="true"><line x1="0" y1="4" x2="24" y2="4" stroke="currentColor" stroke-width="2"/></svg>RPM</span>
         <span class="key"><svg class="swatch" width="24" height="8" viewBox="0 0 24 8" aria-hidden="true"><line x1="0" y1="4" x2="24" y2="4" stroke="currentColor" stroke-width="1" stroke-dasharray="4 4"/></svg>DUTY</span>
+        <span class="key"><svg class="swatch" width="24" height="8" viewBox="0 0 24 8" aria-hidden="true"><line x1="0" y1="4" x2="24" y2="4" stroke="currentColor" stroke-width="1" opacity="0.5"/></svg>TACH</span>
       </div>
       <span class="timebase" data-ui-only>6 s/div</span>
       <div class="empty" data-ui-only>

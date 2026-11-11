@@ -1,0 +1,23 @@
+# Noctua NF-A12x25 PWM, 120 mm case fan (second shipped fan: a "hold" fan that never stops, MODEL-03).
+name = "Noctua NF-A12x25 PWM"
+
+# Provenance of every number below.
+#   max_rpm 2000 (+/- 10 %) and min_rpm 450 (+/- 20 %) at 20 % PWM:
+#     Noctua specification https://noctua.at/en/nf-a12x25-pwm/specification
+#     as quoted by retail listings; the page itself was not fetched when this file was written.
+#   min_duty 0.20: the 20 % PWM point of the minimum-speed figure above; ASSUMED to be the duty
+#     below which the fan stops following the PWM signal.
+#   below_min "hold": ASSUMED from Noctua's habit of keeping their PWM fans spinning at minimum speed
+#     at low PWM instead of stopping; not stated in the specification quoted above.
+#   start_duty 0.20, tau_up 1.0 s and tau_down 2.5 s are ASSUMED, not measured:
+#     the datasheet lists no value for them. They only shape the transient.
+#   Everything marked ASSUMED is for the maintainer to confirm or to replace by measurement.
+source = "https://noctua.at/en/nf-a12x25-pwm/specification (2000 rpm max, 450 rpm at 20 % PWM, as quoted by retail listings, not fetched); min_duty, start_duty, below_min, tau_up and tau_down are ASSUMED, not measured"
+
+min_duty   = 0.20    # ASSUMED: duty below which the fan holds min_rpm instead of following the PWM
+start_duty = 0.20    # ASSUMED (no datasheet value): duty at which a stopped fan starts to spin
+below_min  = "hold"  # ASSUMED: keeps spinning at min_rpm below min_duty, never stops
+min_rpm    = 450.0
+max_rpm    = 2000.0
+tau_up     = 1.0     # ASSUMED (no datasheet value): spin-up time constant in seconds
+tau_down   = 2.5     # ASSUMED (no datasheet value): coast-down time constant in seconds

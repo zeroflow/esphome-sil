@@ -1,260 +1,251 @@
-# Stack Research
+# Technology Stack: milestone v0.2.0 "Real Fans" (additions only)
 
-**Domain:** Software-in-the-loop test bench for ESPHome firmware (ESPHome `host:` platform + custom `sim_*` external components + Go plant simulator with CLI/JSON API and embedded live web UI)
-**Researched:** 2026-11-08
-**Confidence:** HIGH overall (ESPHome-side and build/glibc claims were verified by building and running against the real pinned image; Go and browser versions were verified against the Go module proxy, go.dev and the npm registry on the research date)
+**Project:** esphome-sil
+**Researched:** 2026-11-10
+**Scope:** only what is NEW for the better fan model, runtime fault injection and `sil fan-analyze`. The validated v0.1.0 stack (Go 1.27.3, kong v1.17.0, coder/websocket v1.8.15, go-toml/v2 v2.4.3, uPlot 1.6.32 vendored, NDJSON sim-bus, ESPHome 2026.10.1 image, flynn/noise v1.1.0, go.yaml.in/yaml/v3 v3.0.6) is unchanged; see `.planning/milestones/v0.1.0-research/STACK.md`.
+**Overall confidence:** HIGH for the Go side and the ESPHome facts (read from the pinned image's source), MEDIUM for two on-hardware behaviours that need a spike (see "Spikes").
 
-## How this was verified
+## Verdict in one table
 
-Most ESPHome and build claims below are **measured, not recalled**. `ghcr.io/esphome/esphome:2026.10.1` was available locally, so its host-platform source was read and a prototype `sim_bus` component set (hub, float output, sensor, binary sensor, addressable light, plus built-in `fan: speed` and `light: partition` on top) was compiled and run against a throwaway Python peer and `aioesphomeapi`. Items tagged **[verified]** were observed in that run. Items tagged **[source]** were read from the 2026.10.1 source in the image. Go and browser library versions come from `proxy.golang.org`, `go.dev/dl` and `registry.npmjs.org` on 2026-11-08.
+| Question | Decision | New Go module? |
+|----------|----------|----------------|
+| Go ESPHome native API client | Hand-roll on top of the existing Noise code; extract a reusable `Conn` from `internal/apiclient/probe.go`; tiny internal protobuf wire helper; ~12 message types; golden vectors generated from the image's `aioesphomeapi` | **No** |
+| Protobuf runtime | None. No `google.golang.org/protobuf`, no codegen. (Acceptable fallback if the hand-rolled helper grows: `google.golang.org/protobuf/encoding/protowire` only, never generated code) | No |
+| Fitting / numerics | Hand-rolled `internal/fit` (stdlib `math`, `sort`, `slices`): isotonic regression, variable-projection + Nelder-Mead against the sim's own `internal/model`. No gonum | **No** |
+| report.html | Self-contained single file: server-rendered tables + **inlined vendored uPlot 1.6.32** (read from `ui.FS()`) + data as embedded JSON. No SVG renderer, no CDN | No |
+| Tach capture on ESP32-S2 | **Custom ESPHome component with a GPIO ISR that stores `esp_timer_get_time()` edge timestamps in a ring buffer**, pulled in chunks through an API action with response. Keep one stock `pulse_counter` (PCNT) channel as the "what the product sees" cross-check. Not `pulse_meter` for the truth path | No (firmware-side component) |
+| Deterministic noise | `math/rand/v2`, `rand.New(rand.NewPCG(seed, stream))`, one stream per port and per noise purpose; stable value stream is locked by Go | No |
 
-## Recommended Stack
+Net new Go dependencies for the whole milestone: **zero**. That is the point of this research.
 
-### Core Technologies
+---
 
-| Technology | Version | Purpose | Why Recommended | Confidence |
-|------------|---------|---------|-----------------|------------|
-| Go | **1.27.3** (go.mod: `go 1.27`) | Simulator, plant models, sim-bus server, CLI `sil`, HTTP/WS server | Current stable (1.26.10 is the other supported line). Static single binary with `CGO_ENABLED=0`, stdlib covers HTTP routing, `embed`, `slog`, JSON, Unix sockets, process control. Go 1.27 makes `encoding/json` v2-backed with the same API (stricter on duplicate keys and invalid UTF-8, fine for an internal protocol). **Go is not installed on this machine**: first task is installing it (see Installation). | HIGH |
-| ESPHome | **2026.10.1** (image `ghcr.io/esphome/esphome:2026.10.1`, digest `sha256:eab8cd6b4f51077c3883af4cedc058280ddc34a94f3b2ffee23e9d2cd5f1db64`, amd64) | Firmware build toolchain and `host:` runtime | Pinned by constraint. 2026.10.2 already exists on PyPI; do not follow it, the pin matches the product repo and the future time-factor patch. Pin by digest as well as tag in `compile.sh`. The same name exists on Docker Hub (`esphome/esphome:2026.10.1`, verified present); the ghcr.io one is what is verified locally. | HIGH |
-| ESPHome `host:` platform | (part of 2026.10.1) | Runs real firmware logic on Linux | **[source]** In 2026.10.1 the host build no longer uses PlatformIO: `esphome/host/toolchain.py` + `build_gen/host.py` generate a `build.ninja` and use the machine compiler (gcc 14.2 in the image). Output is `.esphome/build/<name>/.pioenvs/<name>/program`. Works with `--network none` when no registry libraries are needed **[verified]**. | HIGH |
-| Unix domain socket + NDJSON | n/a | Sim-bus between C++ components and Go | See "Sim-bus protocol decision" below. | HIGH |
-| uPlot | **1.6.32** (MIT) | Live time-series plots in the browser | ~51 KB min JS + 1.9 KB CSS, canvas, built for streaming; dual y-axis (duty % vs RPM) is native. npm last modified 2025-03 (stable, low-churn, not abandoned). | HIGH |
-| Alpine.js | **3.17.5** (MIT) | Declarative DOM binding for the UI | One vendored file (~56 KB), no build, no virtual DOM, good fit for "snapshot arrives over WS, bind to cards". See rationale and the pitfall about reactive proxies below. | MEDIUM |
+## 1. Go ESPHome native API client
 
-### Supporting Libraries (Go)
+### What exists (checked)
+
+| Option | Verdict | Why |
+|--------|---------|-----|
+| `github.com/mycontroller-org/esphome_api` v1.4.0 (2026-07-18, Apache-2.0, 18 stars) | **Reject** | Only Go client found. Its `go.mod` drags in cobra, viper, zap, `mycontroller-org/server/v2`, goment, tablewriter; it pins a pre-release `flynn/noise` and `protobuf v1.34.2`; its generated protos track an old `api.proto`. We would inherit ~30 modules to avoid ~600 lines, and still have to patch it for user-defined action responses (API 1.1x, ESPHome 2025.12+). |
+| `aioesphomeapi` (Python, 46.12.0 inside the pinned image) | **Reference oracle only** | Used to generate golden vectors and as the cross-check in tests. The `sil` binary stays Python-free. |
+| Generate Go from `api.proto` (`protoc-gen-go` + `google.golang.org/protobuf` v1.36.12) | **Reject** | `api.proto` is ~1,700 lines with ESPHome-private options (`api_options.proto`: `id`, `source`, `ifdef`, `field_ifdef`, ...) that must also be compiled; adds a codegen step and a runtime dep to read ~12 messages. The existing `probe.go` already proved the wire format is easy. |
+
+### Recommendation: extend `internal/apiclient`, no new module
+
+`probe.go` already contains the hard part: Noise_NNpsk0_25519_ChaChaPoly_SHA256 with prologue `NoiseAPIInit\0\0`, frame indicator `0x01` + big-endian u16 length, encrypted `[u16 type][u16 len][protobuf]`, the server hello (`0x01 name\0 mac\0`), handshake-reject frame, and a hand-rolled varint reader. Refactor, do not rewrite:
+
+1. Extract `exchange()` into `Dial(ctx, addr, key, clk) (*Conn, Hello, error)`; keep `Probe` as a thin wrapper so the v0.1.0 readiness check and its tests do not change.
+2. `Conn`: one reader goroutine, one mutex-guarded writer (`flynn/noise` `CipherState` is not goroutine-safe and nonces are implicit, so exactly one place encrypts and exactly one decrypts). Reader answers `PingRequest`(7) with `PingResponse`(8) and `DisconnectRequest`(5) with `DisconnectResponse`(6) itself and hands everything else to a typed channel. Host sends its own `PingRequest` every ~20 s (device keepalive is 60 s, disconnect at 2.5x, `api_connection.cpp`).
+3. `internal/apiclient/pb` (new, ~120 lines): `AppendVarint/Tag/Bytes/Fixed32/Float`, `Next()` field iterator that skips unknown fields (forward compatible). Replaces `uvarint()` in `probe.go`. Fuzz target + table tests.
+4. Messages to implement (IDs verified against the image's `api.proto`):
+
+| Direction | Message (ID) | Used for |
+|-----------|--------------|----------|
+| both | Hello 1/2, Ping 7/8, Disconnect 5/6 | session |
+| c->s | DeviceInfoRequest 9 / Response 10 | board identity, `esphome_version` pin check, MAC |
+| c->s | ListEntitiesRequest 11, Done 19 | discovery |
+| s->c | ListEntitiesServicesResponse 41 (name, **fixed32 key**, args, `supports_response`) | find the action keys |
+| c->s | ExecuteServiceRequest 42 (`key`, args, `call_id`, `return_response`) | run test / set duty / fetch capture |
+| s->c | ExecuteServiceResponse 131 (`call_id`, `success`, `error_message`, `response_data` bytes = JSON) | bulk edge download |
+| s->c | ListEntitiesSensorResponse 16, SubscribeStatesRequest 20, SensorStateResponse 25 (`fixed32 key`, `float state`, `missing_state`) | live RPM preview and the stock `pulse_counter` cross-check channel |
+| optional | SubscribeLogsRequest 28 / Response 29 | surfacing firmware log lines in the CLI |
+
+Entity keys come from the `ListEntities*` answers; the client never computes ESPHome's FNV hash. Use only actions plus sensor states: no `fan`/`number`/`button` messages are needed, which keeps the hand-rolled surface small.
+5. Conformance: new `protocol/vectors/api_vectors.ndjson`, generated once by running the image's `aioesphomeapi.api_pb2` offline (`docker run --network none ... python -I`), hex-encoded request and response frames. Exercised from Go tests exactly like `bus_vectors.ndjson`. This is the only guard against hand-rolled drift.
+6. Message size: ESP32 `MAX_MESSAGE_SIZE` is 32 KiB per API message (Noise frame 65,535). Capture download must be chunked (<= 256 edges per response, about 3 KB of JSON).
+7. Key handling: reuse the instance key generation (crypto/rand, base64, 0600). The measuring firmware is built with its own key; the CLI takes `--key-file` / `SIL_FA_KEY`; never print the key (the existing `ProbeError` convention).
+8. Time: all deadlines through `internal/clock` (wall-clock lint is enforced; a real clock implementation is injected by the CLI).
 
 | Library | Version | Purpose | When to Use |
 |---------|---------|---------|-------------|
-| `github.com/alecthomas/kong` | **v1.17.0** (2026-10-30) | CLI (`sil up/down/status/set/press/run/logs`) | Always. Struct-tag grammar, `Run(ctx)` per command, `env:"SIL_ADDR"` binding, positional args and `key=value` maps. The CLI is a thin JSON client of ~10 commands; a declarative struct is the least code and trivially testable via `kong.Must(&cli).Parse(args)`. |
-| `github.com/coder/websocket` | **v1.8.15** (2026-06-15; repo pushed 2026-11-06) | `/ws` live state stream to the UI | Always. Context-first API, zero dependencies, **concurrent writes are safe** (internal `writeFrameMu`), `CloseRead(ctx)` for write-only fan-out connections, same-origin check by default (`OriginPatterns` to widen). |
-| `net/http` stdlib `ServeMux` | Go 1.27 | Routing: `GET /api/v1/status`, `POST /api/v1/ports/{port}/fan`, `GET /ws`, static UI | Always. Method + wildcard patterns (since 1.22) cover everything needed; no router dependency. |
-| `github.com/pelletier/go-toml/v2` | **v2.4.3** (2026-07-05) | `fan.toml`, scenario files (later) | Always. `NewDecoder(r).DisallowUnknownFields()` rejects typos like `max_rmp` instead of silently ignoring them; `DecodeError` carries a human-readable contextualized message with line and underline. Fan files are edited by humans and agents, so strict, located errors matter. Supports TOML 1.1. |
-| `log/slog` stdlib | Go 1.27 | Logging | Always. JSON handler when `--json` / non-TTY, text handler on a TTY. **stderr only**: stdout is reserved for the CLI's JSON result. |
-| `embed` stdlib | Go 1.27 | Ship UI in the binary | `//go:embed all:web` + `fs.Sub(webFS, "web")`. Add a `--ui-dir` dev flag that serves from disk so UI edits need no Go rebuild. |
-| `testing` + `testing/synctest` stdlib | Go 1.27 | Unit tests; deterministic time tests for the injectable clock | Always. No testify needed. `synctest` gives a fake-time bubble for goroutine/timer tests (Go 1.27 adds `synctest.Sleep`). |
-| `os/exec`, `os/signal`, `net` stdlib | Go 1.27 | Spawn/stop the firmware `program`, Unix socket listen | `exec.CommandContext` + `SysProcAttr{Setpgid: true}` so `sil down` kills the process group; SIGTERM first (firmware flushes prefs on SIGTERM/SIGINT **[source]**), SIGKILL after a grace period. |
-| `github.com/yuin/gopher-lua` | v1.1.2 (2026-04-01) | Lua fault/behaviour scripts | **P2 only. Do not add in M1.** Lua 5.1 semantics, mature, context cancellation and memory limit hooks. Last push April 2026, 122 open issues: stable-quiet. Alternative `arnodel/golua` v0.4.1 (2026-11-03, very active) implements Lua 5.3 with CPU/memory quotas but labels its safe-execution mode alpha. Decide with a one-day spike at the start of P2. |
+| `github.com/flynn/noise` | v1.1.0 (already in go.mod; latest tag, Feb 2024, stable-quiet, no alternative of comparable standing) | Noise handshake and CipherStates | Reuse unchanged |
+| `golang.org/x/crypto` | v0.58.0 (already indirect) | chacha20poly1305 via flynn/noise | Unchanged |
+| `encoding/json` (stdlib, v2-backed in Go 1.27) | Go 1.27 | Parse `response_data` | The JSON is firmware-emitted ArduinoJson: plain, no duplicate keys |
 
-### Supporting Libraries (browser, vendored)
+**Confidence: HIGH** (protocol read from image source and existing working code; message IDs verified).
 
-| Library | Version | Files to vendor | Notes |
-|---------|---------|-----------------|-------|
-| uPlot | 1.6.32 | `dist/uPlot.iife.min.js` (51,081 B), `dist/uPlot.min.css` (1,857 B) | Verified present on jsDelivr. Use ring buffers of `Float64Array` (e.g. 60 s window) and `u.setData()` on a `requestAnimationFrame` cadence, not per WS message. |
-| Alpine.js | 3.17.5 | `dist/cdn.min.js` (55,935 B) | Load with `<script defer src="/vendor/alpine.min.js">`. |
+---
 
-Vendor via a committed `scripts/vendor-ui.sh` that downloads exact versions, checks pinned sha256 values, writes `web/vendor/VENDOR.md` (name, version, license, sha256), and is run by a human/agent deliberately, never at build or runtime. No `package.json`, no npm in the repo. Both licenses are MIT, compatible with GPL-3.0.
+## 2. Fitting and numerics
 
-### ESPHome-side components (what to write)
+### Decision: hand-rolled `internal/fit`, no gonum
 
-One external component folder `components/sim_bus/` containing the hub plus all platform files, so YAML reads `platform: sim_bus` for every entity type. This is the same hub-plus-platforms shape ESPHome itself uses and it keeps one shared C++ translation unit set. (The project doc says "`sim_*`"; if the consumer-facing YAML names matter more than the folder layout, `sim_output`/`sim_sensor` folders work identically, but they would need the hub exposed via a shared header. Decide in the roadmap; the base classes below are the same either way.)
+| Candidate | Verdict | Why |
+|-----------|---------|-----|
+| `gonum.org/v1/gonum` v0.17.0 (2025-12-29, 4.7 MB zip) | **Reject** | Verified in the module source: `optimize` has Nelder-Mead, BFGS, L-BFGS, CG, CMA-ES, Newton, but **no Levenberg-Marquardt / nonlinear least squares and no isotonic regression**. The module's `go.mod` references x/tools, gonum/plot, fonts, pdf libs; importing `optimize` links BLAS/LAPACK/mat. We would pull a large dependency tree to get a 60-line simplex. |
+| Hand-rolled | **Use** | The problems are tiny: 2 to 6 parameters, a few thousand points, one smooth objective. |
 
-| Entity (Rev 3.3) | C++ base classes | Python schema/helpers | Status |
-|------------------|------------------|-----------------------|--------|
-| Hub (socket client) | `Component` | `cv.Schema({GenerateID(): declare_id(SimBus), Optional("path")}).extend(cv.COMPONENT_SCHEMA)` | **[verified]** |
-| PWM out `ledc` replacement (fan1-4) | `output::FloatOutput` + `Component`; override `write_state(float)` | `output.FLOAT_OUTPUT_SCHEMA`, `output.register_output(var, config)` | **[verified]** Drives built-in `fan: platform: speed` with `speed_count: 100`; HA command "speed 40" arrived on the bus as `fan1_pwm 0.4`. `inverted`, `min_power`, `max_power` come free from the base class. |
-| RPM, temperature, humidity | Temperature/humidity: `sensor::Sensor` + `Component` (not `PollingComponent`; the simulator pushes). **RPM: `sensor::Sensor` + `PollingComponent`** (exception, decided 2026-11-09: IO-02 requires a 1 s windowed mean published at `update_interval`) | `sensor.sensor_schema(Cls, ...)`, `await sensor.new_sensor(config)` | **[verified]** `publish_state(v)` reached HA API as `SensorState 1234.0`. Sensor `filters:` still work (they live in the base class). |
-| Buttons USR1-3 | `binary_sensor::BinarySensor` + `Component`; `publish_state(bool)` | `binary_sensor.binary_sensor_schema(Cls)`, `await binary_sensor.new_binary_sensor(config)` | **[verified]** `on_click`, `on_multi_click`, `delayed_on` filters live in the base class. The simulator sends *level* (pressed/released); the firmware measures hold time itself, so "long press" = hold for N sim-seconds. |
-| Status LED strip (5 LEDs) | `light::AddressableLight` (already a `Component`): implement `size()`, `clear_effect_data()`, `get_traits()`, `write_state(LightState*)`, `get_view_internal(i)` returning `ESPColorView{r,g,b,nullptr,&effect[i],&correction_}` | `light.ADDRESSABLE_LIGHT_SCHEMA`, `light.register_light(var, config)`, `cg.register_component` | **[verified]** Built-in `partition` lights (board status with `pulse` and `addressable_rainbow` effects, per-fan segments) compile and attach on top of it unchanged. Keep an internal RGB buffer; no `channel_colors`, `chipset`, `pin`, `rmt_symbols` in the sim schema (hardware-only). |
+### What to write (all pure functions, stdlib only)
 
-Hardware-only keys in `hardware-rev-3.1.yaml` (`pin`, `frequency`, `chipset`, `channel_colors`, `rmt_symbols`, `i2c`, `pulse_counter` filters) are **not** carried into the sim YAML; the sim YAML is its own package declaring the same entity ids (`pwm_fan1`, `fan1_speed`, `fancontroller_temperature`, `btn_usr1`, `status_leds`, ...) so the product's partition lights, fans and modules reference the same ids unchanged. The `esphome: min_version` and `on_boot` blocks in the hardware package need a matching sim equivalent.
+| Need | Method | Notes |
+|------|--------|-------|
+| Monotone duty to RPM curve per direction (up sweep, down sweep) | **Isotonic regression (PAV)**, then resample to a knot table (e.g. 5 % duty grid) | Real data is noisy and a LUT with non-monotone wiggles would make the sim's inverse (RPM to duty) ambiguous. Up and down are fitted separately; the gap is the hysteresis loop. |
+| Step response / spin-up / coast-down | **Fit the sim's own model**: `objective(params) = RMS(model.Step replay - measured RPM at the measured edge times)`, minimised with **Nelder-Mead** (multi-start, ~60 lines) | Gradient-free is right: start delay (dead time) creates a kink; a coast-down with fan-law drag is not a pure exponential (`d w/dt = -a w - b w^2`), so the forward model matters. Fitting through `internal/model` guarantees "replay matches measurement" is the same code path that the done criterion checks. Do not fit a closed form and then hope the sim agrees. |
+| Linear nuisance parameters (offset, gain) | **Variable projection**: solve them by closed-form linear least squares inside the objective | Shrinks the simplex to the truly nonlinear parameters (td, tau, drag split). |
+| Tach quirks | Median + MAD of edge intervals at steady state gives jitter sigma; ppr from the ratio of edge rate to a reference RPM | Plain `slices.Sort`. |
+| Stated tolerance | RMS, max abs error and fraction of samples within +/- x % between measured and replayed RPM; reported per test | |
+| Uncertainty (optional) | Residual bootstrap using `math/rand/v2` PCG with a fixed seed | Keeps `fan.toml` provenance honest ("tau_up = 0.8 s +/- 0.1"). |
 
-C++ socket client rules (all **[verified]** in the prototype or **[source]**):
+Integration: `internal/fit` imports `internal/model` (pure, no clock) and `internal/fanlib` types; it must not import `clock`/`engine`. Tests recover known parameters from data synthesised by the model plus PCG noise (closed loop, deterministic). If NM ever proves unreliable, upgrade to Levenberg-Marquardt with a numeric Jacobian and a 3x3/4x4 normal-equation solve (~100 lines); still no gonum.
 
-- Raw POSIX `AF_UNIX`, `SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC`. Non-blocking `connect()` on a Unix socket completes or fails immediately, so there is no connect state machine: try once in `setup()`, retry every 500 ms from `loop()` while disconnected. ESPHome's `socket::` wrapper is IP-only (`socket_ip`, v4/v6 helpers); do not use it.
-- Register the fd with the host main loop so idle `select()` wakes on inbound data instead of waiting for the loop interval:
-  ```cpp
-  #include "esphome/core/wake.h"
-  esphome::wake_register_fd(fd);     // main loop only, fd must be < FD_SETSIZE
-  // on close: esphome::wake_unregister_fd(fd) before ::close(fd)
-  ```
-  This matters once the time factor arrives and even at x1 for button latency.
-- `send(..., MSG_NOSIGNAL | MSG_DONTWAIT)` with an application TX buffer; on `EAGAIN` keep the remainder. (Host `main()` already sets `SIGPIPE` to ignore **[source]**, so this is belt and braces.)
-- On (re)connect, send `hello` and replay the last known value of every output and light so a simulator restart or firmware restart re-converges.
-- **Dedupe outbound state.** In the prototype, 66 identical all-black LED frames were sent in about 5 s of idle. The light (and outputs) must send only on change, and cap the rate.
-- Validate in Python codegen that the socket path is at most 107 bytes (`sun_path` limit). The prototype's `strncpy` truncates silently, which would produce a confusing connect failure for deep project paths.
+### Writing the fitted `fan.toml`
 
-## Sim-bus protocol decision
+go-toml v2's encoder does not emit comments, and the library files carry long provenance blocks (see `fans/arctic-p12-pwm-pst.toml`). **Render with `text/template`** (comments, units, measurement date, fit statistics, board/firmware/fan identifiers) and validate by round-tripping through the existing strict `fanlib` loader in the same test. No new library. The strict loader's nine-key schema must be extended (curve tables, noise, ppr, power/airflow datasheet block); keep `DisallowUnknownFields` semantics.
 
-**Unix domain socket (stream), newline-delimited JSON, simulator listens, firmware connects.** Confidence: HIGH.
+**Confidence: HIGH** (gonum contents verified in v0.17.0 source; method choice is standard practice, MEDIUM on NM robustness until exercised on real data).
 
-| Question | Decision | Why |
-|----------|----------|-----|
-| UDS vs TCP localhost | **UDS** at `$XDG_RUNTIME_DIR/sil/<run>/bus.sock` (fallback `/tmp/sil-<uid>/<run>/`) | No port collisions between parallel runs or agents, filesystem permissions instead of a network listener, works on the host and across a Docker bind mount (same kernel) if the firmware ever runs in a container. TCP would need `--network host` or port mapping in that case. Keep the path a config string. |
-| Who listens | **Simulator listens, firmware connects** | The firmware restarts (crash, host OTA re-exec, test restart) and must not own the rendezvous. Reconnect with 500 ms retry was **[verified]**. |
-| NDJSON vs protobuf vs binary | **NDJSON**, flat objects only | Traffic is tiny (a handful of channels, change-driven). NDJSON is debuggable with `socat - UNIX-CONNECT:bus.sock` and `jq`, readable by agents, and free to evolve. Protobuf adds protoc, a Go plugin and a C++ runtime (ESPHome's own protobuf is internal to its API component and not reusable). Fixed binary frames save nothing measurable here and lose inspectability. |
-| JSON on the C++ side | **Hand-written flat parser/writer (~100 lines)**, not ESPHome's `json:` component | **[verified]** `json:` pulls ArduinoJson from the PlatformIO registry at build time and the offline build (`--network none`) **fails** with an HTTP client error. A hermetic, vendor-independent build is a project constraint. The grammar is restricted so a trivial parser is correct: one object per line, string and number scalars only, no nesting, no arrays, no escapes beyond `\"` and `\\`. LED pixel data is a hex string (`"rgb":"ff000000ff00..."`). |
-| Go side | `encoding/json` with `bufio.Scanner`/`json.Decoder` | Full JSON on the Go side is fine; Go only emits the restricted subset. |
-| Timestamps | Every message carries `t` (microseconds, int64): firmware monotonic clock on fw->sim, sim time on sim->fw | Satisfies the injectable-clock and sim-timestamp requirement from day one. At x1 they are equal; the time factor later only changes the mapping. |
-| Framing/versioning | `{"k":"hello","proto":1}` both ways on connect; kinds `hello`, `out`, `in`, `bye`; max line 4 KiB | Internal protocol, free to change; the version integer lets a mismatched firmware fail loudly. |
-| Conformance | Shared `testdata/bus_vectors.ndjson` exercised by Go tests and by a small host-compiled C++ test of the parser | The only real risk of a hand-rolled parser is drift between the two sides. |
+---
 
-Observed message shapes in the prototype: `{"k":"out","ch":"fan1_pwm","v":0.4}`, `{"k":"out","ch":"status_leds","rgb":"..."}`, `{"k":"in","ch":"fan1_rpm","v":1234}`.
+## 3. report.html without a CDN
 
-## Build and runtime: where the firmware runs
+### Decision: one self-contained HTML file, uPlot inlined
 
-**Decision: build inside the pinned image, link statically, run the resulting binary directly on the host.** Confidence: HIGH (this was the open question in PROJECT.md; it is now answered by experiment).
+| Option | Verdict | Why |
+|--------|---------|-----|
+| **Inline the already-vendored uPlot 1.6.32** (51 KB JS + 1.9 KB CSS) read from `ui.FS()` (`ui/web/vendor/`) | **Use** | Zero new vendored code, one sha256-gated copy (`ui/vendor_test.go` keeps guarding it), same look as the live UI, zoom/cursor for hunting the kick-start and coast-down edges, double-clickable offline file. |
+| Hand-written Go SVG charts | Reject as primary | About 250+ lines of axis/tick/legend code to maintain, no zoom; static output is only needed for headline numbers, which are plain HTML tables. |
+| Chart.js, Plotly, D3 | Reject | Weight, CDN habits, not vendored. |
 
-Measured on this machine (Debian 12, glibc 2.36) against the image (Debian 13, glibc 2.41, gcc 14.2.0, Python 3.14.6):
+Mechanics:
+- `html/template` with `//go:embed report.tmpl` in a new `internal/fananalyze/report` package; `go:embed` of the vendor files is not needed, import `github.com/zeroflow/esphome-sil/ui` and `fs.ReadFile(ui.FS(), "vendor/uPlot.iife.min.js")`.
+- The page is meaningful without JS: server-rendered summary (fan identity, firmware and ESPHome version, fitted parameters with uncertainty, tolerance verdict PASS/FAIL, per-test RMS and max error) as tables. Charts are progressive enhancement.
+- Data goes in `<script type="application/json" id="report-data">...</script>` (HTML-escaped by `encoding/json`, so `</script>` cannot break out) so an agent can read numbers from the file. Also write `report.json` beside it; the CLI's stdout stays the JSON result.
+- Charts: duty vs RPM (up/down sweep points + fitted curves = hysteresis), step responses (measured per-edge RPM vs sim replay, residual strip), start/stop (spin-up delay, coast-down), tach-jitter histogram. Decimate to at most ~5k points per series (min/max bucket decimation) before embedding.
+- CI check: reuse the "no `http(s)://` reference" lint from the UI tests on the generated report (uPlot's own SVG namespace string must be allow-listed exactly as the page test already does).
+- uPlot lives outside any reactive framework; the existing page is vanilla ES modules (Alpine was never vendored), so the report script is a short vanilla `<script>`; do not import `ui/web/js/*` modules (they assume the live API).
 
-| Build | Result on the host |
-|-------|--------------------|
-| Default (dynamic) `program` from the image | **Fails**: `libm.so.6: version 'GLIBC_2.38' not found` and `libstdc++.so.6: version 'GLIBCXX_3.4.31' not found`. A dynamically linked binary from the image does not run on a Debian 12 host, and would not on older Ubuntu LTS either. |
-| `esphome: build_flags: [-static]` | **Runs** (3.4 MB, fully static ELF). `-static` is routed to both compile and link lines by `build_gen/host.py` **[source]**. |
+**Confidence: HIGH.**
 
-```yaml
-esphome:
-  name: sil-fancontroller
-  build_flags:
-    - -static        # NOT platformio_options.build_flags: deprecated, removal in 2026.12.0
-host:
-  mac_address: "02:51:1a:00:00:01"   # set per instance, see pitfalls
+---
+
+## 4. Fast tach capture on ESP32-S2, ESPHome 2026.10.1
+
+### Required resolution (derived, not assumed)
+
+Tach has 2 pulses per revolution on both fans, rising-edge counting as in the product (`pulse_counter`, `multiply: 0.5`).
+
+| Fan operating point | Pulse rate | Edge period |
+|---------------------|-----------:|------------:|
+| Noctua NF-A12x25 @ 450 RPM | 15 Hz | 66.7 ms |
+| Arctic P12 @ 200 RPM | 6.7 Hz | 150 ms |
+| either @ 2000 RPM | 67 Hz | 15 ms |
+
+- Information arrives only at edge rate. Per-edge period measurement is therefore the best possible RPM estimator; a windowed count at 1 s (product behaviour) quantises to `60/(ppr*T)` = **30 RPM per pulse** and has 1 s time resolution. That is the *observable* the sim must reproduce (v0.2.0 "tach quantisation"), but it is useless as the *truth* for fitting tau (~0.3 to 2.5 s) or start delay.
+- Needed: edge time stamps with resolution and accuracy well below 1 ms (a few percent of the shortest 15 ms period). `esp_timer_get_time()` gives 1 us; GPIO ISR latency on a single-core S2 at 240 MHz is typically microseconds, spikes of tens of us while Wi-Fi or flash-cache activity runs. That is 0.1 to 0.5 % of the shortest period, far below fan jitter itself. Time alignment between the duty write and the edges must be better than ~10 ms, so **both must be stamped on the same device clock**, not by the host.
+- Network arrival time on the host (Wi-Fi, 5 to 50 ms jitter) is not good enough, which is why the data path below is device-timestamped.
+
+### Options compared (read from `esphome/components/*` in the pinned image)
+
+| Option | Gives | Verdict |
+|--------|-------|---------|
+| `pulse_counter` with PCNT (default `use_pcnt: true` on ESP32, `internal_filter` max 13 us) | Pulses per `update_interval`, no per-edge time | **Keep exactly one channel as cross-check** and for reproducing the product observable; useless as truth. All four PCNT units are used by the product, so the measuring firmware needs only one. |
+| `pulse_meter` | ISR rising-edge `micros()`, but period is computed and **published from `loop()`** (ESPHome loop, 16 ms default), batching several edges as `delta/count`; no timestamps leave the device; publishes only on edges and times out to 0 | Acceptable quick spike (zero C++), **not** for the done criterion: loses per-edge time and gets Wi-Fi-jittered arrival time. |
+| ESP32-S2 RMT RX / PCNT watch points | Hardware timing | Reject: RMT has 4 channels total, an idle threshold far below the 66-150 ms periods, and needs an ESP-IDF driver layer in an Arduino build; the ISR approach is already far better than the physics. (MCPWM capture is not available on the S2: MEDIUM, from training knowledge.) |
+| **Custom component: GPIO ISR + `esp_timer_get_time()` into a ring buffer** | Every rising (and optionally falling) edge with 1 us stamps, lossless while the host keeps pulling | **Use.** Same mechanism pulse_meter already uses (`InternalGPIOPin::attach_interrupt`, `ISRInternalGPIOPin`, ISR in IRAM), minus the loop-side averaging. |
+
+### Firmware design (new `components/fan_analyze/`, ESP32-S2, Arduino 3.3.12 as ESPHome 2026.10.1 recommends)
+
+- Per channel: ISR stores a `uint32_t` microsecond stamp (software min-interval gate of ~1 ms rejects PWM crosstalk at 25 kHz, which a 13 us glitch filter would not); ring of 1024 entries; `loop()` extends to 64 bit using `esp_timer_get_time()` and tracks overruns (a counter the host can see: a lossless claim must be verifiable).
+- PWM stays `ledc` at 25 kHz on GPIO12-15 with the same config as `hardware-rev-3.1.yaml` so the electrical path is the real one (S2 LEDC at 25 kHz gives 11-bit duty at 80 MHz APB, ~0.05 % steps; keep dither-free).
+- The component owns the timeline: it stamps the actual `FloatOutput::set_level` call with `esp_timer_get_time()` and runs scripted steps itself (`run_step(port, from, to, hold_ms)`), so the step instant is exact and independent of Wi-Fi. The host never needs a synchronised clock.
+- Control and data via **API user-defined actions** (ESPHome `api: actions:` with `supports_response`; present in 2026.10.1: `api/__init__.py` auto-loads `json` when `api.respond` has `data:`): `set_duty`, `run_step`, `capture_start/stop`, `fetch(port, from_index, max)` returning `{base_us, overruns, t: [...]}`. Live preview: plain `sensor:` entities (windowed RPM) over `SubscribeStates`.
+- Keep one stock `pulse_counter` sensor (PCNT, `multiply: 0.5`, 1 s) on one channel to validate "host recomputes the product's RPM from raw edges" against the real product path.
+- Do not use the ESPHome `fan:` component or anything that writes flash during a test (prefs, OTA): flash-cache-disabled windows delay ISRs that are not fully in IRAM. Disable `restore_mode`, no `ota` while measuring (flash via the normal path first).
+
+### Build implications (this is the one place that is not hermetic)
+
+- The host-sim build runs `--network none`; an ESP32-S2 Arduino build cannot: PlatformIO fetches the platform/toolchain/Arduino framework and ArduinoJson (via `json`, needed by `api.respond`). `internal/fwbuild` already has the pattern (one-time `network=bridge` fetch, then a persistent `/cache` volume, `HOME=/cache/home`, `PLATFORMIO_CACHE_DIR`). Add a "device" build mode that reuses the same pinned image and cache, allows network only on a cold cache, and bypasses the sim lint (`lint.go` currently rejects `esp32:`). Subsequent builds are offline from the cache: a vendor shutdown after the first fetch does not kill the pipeline. State this exception in the docs.
+- The measuring firmware lives in this repo (not the product repo) and has its own top-level YAML; hardware pins come from the Rev 3.3 package or are copied verbatim.
+
+**Confidence:** HIGH for ESPHome facts (source read), MEDIUM for hardware behaviour (see Spikes).
+
+---
+
+## 5. Deterministic noise RNG
+
+`math/rand/v2`, stdlib, no dependency.
+
+```go
+r := rand.New(rand.NewPCG(runSeed, uint64(port)<<8|purpose)) // one Rand per (port, purpose)
+v := r.NormFloat64()
 ```
 
-Build command (offline, no root-owned files):
+- The Go team states that derived methods are "locked in" for v2 (`IntN`, `NormFloat64` bias fix "locked in the new value streams", go.dev/blog/randv2). Seeded runs are therefore reproducible across Go upgrades. Pin it anyway with a golden-value test (first N draws for a fixed seed) as a canary.
+- Separate stream per port and per purpose (RPM jitter, tach dropout, fault timing): enabling a fault or changing the port count then never shifts another stream's values.
+- Draw per **model step / per tach window**, never per wall tick; the engine step is `dt`-based, so noise must be a function of simulated time (sigma scaled by `sqrt(dt/dt0)` for additive noise) so results do not depend on tick rate. No `time.Now()` seeding (wall-clock lint); the run seed is a `sil up --seed` flag recorded in status/run info; default fixed (0), not random, so tests are repeatable by default.
+- `*rand.Rand` is not goroutine-safe: own it inside the engine's single goroutine; do not use top-level `rand.Float64()`.
+- `rand.PCG` implements `MarshalBinary`, so a future snapshot or replay can persist the stream state cheaply.
+- Use the same PCG in `internal/fit` for bootstrap and for the synthetic-data recovery tests.
 
-```bash
-docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -v "$PWD:/config" ghcr.io/esphome/esphome:2026.10.1@sha256:eab8cd6b4f51077c3883af4cedc058280ddc34a94f3b2ffee23e9d2cd5f1db64 \
-  compile sim.yaml
-# -> .esphome/build/<name>/.pioenvs/<name>/program
-```
+**Confidence: HIGH.**
 
-Measured timings: minimal config cold compile ~4.7 s wall including container start; **incremental rebuild after touching a component .cpp: ~1.4 s wall, offline**; `esphome config` validation ~0.8 s. This comfortably supports the fast agent loop.
+---
 
-Networking consequences (running on the host, the chosen path):
+## Everything else new (no research needed beyond a line)
 
-- The firmware's native API listens on `0.0.0.0:6053` **[verified with `ss`]**. Any HA instance on the LAN reaches `<sim-host-ip>:6053` directly. No Docker port mapping involved.
-- **mDNS is a stub on host** (`mdns_host.cpp` setup does nothing **[source]**), so HA will not auto-discover it. In HA: Settings, Devices, Add Integration, ESPHome, enter host and port manually. `sil up` should print this hint and the `host:port`.
-- The simulator socket is a local path; no networking at all.
-- The native API is plaintext unless `api: encryption:` is set, and it is bound to all interfaces. Acceptable for the stated use; say so in docs and let `sil up` take `--api-port`. CI runners must firewall it.
-- If static linking ever breaks (e.g. a future component needing NSS/DNS): fallback is to run `program` inside the same image with `-v` of the run directory (UDS works across a bind mount) and `-p <port>:<port>` or `--network host`. Do not build a custom Debian 12 builder image; the pinned ESPHome image is the contract.
-- The same approach should hold on aarch64 hosts (the image is multi-arch; static output matches the Docker platform). Linux only: the host platform refuses to build on Windows **[source]** and a Linux container cannot produce a macOS binary.
+| Area | Choice | Note |
+|------|--------|------|
+| CLI | kong v1.17.0 nested command `fan-analyze {run,sweep,step,startstop,fit,report}` | Existing; stdout JSON, stderr slog. |
+| Fault injection | Plain Go in `internal/model`/`engine`; new JSON API routes via stdlib `ServeMux`; UI controls in vanilla JS | No library. Fault state is a struct on the port; PCG stream for intermittent tach. |
+| Secrets/inputs | `go.yaml.in/yaml/v3` (existing) if reading a secrets file; not needed for the API key | `wifi-fancontroller/secrets.yaml` holds only Wi-Fi credentials; the API key is per build. |
+| Test data | Recorded raw edge captures as `testdata/*.ndjson` golden inputs for `fit` | Lets the fit and report tests run without hardware. |
 
-Per-run isolation required by the host platform (found in source, not documented prominently):
+## What NOT to add
 
-- Preferences are written to `$ESPHOME_PREFDIR` or else `$HOME/.esphome/prefs/<name>.prefs` **[source]**; my test runs created `~/.esphome/prefs` in the real home directory. `sil up` must set `ESPHOME_PREFDIR=<run dir>` so runs do not leak state into each other or into `$HOME` (restore_mode fans and `init_done` globals depend on this).
-- `api: port:` and `host: mac_address:` must be unique per concurrent instance. The default MAC is the constant `98:35:69:ab:f6:79`, so two sims (or a sim restarted with a different name) collide in HA's device registry.
+| Do not add | Reason | Instead |
+|------------|--------|---------|
+| `mycontroller-org/esphome_api` | Stale, ~30 transitive modules, old proto | Hand-rolled `Conn` over existing Noise code |
+| `google.golang.org/protobuf` + protoc-gen-go | Codegen step and runtime for ~12 messages | `internal/apiclient/pb` wire helper with golden vectors |
+| `gonum.org/v1/gonum` (any package) | No LM, no isotonic; heavy tree; binary growth | `internal/fit` |
+| Any plotting/report library, headless-browser PDF, CDN | Locality | Inlined uPlot + HTML tables |
+| `pulse_meter` as the truth capture | Loop-side averaging, no device stamps | Custom ISR timestamp component |
+| Host-side timestamps for edges | Wi-Fi jitter | Device-side `esp_timer_get_time()` timeline |
+| Python (`aioesphomeapi`) in the CLI | Constraint | Only as vector oracle in tests |
+| `crypto/rand` or time-seeded RNG for noise | Non-reproducible runs | PCG with explicit seed |
+| Lua / fault scripts | Out of scope in v0.2.0 | Runtime-switched faults only |
 
-## Browser stack decision
+## Spikes to run early (hardware or protocol unknowns)
 
-**Vanilla ES + Alpine.js 3.17.5 + uPlot 1.6.32, all vendored, served from `go:embed`.** Confidence: MEDIUM (a judgment call; the libraries themselves are HIGH).
+1. **ISR + PCNT on one pin.** Confirm an `attach_interrupt` ISR and the `pulse_counter` PCNT unit on the same tach GPIO coexist on ESP32-S2/Arduino 3.3.12 (pin setup both configure INPUT_PULLUP; expected to work, unverified).
+2. **API action with response end to end.** One action returning ~256 ints through `api.respond`, called from a throwaway Go `Conn`, checked against `aioesphomeapi` (`execute_service` with `return_response`). Also confirm heap headroom with ArduinoJson at 256 entries per call on the S2.
+3. **Edge loss under Wi-Fi load.** Run 4 channels at 2000 RPM for 60 s with a 250 ms pull cadence and verify `overruns == 0` and no gaps against the stock `pulse_counter` total.
+4. **Cold-cache S2 build** through the pinned image: record cache size, time, and that a second build with `--network none` succeeds.
 
-- The UI is a pure client of the JSON API: `GET /api/v1/state` for the first paint, `WS /ws` for state snapshots, `POST` for set/press. It has no logic of its own, which is the project's acceptance rule.
-- Alpine fits "bind a snapshot object to cards" with one file and no build. The first plot data path is imperative uPlot anyway.
-- **Pitfall:** do not keep uPlot instances or the ring buffers inside Alpine `x-data`; Alpine wraps data in reactive proxies, which slows and can break canvas libraries. Keep charts and typed arrays in module scope (or `Alpine.raw`) and put only display values in reactive state.
-- Fonts: system font stack only; no Google Fonts, no CDN anywhere (check the final HTML for any `http(s)://` references in CI).
-- If P3 (board view, drag and drop, photos) outgrows Alpine, move to **Preact + htm via an import map** (still no build; Preact is at 11.2.0, htm 3.1.1). That is a UI-only swap behind the same API.
+## Alternatives considered
 
-## Development Tools
-
-| Tool | Purpose | Notes |
-|------|---------|-------|
-| `go vet`, `gofmt`, `staticcheck` (optional) | Lint/format | Go 1.27 changed `gofmt` column alignment slightly; run `gofmt` once after the toolchain bump. |
-| `esphome config <yaml>` via the pinned image | Fast YAML/codegen validation | ~0.8 s; run it in the contract test before `compile`. |
-| `socat`, `jq` | Inspect the bus by hand | `socat - UNIX-CONNECT:<run>/bus.sock` shows the NDJSON live. |
-| `aioesphomeapi` (pytest side, Python) | Product-repo and contract tests talk to the firmware's native API | Image ships 46.12.0; PyPI latest is 46.28.0. Matches HA's behaviour closely enough (HA uses the same library). Use it only for "entities are visible and commandable"; all stimulus and observation of the plant goes through `sil` CLI/JSON, not through the API. Relevance is deliberately small. |
-| Contract test | Build example YAML, `sil up`, drive a scenario, assert JSON verdict | The M1 acceptance gate; run it in CI-like mode headless. |
+| Category | Recommended | Alternative | Why not |
+|----------|-------------|-------------|---------|
+| API client | Hand-rolled on flynn/noise | mycontroller esphome_api | Stale deps, old proto |
+| Protobuf | wire helper | `protowire` | Fine fallback, but a 120-line helper keeps `go.mod` unchanged |
+| Bulk data path | Action with JSON response, chunked | `text_sensor` stream of base64 batches via `SubscribeStates` | Works with fewer message types, but is a hack on entity state (dedup, size) and has no request/response backpressure; keep as fallback if action responses misbehave (spike 2) |
+| Bulk data path | Action with JSON response | `SubscribeLogs` line scraping | Logger-level dependent, lossy under load |
+| Truth capture | ISR timestamps | PCNT counts | 30 RPM and 1 s resolution |
+| Numerics | stdlib + simplex | gonum optimize | See section 2 |
+| Report charts | inline uPlot | Go SVG | See section 3 |
+| fan.toml writer | `text/template` | go-toml encoder | No comments |
 
 ## Installation
 
 ```bash
-# Go toolchain (not currently installed on this host; amd64, verified checksum from go.dev/dl JSON)
-curl -LO https://go.dev/dl/go1.27.3.linux-amd64.tar.gz
-echo "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40  go1.27.3.linux-amd64.tar.gz" | sha256sum -c
-sudo tar -C /usr/local -xzf go1.27.3.linux-amd64.tar.gz   # or extract to ~/.local/go and add to PATH
-# arm64: go1.27.3.linux-arm64.tar.gz  a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
+# Go side: no new modules. go.mod and go.sum stay as they are.
+go mod tidy   # must be a no-op
 
-# Go module
-go mod init github.com/zeroflow/esphome-sil
-go get github.com/alecthomas/kong@v1.17.0
-go get github.com/coder/websocket@v1.8.15
-go get github.com/pelletier/go-toml/v2@v2.4.3
-# P2 only: go get github.com/yuin/gopher-lua@v1.1.2
+# Golden API vectors (one-off, offline, uses the pinned image's aioesphomeapi 46.12.0)
+docker run --rm --network none --entrypoint python3 \
+  -v "$PWD/tests/tools:/w:ro" ghcr.io/esphome/esphome:2026.10.1 -I /w/gen_api_vectors.py > protocol/vectors/api_vectors.ndjson
 
-# Firmware toolchain
-docker pull ghcr.io/esphome/esphome:2026.10.1
-
-# Browser vendoring (deliberate, one-off per bump; writes web/vendor/ + VENDOR.md)
-scripts/vendor-ui.sh   # uPlot 1.6.32 + Alpine 3.17.5
-
-# Release build of the simulator
-CGO_ENABLED=0 go build -trimpath -o bin/sil ./cmd/sil
+# Measuring firmware (cold cache needs network once; then offline)
+sil fan-analyze build --device-key-file run/fa.key   # wraps the pinned image, shared /cache
 ```
-
-## Alternatives Considered
-
-| Recommended | Alternative | When to Use Alternative |
-|-------------|-------------|-------------------------|
-| kong v1.17.0 | cobra v1.10.2 (last release 2025-12) | If shell completion out of the box and the broadest example coverage matter more than less boilerplate. Perfectly acceptable; the CLI grammar is small enough that switching costs an hour. |
-| kong | urfave/cli v3.14.0 | v3 is a recent rewrite with flag/API churn between minors; no reason to prefer it here. |
-| coder/websocket v1.8.15 | gorilla/websocket v1.5.3 (last release 2024-06, last push 2025-03) | Only if code must be copied from an existing gorilla-based project. It is not broken, but it has no context API and needs a hand-written write mutex per connection. |
-| stdlib `ServeMux` | chi v5.5.0 (2026-10-14) | If middleware stacks, route groups, or sub-routers become real. For ~10 routes, `mux.HandleFunc("POST /api/v1/ports/{port}/fan", h)` is enough. |
-| go-toml v2 v2.4.3 | BurntSushi/toml v1.6.0 (2025-12) | Equally solid TOML 1.0 parser; its `MetaData.Undecoded()` can also flag unknown keys but without the contextual error rendering. Choose it only if `toml.Primitive` deferred decoding is needed for polymorphic fault profiles (possible in P2). |
-| uPlot | Chart.js 4.6.1 | Heavier, needs a time adapter for time axes; better when you want many chart types and animations (P3 eye candy). Not for a 20 Hz streaming plot. |
-| uPlot | dygraphs 2.2.2, smoothie 1.36.1 | dygraphs is old and heavy; smoothie is tiny but has weak axes and no dual-scale. |
-| Alpine.js | vanilla JS only | Fine for M1 if you want zero UI dependencies besides uPlot; gets messy as soon as P2 adds fault switches and plug/unplug state. |
-| Alpine.js | Preact + htm (import map) | P3, when the UI becomes componentised. |
-| Hand-rolled flat NDJSON in C++ | ESPHome `json:` component (ArduinoJson 7.4.3) | Only if the build is allowed network access to the PlatformIO registry; **verified to fail offline**. Or vendor ArduinoJson's single header into the component folder if the protocol ever needs nested JSON. |
-| Static host binary | Run `program` in the container | If static linking breaks; bind-mount the run dir and use `--network host`. |
-| gopher-lua (P2) | arnodel/golua v0.4.1 | If CPU/memory quotas on user scripts matter more than Lua 5.1 familiarity; decide in a P2 spike. |
-
-## What NOT to Use
-
-| Avoid | Why | Use Instead |
-|-------|-----|-------------|
-| Dynamic `program` copied out of the image | **[verified]** needs GLIBC 2.38 / GLIBCXX 3.4.31, fails on Debian 12 | `build_flags: [-static]` |
-| `esphome: platformio_options: build_flags:` | Deprecated in 2026.10.1, removed in 2026.12.0 (warning printed during the test build) | `esphome: build_flags:` |
-| ESPHome `json:` component or any component that `cg.add_library()`s | **[verified]** requires network at build; breaks the hermetic/local constraint. Watch AUTO_LOAD chains when real product modules are added later (e.g. `web_server`, `mqtt` pull `json`). | Hand-rolled flat parser; keep the SiL top-level YAML free of components that auto-load `json` |
-| `PollingComponent` for pushed sim sensors (temperature, humidity, buttons) | Sim values are pushed; `update_interval` is rejected on plain components **[verified]**. Exception: the RPM sensor is a `PollingComponent` because IO-02 requires a 1 s windowed mean published at `update_interval` (decision 2026-11-09) | `sensor::Sensor` + `Component`, `publish_state` from the bus handler |
-| ESPHome `socket::` wrapper for the bus | IP-only helpers (`socket_ip`, v4/v6 sockaddr) | Raw `AF_UNIX` sockets + `wake_register_fd` |
-| TCP localhost for the bus | Port collisions in parallel runs, needless network surface | Unix domain socket |
-| Protobuf / gRPC / FlatBuffers for the bus | Toolchain weight for ~dozens of messages/s; loses `socat`/`jq` debuggability | NDJSON |
-| htmx for the UI | Its model is server-rendered HTML fragments; the Go server would then own UI rendering, giving the UI a second surface that the CLI cannot reach, violating "the page is only a client of the same API" | Alpine + JSON/WS |
-| petite-vue | Unmaintained (0.4.1) | Alpine |
-| Any CDN, Google Fonts, `unpkg` at runtime | Locality constraint | Vendored files with recorded sha256 |
-| `testify`, Gin/Echo/Fiber, Viper, Cobra+Viper | Weight and indirection with no benefit for this scope | stdlib `testing`, `ServeMux`, kong + env tags |
-| Fixed `fw` port 6053 and fixed MAC across runs | Collides in HA and in parallel tests | Per-run `api: port:` and `host: mac_address:` |
-| Python in the simulator | Constraint | Go |
-| Wokwi / QEMU | Constraint (cloud / no ESP32-S2 machine) | `host:` platform |
-
-## Stack Patterns by Variant
-
-**If a test runs headless (CI, pytest, agent self-check):**
-- `sil up --headless --no-ui` (or the UI simply unused), unique `--api-port`, `ESPHOME_PREFDIR` and bus path under a per-run temp dir, `sil down` kills the process group.
-- Because the clock is injectable and `t` is on every bus message, the time factor is a later swap of the clock plus the ESPHome patch, not a rewrite.
-
-**If HA is in the loop (interactive, x1 only):**
-- `sil up --api-port 6053 --mac <stable>`; add the device manually in HA by host:port (no mDNS). Use a stable MAC so HA keeps one device across restarts.
-
-**When the time factor lands (later milestone), re-check the patch targets in 2026.10.1:**
-- `components/host/hal.cpp`: `millis`, `millis_64`, `micros`, `arch_get_cpu_cycle_count` (all `clock_gettime(CLOCK_MONOTONIC)`), `delay`, `delayMicroseconds` (`nanosleep`), as listed in PROJECT.md. **[source]**
-- **Correction to PROJECT.md:** the main-loop `select()` timeout is **no longer in `core/application.cpp`**. In 2026.10.1 it is `esphome::internal::wakeable_delay()` in `esphome/core/wake/wake_host.cpp`, called from the application loop, and `Application::loop()` reads time through `MillisInternal::get()` which delegates to `millis()` on host. The patch must scale that `select()` timeout and `time_t`-based wall clock (`core/time.cpp` `::time(nullptr)`) deliberately.
-- Apply the patch by a derived image: `FROM ghcr.io/esphome/esphome:2026.10.1` + `patch`; keep the version check that refuses any other ESPHome version.
-
-## Version Compatibility
-
-| Package A | Compatible With | Notes |
-|-----------|-----------------|-------|
-| Go 1.27.3 | all listed Go modules | `coder/websocket`, `kong`, `go-toml/v2` are plain modules with no cgo; `CGO_ENABLED=0` static build works. |
-| Go 1.27 `net.UnixConn` | sim-bus reader | Read methods now return `io.EOF` directly (not wrapped in `*net.OpError`); use `errors.Is(err, io.EOF)`. |
-| Go 1.27 `encoding/json` (v2-backed) | NDJSON bus | Stricter: rejects duplicate object names and invalid UTF-8. Fine; the C++ side never emits them. Do not set `GOEXPERIMENT=nojsonv2` (documented as going away). |
-| ESPHome 2026.10.1 | `external_components` `type: local` / `github://zeroflow/esphome-sil@vX.Y` | Component Python must use 2026.10 helper names: `output.register_output`, `sensor.new_sensor`, `binary_sensor.new_binary_sensor`, `light.register_light`, `light.ADDRESSABLE_LIGHT_SCHEMA`. All **[verified]** to compile. |
-| ESPHome 2026.10.1 `light` | `esp32_rmt_led_strip` `channel_colors` | `channel_colors` needs 2026.8.0+ (hardware YAML `min_version`); the sim light has no channel order. `light.migrate_channel_colors` removal is scheduled for 2027.3.0. |
-| `aioesphomeapi` 46.12.0 (image) / 46.28.0 (PyPI) | ESPHome 2026.10.1 native API | Connected, listed entities, subscribed states and sent a fan command **[verified]** with the image's 46.12.0. |
-| uPlot 1.6.32 | Alpine 3.17.5 | No interaction; keep uPlot outside Alpine reactivity. |
 
 ## Sources
 
-- Local image `ghcr.io/esphome/esphome:2026.10.1` (source read and built against): `esphome/host/toolchain.py`, `esphome/build_gen/host.py`, `components/host/{__init__.py,hal.cpp,core.cpp,preferences.cpp}`, `core/wake.h`, `core/wake/wake_host.{h,cpp}`, `core/millis_internal.h`, `components/{output,light,partition,sensor,binary_sensor,esp32_rmt_led_strip,json,mdns,socket}` : HIGH (primary source plus execution)
-- Prototype runs (scratchpad): minimal host build, static build, `sim_bus` component set, runtime round trip via `aioesphomeapi`, offline (`--network none`) incremental build, offline failure of `json:` : HIGH (observed)
-- Go module proxy `proxy.golang.org/<module>/@latest` for cobra v1.10.2, urfave/cli v3.14.0, kong v1.17.0, coder/websocket v1.8.15, gorilla/websocket v1.5.3, chi v5.5.0, go-toml v2.4.3, BurntSushi/toml v1.6.0, gopher-lua v1.1.2, golua v0.4.1 : HIGH
-- `https://go.dev/dl/?mode=json` (Go 1.27.3 stable, 1.26.10; tarball sha256) and `https://go.dev/doc/go1.27` (json v2 backing, `UnixConn` EOF change, `synctest.Sleep`, removed GODEBUGs) : HIGH
-- `https://registry.npmjs.org/<pkg>/latest` for uplot 1.6.32, alpinejs 3.17.5, htmx.org 2.0.11, preact 11.2.0, htm 3.1.1, chart.js 4.6.1, petite-vue 0.4.1; jsDelivr file sizes for the vendored files : HIGH
-- Context7 `/coder/websocket` (Accept options, `CloseRead`, concurrency guarantees) and `/alecthomas/kong` (`Run` methods, `env` tags, positional args) : HIGH
-- `https://raw.githubusercontent.com/pelletier/go-toml/v2/README.md` (strict mode via `DisallowUnknownFields`, contextualized `DecodeError`, TOML 1.1.0) : MEDIUM (type names `StrictMissingError` not confirmed from this page)
-- `https://raw.githubusercontent.com/arnodel/golua/master/README.md` (Lua 5.3, alpha quotas) : MEDIUM
-- BurntSushi/toml `Undecoded()` behaviour, cobra completion claims, Lua 5.1 specifics of gopher-lua : training knowledge, LOW-MEDIUM; none of them drive an M1 decision
-
----
-*Stack research for: ESPHome host-platform SiL test bench (esphome-sil)*
-*Researched: 2026-11-08*
+- Pinned image `ghcr.io/esphome/esphome:2026.10.1`, source read: `components/pulse_counter/{sensor.py,pulse_counter_sensor.cpp,.h}` (PCNT default, 13 us filter cap), `components/pulse_meter/{sensor.py,pulse_meter_sensor.cpp,.h}`, `components/api/{api.proto,api_frame_helper.h,api_connection.cpp,__init__.py}` (message IDs, 32 KiB message cap, 60 s keepalive, `supports_response`, json auto-load), `components/esp32/__init__.py` (Arduino 3.3.12 recommended): HIGH
+- `/home/claude/esphome-sil/internal/apiclient/probe.go`, `fans/*.toml`, `ui/web/vendor/VENDOR.md`, `internal/fwbuild/*.go`: HIGH (local code)
+- `/home/claude/wifi-fancontroller/hardware-rev-3.1.yaml` (ledc 25 kHz GPIO12-15, pulse_counter GPIO16/17/18/21, `multiply: 0.5`): HIGH
+- Go module proxy `proxy.golang.org`: gonum v0.17.0 (2025-12-29), mycontroller-org/esphome_api v1.4.0 (2026-07-18, go.mod read), google.golang.org/protobuf v1.36.12, flynn/noise v1.1.0 (latest tag), x/crypto v0.58.0: HIGH
+- gonum v0.17.0 source downloaded and listed (`optimize/`, `interp/`; no Levenberg-Marquardt or isotonic code found by grep): HIGH
+- `https://go.dev/blog/randv2` (derived-method value streams locked in): MEDIUM-HIGH (statement about PCG/ChaCha8 output stability is implicit; golden canary test recommended)
+- `https://developers.esphome.io/architecture/api/protocol_details/` (Noise frame layout, handshake): HIGH
+- Context7 `/gonum/gonum` (confirmed package scope only): MEDIUM
+- ESP32-S2 lacks MCPWM, RMT channel count, ISR latency magnitudes: training knowledge, MEDIUM-LOW, none drive a decision

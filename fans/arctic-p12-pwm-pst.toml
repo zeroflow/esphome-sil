@@ -1,22 +1,63 @@
-# Arctic P12 PWM PST, 120 mm case fan (shipped default fan, D-10).
+# Arctic P12 PWM PST, 120 mm case fan (shipped default fan, D-01, D-10).
+#
+# Schema 2 (Phase 4). Every number carries a provenance entry in [provenance] that says where it comes
+# from. Values are ASSUMED unless their provenance says otherwise; Phase 8 replaces them by measurement.
+# The v0.1.0 flat file lives on, byte for byte, as testdata/fans-v0.1.0/arctic-p12-pwm-pst.toml.
+schema = 2
 name = "Arctic P12 PWM PST"
 
-# Provenance of every number below.
-#   min_rpm 200, max_rpm 1800 and min_duty 0.05 with below_min "stop":
-#     Arctic product page https://arctic.de/it/P12-PWM-PST/ACFAN00120A
-#     ("200-1800 rpm PWM controlled, 0 rpm below 5 % PWM").
-#   Independent cross-check (low confidence, read from a search summary, the
-#     page itself was not reachable): the TechPowerUp review of the P12 PWM PST
-#     measured about 215 RPM at 5 % PWM and about 1829 RPM at 100 %.
-#   start_duty 0.10, tau_up 1.0 s and tau_down 2.5 s are ASSUMED, not measured:
-#     the datasheet lists no value for them (only a 3.9 V starting voltage).
-#     They only shape the transient. Confirm or replace them by measurement.
-source = "https://arctic.de/it/P12-PWM-PST/ACFAN00120A (200-1800 rpm, 0 rpm below 5 % PWM); TechPowerUp review of the P12 PWM PST (about 215 RPM at 5 %, 1829 RPM at 100 %, low confidence); start_duty, tau_up and tau_down are ASSUMED, not measured"
+[sources]
+# Both pages state the same values. arctic_page_en is informational only: no provenance entry cites it,
+# every Arctic `datasheet` value cites arctic_page. The real SKU (ACFAN00120A or ACFAN00170A) is read off
+# the box at the Phase 8 bench setup (D-04 amendment); it is a deferred idea, not settled here.
+arctic_page = "https://arctic.de/it/P12-PWM-PST/ACFAN00120A"
+arctic_page_en = "https://www.arctic.de/en/P12-PWM-PST/ACFAN00170A"
 
-min_duty   = 0.05
-start_duty = 0.10    # ASSUMED (no datasheet value): duty at which a stopped fan starts to spin
-below_min  = "stop"
-min_rpm    = 200.0
-max_rpm    = 1800.0
-tau_up     = 1.0     # ASSUMED (no datasheet value): spin-up time constant in seconds
-tau_down   = 2.5     # ASSUMED (no datasheet value): coast-down time constant in seconds
+[stop]
+duty = 0.05            # page: "0 rpm below 5 % PWM"
+
+[start]
+duty = 0.10            # assumed
+delay_s = 0.4          # assumed: a stopped fan waits this long at or above start.duty before it spins
+
+[dynamics]
+tau_up_s = 1.0         # assumed
+tau_down_s = 2.5       # assumed
+coast_tau_s = 6.0      # assumed: unpowered coast-down after a stop
+
+# End points (200 rpm at 5 %, 1800 rpm at 100 %) are from the page; the interior points are assumed.
+[curve.up]
+duty = [0.05, 0.10, 0.20, 0.40, 0.60, 0.80, 1.00]
+rpm = [200, 300, 480, 820, 1150, 1480, 1800]
+
+# Slightly below the up curve (D-03), assumed.
+[curve.down]
+duty = [0.05, 0.10, 0.20, 0.40, 0.60, 0.80, 1.00]
+rpm = [200, 280, 450, 780, 1100, 1440, 1800]
+
+[tach]
+ppr = 2                # assumed: the page is silent, the Intel 4-wire spec gives 2
+# The standard deviation of the noise in a 1 s reading: two thirds of the 30 rpm step, so the
+# firmware-visible trace jitters (D-03 amendment).
+noise_rpm = 20.0       # assumed
+
+[datasheet]
+airflow_m3h = 95.7
+# derived: 0.1 A x 12 V = 1.2 W, both figures on arctic_page; the page states no watts (D-04 amendment, case a)
+power_w = 1.2
+ref_rpm = 1800
+
+[provenance]
+"stop.duty" = "datasheet:arctic_page"
+"start.duty" = "assumed"
+"start.delay_s" = "assumed"
+"dynamics.tau_up_s" = "assumed"
+"dynamics.tau_down_s" = "assumed"
+"dynamics.coast_tau_s" = "assumed"
+"curve.up" = "assumed:arctic_page"
+"curve.down" = "assumed"
+"tach.ppr" = "assumed"
+"tach.noise_rpm" = "assumed"
+"datasheet.airflow_m3h" = "datasheet:arctic_page"
+"datasheet.power_w" = "datasheet:arctic_page"
+"datasheet.ref_rpm" = "datasheet:arctic_page"

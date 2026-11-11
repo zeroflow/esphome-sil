@@ -388,6 +388,9 @@ type RunFile struct {
 	// versions; readers decode without DisallowUnknownFields).
 	WebPort   int    `json:"web_port,omitempty"`
 	WebListen string `json:"web_listen,omitempty"`
+	// Seed is the noise seed of the run (D-15), copied from spec.json by the supervisor; 0 is a valid
+	// seed. Readers decode without DisallowUnknownFields, so older readers ignore it.
+	Seed uint64 `json:"seed"`
 }
 
 // WriteRunFile writes run.json atomically (tmp + rename, 0600).
@@ -496,6 +499,9 @@ type Spec struct {
 	Listen     string   `json:"listen,omitempty"`
 	AllowHosts []string `json:"allow_hosts,omitempty"`
 	UIDir      string   `json:"ui_dir,omitempty"`
+	// Seed is the noise seed of the run (`sil up --seed`, D-15): written by sil up, read by the
+	// supervisor, which hands it to every engine of the instance. 0 is a valid seed.
+	Seed uint64 `json:"seed"`
 }
 
 // WriteSpec writes spec.json into the run dir.

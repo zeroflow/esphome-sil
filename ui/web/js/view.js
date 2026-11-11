@@ -1,13 +1,20 @@
 // The readout renderer: turns the state mirror (store.js) and the link state into text on the page.
 // It formats what the API reported and derives nothing. Every value element carries data-src (a
 // dotted path into the status JSON) and data-fmt (the formatter); until the first snapshot, and
-// for a path the state does not hold, the element shows `--`, never a fake zero.
+// for a path the state does not hold or a null value, the element shows its format's null text: the
+// em dash for the tach, airflow and power readouts (D-16), `--` for every other readout; never a
+// fake zero.
 
 import { renderButtons } from "./buttons.js";
 import { initFanSelects, renderInputs } from "./inputs.js";
 import { initScopes, setLink as setScopeLink, setStale } from "./plot.js";
 
 const NONE = "--";
+const EM_DASH = "\u2014";
+
+// NULL_TEXT is the text of a readout with no value, by format name; a format not listed shows NONE.
+// The em dash belongs to the three newer readouts (D-16); every older readout keeps `--`.
+const NULL_TEXT = { tach: EM_DASH, flow: EM_DASH, watt: EM_DASH };
 
 const LINK_TEXT = {
   connecting: "CONNECTING",
@@ -34,6 +41,9 @@ const formats = {
   text: (v) => String(v),
   chip: (v) => "P" + v,
   rpm: (v) => String(Math.round(v)),
+  tach: (v) => String(Math.round(v)),
+  flow: (v) => v.toFixed(1),
+  watt: (v) => v.toFixed(2),
   pct: (v) => (v * 100).toFixed(1),
   simtime,
   factor: (v) => "x" + v,
@@ -58,12 +68,13 @@ function lookup(state, path) {
 
 // shown is the text for one value element.
 function shown(state, el) {
+  const none = NULL_TEXT[el.dataset.fmt] ?? NONE;
   if (state === null) {
-    return NONE;
+    return none;
   }
   const v = lookup(state, el.dataset.src);
   if (v === undefined || v === null) {
-    return NONE;
+    return none;
   }
   const fmt = formats[el.dataset.fmt];
   return fmt ? fmt(v) : NONE;
@@ -92,8 +103,6 @@ function buildPanels(n) {
   }
   panelCount = n;
 }
-
-const EM_DASH = "\u2014";
 
 // ledColor is the rendered colour of a lens for the raw "#rrggbb" the firmware wrote: display
 // gamma per channel, round(255 * (c / 255) ** (1 / 2.2)), so a dim value is visibly dim rather than
