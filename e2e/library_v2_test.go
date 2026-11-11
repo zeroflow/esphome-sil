@@ -133,4 +133,173 @@ func TestLibraryV2(t *testing.T) {
 			return m["k"] == "rpm" && m["port"] == 1.0 && ts >= fallT*1e6 && math.Abs(v-1100) <= 3
 		})
 	})
+
+	// start_stop (criterion 2): Fan 2 (port 2) from rest on the shipped Arctic. Below start.duty it stays at
+	// rest; at exactly start.duty it starts after start.delay_s (the boundary is at or above, D-11 as amended);
+	// between stop.duty and start.duty it keeps running; below stop.duty it stops at once and coasts with
+	// coast_tau_s. Port 3 then holds the Noctua's never-stops floor (D-10).
+	t.Run("start_stop", func(t *testing.T) {
+		// exactly start.duty 0.10: the start boundary is at or above, D-11 as amended
+		const startSpeed = 10
+		w := watchStart(t, env, "watch", "-i", name, "--kind", "duty,state")
+		duty2 := func(want float64) func(map[string]any) bool {
+			return func(m map[string]any) bool {
+				v, _ := m["v"].(float64)
+				return m["k"] == "duty" && m["port"] == 2.0 && math.Abs(v-want) <= 1e-6
+			}
+		}
+		state2 := func(m map[string]any) bool { return m["k"] == "state" && m["port"] == 2.0 }
+		waitDuty := func(want float64) {
+			t.Helper()
+			env.WaitStatus(t, name, 10*time.Second, func(s map[string]any) bool {
+				return math.Abs(tracerPortValue(s, 1, "duty")-want) <= 1e-6
+			})
+		}
+
+		// Speed 8, below start.duty 0.10: stays at rest.
+		modelSetFan(t, env, apiPort, apiKey, 2, 8)
+		waitDuty(0.08)
+		n := modelObserve(t, env, name, 3*time.Second, func(st map[string]any) {
+			if rpm := tracerPortValue(st, 1, "rpm"); rpm != 0 {
+				t.Fatalf("Fan 2 at duty 0.08 from rest has rpm %v, want exactly 0", rpm)
+			}
+			if s := modelPortState(st, 1); s != "stopped" {
+				t.Fatalf("Fan 2 at duty 0.08 from rest is %q, want stopped", s)
+			}
+		})
+		if n < 5 {
+			t.Fatalf("only %d status samples in 3 s", n)
+		}
+
+		// Exactly start.duty: it starts, after the start delay.
+		modelSetFan(t, env, apiPort, apiKey, 2, startSpeed)
+		de, _ := w.until(t, 10*time.Second, "the duty event of port 2 at 0.1", duty2(0.1))
+		if v, _ := de["v"].(float64); v != 0.1 {
+			t.Fatalf("the start boundary is not under test: duty v=%v, want exactly 0.1 (start.duty 0.10): %v", de["v"], de)
+		}
+		justAfter := env.Status(t, name) // one poll right after the duty event
+		re, _ := w.until(t, 10*time.Second, "the state event of port 2 after the duty event", state2)
+		if re["v"] != "running" {
+			t.Fatalf("the state event after the duty event at start.duty is %v, want running: %v", re["v"], re)
+		}
+		dt := time.Duration((re["t"].(float64) - de["t"].(float64)) * float64(time.Microsecond))
+		// The duty event is stamped at the exact bus frame time, but the model applies the duty to the whole
+		// 10 ms engine tick that follows it and the state event is stamped at the tick that ends the delay, so
+		// the measured delay is start.delay_s 0.4 less up to one tick: (390, 400] ms. The window is one engine
+		// tick either side of 0.4 s.
+		if dt < 390*time.Millisecond || dt > 410*time.Millisecond {
+			t.Errorf("port 2 started %s of sim time after the duty event, want 390 to 410 ms (start.delay_s 0.4 within one 10 ms engine tick): %v then %v", dt, de, re)
+		}
+		if modelSimTime(justAfter) < re["t"].(float64)/1e6 {
+			if rpm := tracerPortValue(justAfter, 1, "rpm"); rpm != 0 {
+				t.Errorf("port 2 had rpm %v at sim %.3f s, before its running event at %.3f s, want 0 during the delay",
+					rpm, modelSimTime(justAfter), re["t"].(float64)/1e6)
+			}
+		}
+
+		// Spun up, then speed 6, between stop.duty 0.05 and start.duty 0.10: it keeps running.
+		if err := sysClock.Sleep(context.Background(), 10*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		modelSetFan(t, env, apiPort, apiKey, 2, 6)
+		waitDuty(0.06)
+		modelObserve(t, env, name, 3*time.Second, func(st map[string]any) {
+			if s := modelPortState(st, 1); s != "running" {
+				t.Fatalf("Fan 2 at duty 0.06 (between stop.duty and start.duty) is %q, want running", s)
+			}
+		})
+
+		// Speed 3, below stop.duty: it stops at once and coasts with coast_tau_s 6 (not tau_down_s 2.5).
+		modelSetFan(t, env, apiPort, apiKey, 2, 3)
+		de, _ = w.until(t, 10*time.Second, "the duty event of port 2 at 0.03", duty2(0.03))
+		se, _ := w.until(t, 10*time.Second, "the state event of port 2 after duty 0.03", state2)
+		if se["v"] != "stopped" {
+			t.Fatalf("the state event after duty 0.03 is %v, want stopped: %v", se["v"], se)
+		}
+		if gap := time.Duration((se["t"].(float64) - de["t"].(float64)) * float64(time.Microsecond)); gap > 100*time.Millisecond {
+			t.Errorf("port 2 stopped %s of sim time after duty 0.03, want at once (<= 100 ms)", gap)
+		}
+		first := env.WaitStatus(t, name, 5*time.Second, func(s map[string]any) bool { return modelPortState(s, 1) == "stopped" })
+		if err := sysClock.Sleep(context.Background(), 2*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		second := env.Status(t, name)
+		r1, r2 := tracerPortValue(first, 1, "rpm"), tracerPortValue(second, 1, "rpm")
+		dsim := modelSimTime(second) - modelSimTime(first)
+		if r1 <= 0 || r2 <= 0 {
+			t.Fatalf("the coast-down is not observable: rpm %v then %v", r1, r2)
+		}
+		want := math.Exp(-dsim / 6)
+		if got := r2 / r1; math.Abs(got/want-1) > 0.03 {
+			t.Errorf("coast ratio %.4f over %.3f s of sim time (rpm %v -> %v), want exp(-dsim/6) = %.4f within 3 %% (coast_tau_s 6, not tau_down_s 2.5)",
+				got, dsim, r1, r2, want)
+		}
+
+		// Port 3, never stops (D-10): the Noctua holds 450 rpm at duty 0.
+		out, code, stderr := env.Sil(t, "set", "port3.fan=noctua-nf-a12x25-pwm", "-i", name)
+		if code != 0 {
+			t.Fatalf("set port3.fan=noctua-nf-a12x25-pwm: exit %d: %v\nstderr: %s", code, out, stderr)
+		}
+		modelSetFan(t, env, apiPort, apiKey, 3, 0)
+		if err := sysClock.Sleep(context.Background(), 20*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		st := env.Status(t, name)
+		if rpm := tracerPortValue(st, 2, "rpm"); math.Abs(rpm-450) > 2 {
+			t.Errorf("Noctua on port 3 at duty %v has rpm %v, want 450 within 2 (never stops)", tracerPortValue(st, 2, "duty"), rpm)
+		}
+		if s := modelPortState(st, 2); s != "running" {
+			t.Errorf("Noctua on port 3 at duty 0 is %q, want running", s)
+		}
+	})
+
+	// loads_and_tach (criterion 3 status side, criterion 4): Fan 1 at speed 60 for 10 s on the shipped Arctic.
+	t.Run("loads_and_tach", func(t *testing.T) {
+		w := watchStart(t, env, "watch", "-i", name, "--kind", "tach,load")
+		modelSetFan(t, env, apiPort, apiKey, 1, 60)
+		libv2WaitRPM(t, env, name, 0, "speed 60", 1150, 2, "up", 25*time.Second)
+		if err := sysClock.Sleep(context.Background(), 10*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		st := env.Status(t, name)
+		rpm := tracerPortValue(st, 0, "rpm")
+		air, pow, tach := tracerPortValue(st, 0, "airflow_m3h"), tracerPortValue(st, 0, "power_w"), tracerPortValue(st, 0, "tach_rpm")
+		near := func(got, want float64) bool { return math.Abs(got-want) <= 1e-6*math.Abs(want) }
+		if want := 95.7 * rpm / 1800; !near(air, want) {
+			t.Errorf("airflow_m3h = %v at rpm %v, want 95.7*rpm/1800 = %v", air, rpm, want)
+		}
+		if want := 1.2 * math.Pow(rpm/1800, 3); !near(pow, want) {
+			t.Errorf("power_w = %v at rpm %v, want 1.2*(rpm/1800)^3 = %v", pow, rpm, want)
+		}
+		if _, ok := jget(st, "ports", 0, "tach_rpm").(float64); !ok {
+			t.Errorf("tach_rpm is %v, want a number: %v", jget(st, "ports", 0, "tach_rpm"), jget(st, "ports", 0))
+		} else if math.Abs(tach/30-math.Round(tach/30)) > 1e-6 || math.Abs(tach-rpm) > 120 {
+			t.Errorf("tach_rpm = %v at rpm %v, want a whole multiple of 30 within 120 of rpm", tach, rpm)
+		}
+
+		var load, tachEv map[string]any
+		w.until(t, 10*time.Second, "a load event and a tach event with a value for port 1", func(m map[string]any) bool {
+			if m["port"] != 1.0 {
+				return false
+			}
+			switch m["k"] {
+			case "load":
+				if v, _ := m["v"].(map[string]any); v != nil {
+					_, a := v["airflow_m3h"].(float64)
+					_, p := v["power_w"].(float64)
+					if a && p {
+						load = m
+					}
+				}
+			case "tach":
+				if _, ok := m["v"].(float64); ok {
+					tachEv = m
+				}
+			}
+			return load != nil && tachEv != nil
+		})
+		if v := tachEv["v"].(float64); math.Abs(v/30-math.Round(v/30)) > 1e-6 {
+			t.Errorf("tach event v = %v, want a whole multiple of 30: %v", v, tachEv)
+		}
+	})
 }
