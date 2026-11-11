@@ -913,3 +913,39 @@ func TestLocateStringsAndEscapes(t *testing.T) {
 		})
 	}
 }
+
+// IN-03: a schema 2 body without `schema = 2` is read as schema 1; the error says what is missing.
+func TestMissingSchemaKeyHintsAtSchema2(t *testing.T) {
+	const hint = "(a schema 2 file needs schema = 2 at the top)"
+	noSchema := strings.Replace(v2base, "schema = 2\n", "", 1)
+	if noSchema == v2base {
+		t.Fatal("test setup: v2base has no schema line")
+	}
+	_, err := load(noSchema)
+	if err == nil {
+		t.Fatal("a schema 2 body without the schema key loaded")
+	}
+	fe := asError(t, err)
+	if !strings.HasPrefix(fe.Msg, "unknown field ") || !strings.HasSuffix(fe.Msg, hint) || fe.Line == 0 {
+		t.Errorf("error %q (line %d), want an unknown field error at a line ending in %q", err, fe.Line, hint)
+	}
+	if first, _, _ := strings.Cut(fe.Key, "."); !schema2Tables[first] {
+		t.Errorf("key %q is not a schema 2 table", fe.Key)
+	}
+
+	// A plain typo in a schema 1 file keeps its message, with and without `schema = 1`.
+	for name, body := range map[string]string{
+		"no schema key": strings.Replace(base, "max_rpm", "max_rmp", 1),
+		"schema = 1":    "schema = 1\n" + strings.Replace(base, "max_rpm", "max_rmp", 1),
+	} {
+		_, err := load(body)
+		if fe := asError(t, err); fe.Key != "max_rmp" || fe.Msg != "unknown field max_rmp" {
+			t.Errorf("%s: key %q msg %q, want the plain unknown field error", name, fe.Key, fe.Msg)
+		}
+	}
+	// An explicit `schema = 1` with a schema 2 table is not a missing key: no hint.
+	_, err = load("schema = 1\n" + base + "\n[stop]\nduty = 0.05\n")
+	if fe := asError(t, err); strings.Contains(fe.Msg, hint) {
+		t.Errorf("schema = 1 with a [stop] table: %q, want no schema 2 hint", fe.Msg)
+	}
+}

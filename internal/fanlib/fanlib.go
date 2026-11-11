@@ -136,7 +136,13 @@ func loadFrom(fsys fs.FS, id, file string) (model.Params, error) {
 	if err := toml.Unmarshal(data, &probe); err != nil {
 		return model.Params{}, decodeError(file, err)
 	}
-	if probe.Schema == nil || *probe.Schema == 1 {
+	if probe.Schema == nil {
+		// No schema key means schema 1 (v0.1.0). A schema 2 body without `schema = 2` fails the
+		// strict v1 decode, so say what is missing.
+		p, err := loadV1(file, data)
+		return p, hintSchema2(err)
+	}
+	if *probe.Schema == 1 {
 		return loadV1(file, data)
 	}
 	switch n := *probe.Schema; {
@@ -149,6 +155,26 @@ func loadFrom(fsys fs.FS, id, file string) (model.Params, error) {
 		return model.Params{}, &Error{File: file, Line: locate(data, "", "schema"), Key: "schema",
 			Msg: "schema must be 1 or 2"}
 	}
+}
+
+// schema2Tables are the top-level keys that exist only in a schema 2 file.
+var schema2Tables = map[string]bool{
+	"sources": true, "stop": true, "start": true, "dynamics": true, "curve": true,
+	"tach": true, "datasheet": true, "measured": true, "provenance": true,
+}
+
+// hintSchema2 appends a hint to the "unknown field" error of a file without a schema key when the
+// field is a schema 2 table: the likely cause is a schema 2 file that forgot `schema = 2`. Any other
+// error is returned unchanged.
+func hintSchema2(err error) error {
+	var fe *Error
+	if !errors.As(err, &fe) || !strings.HasPrefix(fe.Msg, "unknown field ") {
+		return err
+	}
+	if first, _, _ := strings.Cut(fe.Key, "."); schema2Tables[first] {
+		fe.Msg += " (a schema 2 file needs schema = 2 at the top)"
+	}
+	return err
 }
 
 // decodeError turns a go-toml error into a located *Error.
