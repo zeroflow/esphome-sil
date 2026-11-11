@@ -251,7 +251,7 @@ func (s *supervisor) run(sigCtx context.Context) error {
 	rf := instance.RunFile{
 		Schema: 1, Instance: s.id.Name, PID: os.Getpid(),
 		RunDir: s.paths.RunDir, APISock: s.paths.APISock(), BusSock: s.paths.BusSock(),
-		WebPort: s.id.WebPort, WebListen: s.webListen,
+		WebPort: s.id.WebPort, WebListen: s.webListen, Seed: s.spec.Seed,
 	}
 	if err := instance.WriteRunFile(s.paths, rf); err != nil {
 		return apperr.Infra("run_file_failed", "cannot write run.json", map[string]any{"error": err.Error()})
@@ -355,6 +355,8 @@ func (s *supervisor) mainLoop(sigCtx context.Context) (err error) {
 // waits until it listens on the bus socket. The caller holds inMu from before this call until the
 // engine is in the slot, so a concurrent Set cannot fall between the two.
 func (s *supervisor) startEngine() (*engineSlot, error) {
+	// engCfg carries the noise seed (D-15): a SimRestart builds its new engine from the same config,
+	// so the seed is kept, and `sil fw restart` never touches the engine at all.
 	cfg := s.engCfg
 	cfg.Env = s.inputs
 	cfg.Ports = append([]engine.PortConfig(nil), s.fans...)

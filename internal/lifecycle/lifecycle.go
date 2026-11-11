@@ -163,6 +163,9 @@ func Up(ctx context.Context, o UpOptions) (UpResult, error) {
 	if err := checkWebOptions(&o); err != nil {
 		return UpResult{}, err
 	}
+	if err := checkSeed(o); err != nil {
+		return UpResult{}, err
+	}
 	configPath, repo, err := resolveConfig(o.ConfigPath)
 	if err != nil {
 		return UpResult{}, err
@@ -673,5 +676,8 @@ const maxSeed uint64 = 1<<53 - 1
 
 // checkSeed is a pure check: Up runs it before anything is built, locked or written.
 func checkSeed(o UpOptions) error {
+	if o.Seed != nil && *o.Seed > maxSeed {
+		return apperr.Failed("invalid_argument", "--seed must be an integer from 0 to 9007199254740991", map[string]any{"seed": *o.Seed})
+	}
 	return nil
 }
