@@ -129,8 +129,10 @@ type Config struct {
 	// Seq returns the seq of the last event published by anyone; SnapshotSync stamps it on its
 	// snapshot. Nil means the last seq this engine emitted.
 	Seq func() uint64
-	// Seed is the noise seed every port's plant is built with. It has no effect until the tach
-	// noise of plan 04-04; the supervisor sets it from spec.json (plan 04-05).
+	// Seed keys the tach noise of every port's plant (model.NewPlant, in New and when an apply
+	// replaces a plant); the supervisor sets it from spec.json. A replug or an engine restart
+	// rebuilds the plant with the same seed, so the noise stream restarts at bucket 0: buckets are
+	// counted in plant time, not in wall time.
 	Seed uint64
 }
 
