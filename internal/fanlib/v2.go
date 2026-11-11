@@ -280,11 +280,20 @@ func validateV2(file string, data []byte, r rawV2) (model.Params, error) {
 		}
 	}
 
-	// (e) D-10: a fan that never stops carries its floor rpm as a curve point at duty 0.
-	if *stopDuty == 0 && !(upCurve[0].Duty == 0 && upCurve[0].RPM > 0) {
-		return model.Params{}, fail("stop.duty",
-			"stop.duty = 0 (the fan never stops) needs the first curve.up point at duty 0 with rpm > 0 (the floor rpm); got duty %g rpm %g",
-			upCurve[0].Duty, upCurve[0].RPM)
+	// (e) D-10: a fan that never stops carries its floor rpm as a curve point at duty 0. The rule
+	// holds for curve.down too when there is one: the plant follows it while the duty falls, so a
+	// down curve that reaches 0 rpm would stop a fan that is reported as running.
+	if *stopDuty == 0 {
+		if !(upCurve[0].Duty == 0 && upCurve[0].RPM > 0) {
+			return model.Params{}, fail("stop.duty",
+				"stop.duty = 0 (the fan never stops) needs the first curve.up point at duty 0 with rpm > 0 (the floor rpm); got duty %g rpm %g",
+				upCurve[0].Duty, upCurve[0].RPM)
+		}
+		if len(downCurve) > 0 && !(downCurve[0].Duty == 0 && downCurve[0].RPM > 0) {
+			return model.Params{}, fail("curve.down.duty",
+				"stop.duty = 0 (the fan never stops) needs the first curve.down point at duty 0 with rpm > 0 (the floor rpm); got duty %g rpm %g",
+				downCurve[0].Duty, downCurve[0].RPM)
+		}
 	}
 
 	// (f) Provenance.

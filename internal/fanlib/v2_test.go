@@ -145,6 +145,9 @@ func TestV2NeverStopsFormDerivesHold(t *testing.T) {
 	hold := v2with(t, "[stop]\nduty = 0.05", "[stop]\nduty = 0.0")
 	hold = strings.Replace(hold, "[curve.up]\nduty = [0.05,", "[curve.up]\nduty = [0.0,", 1)
 	hold = strings.Replace(hold, "rpm = [300, 600,", "rpm = [450, 600,", 1)
+	// The down curve carries the floor rpm at duty 0 as well (WR-01).
+	hold = strings.Replace(hold, "[curve.down]\nduty = [0.05,", "[curve.down]\nduty = [0.0,", 1)
+	hold = strings.Replace(hold, "rpm = [300, 520,", "rpm = [450, 520,", 1)
 	p, err := load(hold)
 	if err != nil {
 		t.Fatalf("never-stops fan: %v", err)
@@ -154,6 +157,9 @@ func TestV2NeverStopsFormDerivesHold(t *testing.T) {
 	}
 	if !model.Initial(p).Running {
 		t.Error("a never-stops fan must start out running")
+	}
+	if p.MinRPM != 450 || p.Curve.Down[0] != (model.Point{Duty: 0, RPM: 450}) {
+		t.Errorf("MinRPM %v first down point %+v, want 450 / (0, 450)", p.MinRPM, p.Curve.Down[0])
 	}
 
 	for name, body := range map[string]string{
@@ -169,6 +175,33 @@ func TestV2NeverStopsFormDerivesHold(t *testing.T) {
 		if fe.Key != "stop.duty" || fe.Line != lineWith(t, body, "duty = 0.0") {
 			t.Errorf("%s: key %q line %d, want stop.duty at its line", name, fe.Key, fe.Line)
 		}
+	}
+
+	// WR-01: the rule holds for curve.down too, or the fan would decay to 0 rpm while "running".
+	for name, body := range map[string]string{
+		"down first point at 0.05": strings.Replace(hold, "[curve.down]\nduty = [0.0,", "[curve.down]\nduty = [0.05,", 1),
+		"down floor rpm 0":         strings.Replace(hold, "rpm = [450, 520,", "rpm = [0, 520,", 1),
+		"down starts at half duty": strings.Replace(hold, "[curve.down]\nduty = [0.0, 0.20, 0.40, 0.60, 0.80, 1.00]", "[curve.down]\nduty = [0.5, 0.60, 0.70, 0.80, 0.90, 1.00]", 1),
+	} {
+		_, err := load(body)
+		if err == nil {
+			t.Errorf("%s: loaded, want an error", name)
+			continue
+		}
+		fe := asError(t, err)
+		if fe.Key != "curve.down.duty" || !strings.Contains(fe.Msg, "curve.down") || fe.Line != lineIn(t, body, "curve.down", "duty") {
+			t.Errorf("%s: key %q line %d msg %q, want curve.down.duty at the down duty line", name, fe.Key, fe.Line, fe.Msg)
+		}
+	}
+
+	// Without a down curve the up curve is used, so the up rule is all that applies.
+	noDown := strings.Replace(hold, "[curve.down]\nduty = [0.0, 0.20, 0.40, 0.60, 0.80, 1.00]\nrpm = [450, 520, 900, 1200, 1480, 1700]\n", "", 1)
+	noDown = strings.Replace(noDown, "\"curve.down\" = \"assumed:test\"\n", "", 1)
+	if strings.Contains(noDown, "curve.down") {
+		t.Fatal("test setup: the down curve is still in the file")
+	}
+	if p, err := load(noDown); err != nil || p.BelowMin != "hold" || p.Curve.Down != nil {
+		t.Errorf("never-stops fan without a down curve: %+v, %v", p, err)
 	}
 }
 
