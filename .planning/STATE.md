@@ -5,16 +5,16 @@ milestone_name: Real Fans
 current_phase: 04
 current_phase_name: Fan Model v2
 status: executing
-stopped_at: Completed 04-07-PLAN.md
-last_updated: "2026-11-11T06:30:56.256Z"
+stopped_at: Completed 04-08-PLAN.md
+last_updated: "2026-11-11T07:03:13.314Z"
 last_activity: 2026-11-11
 last_activity_desc: Phase 04 execution started
-state_head: 33475b4111a36ccccedb679643ab30d2d413e5ec
+state_head: b3b43e8ea7840924eea0a7530ad5aceefec1ab1b
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 10
-  completed_plans: 7
+  completed_plans: 8
   percent: 0
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-11-10)
 ## Current Position
 
 Phase: 04 (Fan Model v2) — EXECUTING
-Plan: 8 of 10
+Plan: 9 of 10
 Status: Ready to execute
 Last activity: 2026-11-11 — Phase 04 execution started
 
@@ -104,6 +104,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 04 P05 | 5 min | 2 tasks | 9 files |
 | Phase 04 P06 | 14 min | 2 tasks | 11 files |
 | Phase 04 P07 | 15 min | 2 tasks | 12 files |
+| Phase 04 P08 | 35 min | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -214,6 +215,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-06: fan-law exponents fixed at 1 (airflow) and 3 (power) on the noise-free shaft; cubic law underestimates low-speed power (PITFALLS 31)
 - [Phase 04]: 04-07: the null text belongs to the format (view.js NULL_TEXT): em dash for tach, flow and watt (D-16 amended), -- for every other readout
 - [Phase 04]: 04-07: loads row is 28 px and the strip sits above the grid (z-index) so strip controls stay reachable in a short window
+- [Phase 04]: 04-08: uitest incl. parity_test stays unpinned on the shipped schema 2 library (D-02 exemption, user 2026-11-11); exact suites run on testdata/fans-v0.1.0
+- [Phase 04]: 04-08: shipped fan provenance pinned to evidence by TestShippedProvenanceMatchesEvidence (Arctic datasheet 4/assumed 9, Noctua datasheet 3/assumed 10, none measured); A9 assumed-values stays a maintainer judgment until Phase 8
 
 ### Pending Todos
 
@@ -252,8 +255,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T06:30:56.223Z
-Stopped at: Completed 04-07-PLAN.md
+Last session: 2026-11-11T07:03:13.283Z
+Stopped at: Completed 04-08-PLAN.md
 Resume file: None
 
 ## Needs Human
