@@ -22,20 +22,20 @@ status: all_fixed
 
 ## Fixed Issues
 
-### WR-01: D-10 "never stops" rule is enforced on `curve.up` only
+### WR-01: D-10 "never stops" rule is enforced on `curve.up` only; a `curve.down` can drop a never-stopping fan to 0 rpm
 
 **Files modified:** `internal/fanlib/v2.go`, `internal/fanlib/v2_test.go`
 **Commit:** 6ebeb3f
 **Applied fix:** Rule (e) now also requires the first `curve.down` point to be at duty 0 with rpm > 0 when `stop.duty = 0` and a down curve is present. The error key is `curve.down.duty`, located at the down curve's own duty line. The `curve.up` error keeps its existing key (`stop.duty`). `TestV2NeverStopsFormDerivesHold` now uses a never-stops file whose down curve carries the floor, and it covers three rejected down curves plus a never-stops file without a down curve. The shipped `fans/noctua-nf-a12x25-pwm.toml` (the only never-stops file) already satisfies the rule and still loads (`TestShippedNoctuaFan`).
 **Status note:** logic change (validation rule), requires human verification.
 
-### WR-02: Control characters in `name`, `[sources]` and `[measured]` strings
+### WR-02: Control characters in `name`, `[sources]` and `[measured]` strings are accepted and printed raw to the terminal
 
 **Files modified:** `internal/fanlib/v2.go`, `internal/fanlib/v2_test.go`, `internal/cli/cli.go`, `internal/cli/cli_test.go`
 **Commit:** fdac7ae
 **Applied fix:** Both halves of the suggested fix. The loader rejects any `unicode.IsControl` rune (tab and newline included) in `name`, every `[sources]` text and every `[measured]` string, with a located error "must not contain control characters". `writeFansSummary` passes the fan id, name, source id and source text through a new `terminalSafe` helper, which prints the text unchanged when it is clean and Go-quoted when it holds a control character. Normal output is byte-identical, so the existing summary tests are untouched. The quoting also covers schema 1 names, which the loader does not check. Tests: `TestV2RejectsControlCharacters` (loader) and `TestFansSummaryQuotesControlCharacters` (CLI).
 
-### WR-03: `locate` loses the line number after an escaped quote followed by a bracket
+### WR-03: `locate` loses the line number when a string value holds an escaped quote followed by a bracket
 
 **Files modified:** `internal/fanlib/v2.go`, `internal/fanlib/v2_test.go`
 **Commit:** 34ddfd9
@@ -48,7 +48,7 @@ status: all_fixed
 **Commit:** 39c2f09
 **Applied fix:** Reworded the comment: the seed keys the tach noise of every port's plant, a replug or an engine restart rebuilds the plant with the same seed, and the noise stream restarts at bucket 0 because buckets are counted in plant time. Comment only, no test.
 
-### IN-02: `Plant.Params()` hands out slices that alias the plant's parameters
+### IN-02: `Plant.Params()` hands out slices that alias the plant's own parameters
 
 **Files modified:** `internal/model/fan.go`, `internal/model/plant.go`, `internal/model/fan_test.go`
 **Commit:** a9760fe
