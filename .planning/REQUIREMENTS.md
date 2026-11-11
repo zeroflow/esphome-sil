@@ -8,9 +8,9 @@
 
 ### Fan Model (MODEL)
 
-- [ ] **MODEL-05**: A fan's duty→RPM relation follows separate measured up and down curves (monotone, interpolated) instead of a straight line
-- [ ] **MODEL-06**: A stopped fan starts only at or above its start duty, after an optional start delay, and a running fan stops only below its separate stop duty (amended 2026-11-11 at plan revision: "only above" → "only at or above")
-- [ ] **MODEL-07**: A fan coasts down to 0 with its own dynamics when duty drops below the stop duty, and a fan marked "never stops" holds its floor RPM at 0 % duty
+- [x] **MODEL-05**: A fan's duty→RPM relation follows separate measured up and down curves (monotone, interpolated) instead of a straight line
+- [x] **MODEL-06**: A stopped fan starts only at or above its start duty, after an optional start delay, and a running fan stops only below its separate stop duty (amended 2026-11-11 at plan revision: "only above" → "only at or above")
+- [x] **MODEL-07**: A fan coasts down to 0 with its own dynamics when duty drops below the stop duty, and a fan marked "never stops" holds its floor RPM at 0 % duty
 - [x] **MODEL-08**: `fan.toml` has an explicit `schema = 2` (curves, start/stop, dynamics, tach, datasheet, measured tables); every shipped schema 1 file still loads and behaves exactly as in v0.1.0; unknown keys stay rejected
 - [ ] **MODEL-09**: The RPM the firmware sees comes from a pulse accumulator with the fan's ppr, so the 1 s `pulse_counter`-style window shows the real quantisation steps (30 rpm per pulse at ppr 2); sim-bus protocol stays version 1
 - [ ] **MODEL-10**: RPM carries deterministic seeded noise (same seed and inputs give the same trace regardless of tick timing); noise amplitude comes from `fan.toml`
@@ -82,9 +82,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| MODEL-05 | Phase 4 | Pending |
-| MODEL-06 | Phase 4 | Pending |
-| MODEL-07 | Phase 4 | Pending |
+| MODEL-05 | Phase 4 | Complete |
+| MODEL-06 | Phase 4 | Complete |
+| MODEL-07 | Phase 4 | Complete |
 | MODEL-08 | Phase 4 | Complete |
 | MODEL-09 | Phase 4 | Pending |
 | MODEL-10 | Phase 4 | Pending |
