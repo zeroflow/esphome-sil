@@ -920,6 +920,33 @@ func TestFansSummaryOnStderr(t *testing.T) {
 	}
 }
 
+// WR-02: fan text with a control character (an escape sequence) is printed quoted, never raw.
+func TestFansSummaryQuotesControlCharacters(t *testing.T) {
+	cliEnv(t)
+	p := model.Params{
+		Name: "Evil\x1b[2J", MinRPM: 300, MaxRPM: 1700, BelowMin: "stop", Schema: 2,
+		Provenance: []model.ProvEntry{{Path: "stop.duty", Kind: model.KindDatasheet, Source: "page"}},
+		Sources:    map[string]string{"page": "\x1b]0;title\x07 vendor"},
+	}
+	flat := model.Params{Name: "Flat\x1b[31m", MinRPM: 200, MaxRPM: 1800, BelowMin: "hold", Schema: 1}
+	fc := &fakeControl{status: readyStatus("x"), fans: control.FansResult{Fans: []control.FanInfo{
+		control.NewFanInfo("evil", p), control.NewFanInfo("flat", flat)}}}
+	liveInstance(t, "x", fc)
+
+	r := run(t, "fans", "--verbose", "-i", "x")
+	if r.exit != 0 {
+		t.Fatalf("exit %d, stdout %s", r.exit, r.stdout)
+	}
+	if strings.ContainsAny(r.stderr, "\x1b\x07") {
+		t.Errorf("stderr %q holds a raw control character", r.stderr)
+	}
+	for _, want := range []string{`"Evil\x1b[2J"`, `"\x1b]0;title\a vendor"`, `"Flat\x1b[31m"`} {
+		if !strings.Contains(r.stderr, want) {
+			t.Errorf("stderr %q does not hold the quoted text %s", r.stderr, want)
+		}
+	}
+}
+
 // Prohibition (MODEL-12): a [sources] entry is plain text. `sil fans` prints a URL as given and
 // never fetches or resolves it.
 func TestFansNeverDereferencesSources(t *testing.T) {

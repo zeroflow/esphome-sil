@@ -481,6 +481,30 @@ func curveLines(n int, rpmLast float64) (duty, rpm string) {
 	return "duty = [" + strings.Join(d, ", ") + "]", "rpm = [" + strings.Join(r, ", ") + "]"
 }
 
+// WR-02: free text is printed to a terminal by `sil fans`, so a control character in it is refused.
+func TestV2RejectsControlCharacters(t *testing.T) {
+	record := "date = \"2026-11-10\"\nboard = \"rev33\"\nesphome = \"2026.10.1\"\nrecording_sha256 = \"abc123\"\ntolerance = \"0.05\"\n"
+	measured := withTable("[measured]\n"+record, "measured.tolerance")
+	cases := []struct {
+		name, body, key, line string
+	}{
+		{"name with ESC", v2with(t, "name = \"Curve test fan\"", "name = \"Curve\\u001b[2J\""), "name", "name ="},
+		{"name with a tab", v2with(t, "name = \"Curve test fan\"", "name = \"Curve\\tfan\""), "name", "name ="},
+		{"source text with BEL", v2with(t, "test fixture, not a real fan", "a\\u001b]0;t\\u0007b"), "sources.test", "test ="},
+		{"measured board with NUL", strings.Replace(measured, "board = \"rev33\"", "board = \"rev\\u000033\"", 1), "measured.board", "board ="},
+		{"measured tolerance with ESC", strings.Replace(measured, "tolerance = \"0.05\"", "tolerance = \"\\u001b0.05\"", 1), "measured.tolerance", "tolerance ="},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			wantError(t, c.body, c.key, lineWith(t, c.body, c.line), "control characters")
+		})
+	}
+	// Printable non-ASCII text is fine.
+	if _, err := load(v2with(t, "name = \"Curve test fan\"", "name = \"Lüfter 120 mm · PWM\"")); err != nil {
+		t.Errorf("a name with non-ASCII printable text: %v", err)
+	}
+}
+
 func TestV2Caps(t *testing.T) {
 	upDuty := "duty = [0.05, 0.20, 0.40, 0.60, 0.80, 1.00]"
 	upRPM := "rpm = [300, 600, 1000, 1300, 1550, 1700]"

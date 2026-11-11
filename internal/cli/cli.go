@@ -28,9 +28,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/alecthomas/kong"
 
@@ -467,12 +469,13 @@ func (c *FansCmd) Run(env *runEnv) error {
 // is printed, never opened or fetched.
 func writeFansSummary(w io.Writer, res control.FansResult, verbose bool) {
 	for _, f := range res.Fans {
+		id, name := terminalSafe(f.ID), terminalSafe(f.Name)
 		if f.Provenance == nil {
-			fmt.Fprintf(w, "%s  %s  schema %d  no per-value provenance (flat v0.1.0 file)\n", f.ID, f.Name, f.Schema)
+			fmt.Fprintf(w, "%s  %s  schema %d  no per-value provenance (flat v0.1.0 file)\n", id, name, f.Schema)
 			continue
 		}
 		fmt.Fprintf(w, "%s  %s  schema %d  measured %d · datasheet %d · assumed %d · unobservable %d\n",
-			f.ID, f.Name, f.Schema, f.Provenance.Measured, f.Provenance.Datasheet, f.Provenance.Assumed, f.Provenance.Unobservable)
+			id, name, f.Schema, f.Provenance.Measured, f.Provenance.Datasheet, f.Provenance.Assumed, f.Provenance.Unobservable)
 		if !verbose {
 			continue
 		}
@@ -483,14 +486,23 @@ func writeFansSummary(w io.Writer, res control.FansResult, verbose bool) {
 			}
 			line := fmt.Sprintf("    %-22s%s", path, v.Kind)
 			if v.Source != nil {
-				line += "  " + *v.Source
+				line += "  " + terminalSafe(*v.Source)
 				if text, ok := f.Sources[*v.Source]; ok {
-					line += " " + text
+					line += " " + terminalSafe(text)
 				}
 			}
 			fmt.Fprintln(w, line)
 		}
 	}
+}
+
+// terminalSafe returns s as is, or its Go-quoted form when it holds a control character, so that fan
+// text from a file (a name, a source) can never inject an escape sequence into the terminal.
+func terminalSafe(s string) string {
+	if strings.ContainsFunc(s, unicode.IsControl) {
+		return strconv.Quote(s)
+	}
+	return s
 }
 
 // Run implements `sil history`: the supervisor's sample ring as one JSON value. An out-of-range

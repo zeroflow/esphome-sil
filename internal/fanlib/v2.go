@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/pelletier/go-toml/v2"
 
@@ -34,6 +35,9 @@ import (
 //	[measured]    (optional)    date, board, esphome, recording_sha256, tolerance: non-empty strings
 //	                            of at most 512 bytes
 //	[provenance]                "<value path>" = "<kind>" or "<kind>:<source id>" (at most 64 bytes)
+//
+// name, every [sources] text and every [measured] string must be free of control characters (they
+// are printed to a terminal by `sil fans`).
 //
 // A value path is a member of model.ValuePaths; every value present in the file needs exactly one
 // provenance entry (MODEL-12). measured.tolerance is a value; the other four [measured] keys
@@ -241,6 +245,8 @@ func validateV2(file string, data []byte, r rawV2) (model.Params, error) {
 		return model.Params{}, fail("name", "name must not be empty")
 	case len(*r.Name) > maxNameBytes:
 		return model.Params{}, fail("name", "name is %d bytes; at most %d are allowed", len(*r.Name), maxNameBytes)
+	case hasControl(*r.Name):
+		return model.Params{}, fail("name", "name must not contain control characters")
 	case !(*stopDuty >= 0 && *stopDuty < 1):
 		return model.Params{}, fail("stop.duty", "stop.duty (%g) must be in [0, 1)", *stopDuty)
 	case !(*startDuty >= 0 && *startDuty <= 1):
@@ -372,6 +378,8 @@ func checkOptionalTables(r rawV2, fail func(key, format string, args ...any) err
 				return fail(v.key, "%s must not be empty", v.key)
 			case len(v.v) > maxTextBytes:
 				return fail(v.key, "%s is %d bytes; at most %d are allowed", v.key, len(v.v), maxTextBytes)
+			case hasControl(v.v):
+				return fail(v.key, "%s must not contain control characters", v.key)
 			}
 		}
 	}
@@ -392,9 +400,18 @@ func checkOptionalTables(r rawV2, fail func(key, format string, args ...any) err
 			return fail(key, "%s must not be empty", key)
 		case len(text) > maxTextBytes:
 			return fail(key, "%s is %d bytes; at most %d are allowed", key, len(text), maxTextBytes)
+		case hasControl(text):
+			return fail(key, "%s must not contain control characters", key)
 		}
 	}
 	return nil
+}
+
+// hasControl reports whether s holds a control character (ESC, BEL, NUL, a newline, ...). Fan text
+// is printed to a terminal by `sil fans`, so a control character in it would be an escape sequence
+// injection point (T-04-06).
+func hasControl(s string) bool {
+	return strings.ContainsFunc(s, unicode.IsControl)
 }
 
 // minOrInf is the lowest rpm of c, or +Inf for an empty curve so that it does
