@@ -21,7 +21,7 @@ const (
 
 // Kinds are the change events the engine and the supervisor publish. The stream also carries
 // snapshot, lagged and stopped lines, which are not kinds a watcher can select.
-var Kinds = []string{"duty", "rpm", "state", "fan", "button", "env", "leds", "firmware", "sim"}
+var Kinds = []string{"duty", "rpm", "tach", "state", "fan", "button", "env", "leds", "firmware", "sim"}
 
 // SampleKind is the plot sample: every 100 ms of sim time one event carries the duty and rpm of
 // every port. It is not in Kinds because it is opt-in: a subscription without kinds never gets it
@@ -34,17 +34,22 @@ const HistoryCap = 3000
 
 // Sample is one port's entry of a sample event. Duty and RPM are null (nil) while the firmware is
 // not on the sim-bus: a gap in the plot, never a made-up zero.
+//
+// Tach is the port's tach reading (the last completed 1 s gate, see the tach event): null while the
+// firmware is not on the bus and while the port has no reading yet.
 type Sample struct {
 	Port int      `json:"port"`
 	Duty *float64 `json:"duty"`
 	RPM  *float64 `json:"rpm"`
+	Tach *float64 `json:"tach"`
 }
 
 // Event is one change. T is simulator time in microseconds, Seq a strictly increasing number per
 // broker. V holds the new value; its meaning depends on K (see the Kinds list in the SUMMARY of
 // plan 02-06): duty and rpm a number, state running|stopped, fan an id, button a bool, env a
 // number, firmware a bool, sim "restarted", "behind" or "in_sync", sample a []Sample with one entry
-// per port.
+// per port. tach: V is the rpm of the last completed 1 s gate of the port, or null (a nil *float64,
+// encoded as "v":null) while it has none; it changes at most once per sim second.
 type Event struct {
 	T       int64    `json:"t"`
 	K       string   `json:"k"`

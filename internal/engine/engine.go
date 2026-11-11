@@ -141,6 +141,11 @@ type PortState struct {
 	Duty  float64
 	RPM   float64
 	State string // running|stopped
+	// TachRPM is the last completed 1 s tach gate reading of the port (what the firmware's tach
+	// path reports for a tach fan, the 1 s shaft mean for an ideal tach); nil during the plant's
+	// first second. AirflowM3h and PowerW come from the fan's datasheet by the fan laws and are
+	// nil without one. All three are fresh values per snapshot.
+	TachRPM, AirflowM3h, PowerW *float64
 }
 
 // Snapshot is an immutable view of the engine at one instant.

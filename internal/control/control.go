@@ -129,13 +129,22 @@ type SimStatus struct {
 	Seed uint64 `json:"seed"`
 }
 
-// PortStatus is one fan port.
+// PortStatus is one fan port. RPM is the shaft truth (unchanged since v0.1.0). TachRPM is what the
+// tach reads: the last completed 1 s gate reading, i.e. what the firmware's tach path reports for
+// a tach fan and the 1 s mean of the shaft rpm for an ideal-tach fan (D-13 as amended 2026-11-11).
+// It is null only during the first second after sim start, sim restart or a fan swap on the port,
+// and 0 for a fan at rest. AirflowM3h and PowerW follow from the fan's [datasheet] values by the
+// fan laws on the shaft rpm; they are null exactly when the fan has no datasheet, never 0 (D-16).
+// The three keys are always present, so the Status schema stays 1.
 type PortStatus struct {
-	Port  int     `json:"port"`
-	Fan   string  `json:"fan"`
-	Duty  float64 `json:"duty"`
-	RPM   float64 `json:"rpm"`
-	State string  `json:"state"`
+	Port       int      `json:"port"`
+	Fan        string   `json:"fan"`
+	Duty       float64  `json:"duty"`
+	RPM        float64  `json:"rpm"`
+	State      string   `json:"state"`
+	TachRPM    *float64 `json:"tach_rpm"`
+	AirflowM3h *float64 `json:"airflow_m3h"`
+	PowerW     *float64 `json:"power_w"`
 }
 
 // DownResult is the outcome of stopping an instance.
