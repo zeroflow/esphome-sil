@@ -24,9 +24,14 @@ func us(sec float64) int64 { return int64(sec*1e6 + 0.5) }
 // ports; a nil duty or rpm is the null of a firmware that is off the bus. gap is the engine's
 // first-sample marker.
 func sampleEvent(sec float64, gap bool, duty, rpm *float64) events.Event {
+	return sampleEventTach(sec, gap, duty, rpm, nil)
+}
+
+// sampleEventTach is sampleEvent with the same tach reading (nil: null) on all four ports.
+func sampleEventTach(sec float64, gap bool, duty, rpm, tach *float64) events.Event {
 	v := make([]events.Sample, 4)
 	for i := range v {
-		v[i] = events.Sample{Port: i + 1, Duty: duty, RPM: rpm}
+		v[i] = events.Sample{Port: i + 1, Duty: duty, RPM: rpm, Tach: tach}
 	}
 	return events.Event{T: us(sec), K: events.SampleKind, V: v, Gap: gap}
 }
@@ -643,5 +648,151 @@ func TestNoCSPViolations(t *testing.T) {
 	if errs := p.ConsoleErrors(); len(errs) != 0 {
 		raw, _ := json.Marshal(errs)
 		t.Errorf("console errors with four live scopes: %s", raw)
+	}
+}
+
+// TestScopeTach: bench samples carrying a tach value reach the fourth data array of the scope and are
+// drawn as a stepped trace in the port colour at half alpha, width 1, next to the shaft trace
+// (D-14). A stepped trace holds the value until the next point: midway between a 500 and a 1000
+// reading the column holds the 500 level and nothing at the 750 a straight line would cross.
+func TestScopeTach(t *testing.T) {
+	b := newBench(t)
+	p := plotPage(t, b)
+	waitPlot(t, p, "four scopes", `[1, 2, 3, 4].every((n) => __plot.scopeFor(n) !== null)`, 10*time.Second)
+	waitPlot(t, p, "fan list and scale", `__plot.scopeFor(1).scales.rpm.max === 1800`, 10*time.Second)
+
+	b.publish(sampleEventTach(10, false, nil, nil, f64(500)))
+	b.publish(sampleEventTach(12, false, nil, nil, f64(1000)))
+	b.publish(sampleEventTach(12.1, false, f64(0.4), f64(1110), f64(1110)))
+	waitDrawn(t, p, 1)
+
+	type look struct {
+		Label, Scale, Stroke string
+		Width                float64
+		SpanGaps             any
+		Paths                string
+		Show                 bool
+		Data                 []*float64
+		Stroke1, Stroke2     string
+		Width1, Width2       float64
+	}
+	var l *look
+	evalPlot(t, p, `(() => { const u = __plot.scopeFor(1), s = u.series[3]; if (!s) { return null; }
+	  return {Label: s.label, Scale: s.scale, Stroke: s.stroke(u, 3), Width: s.width, SpanGaps: s.spanGaps, Paths: typeof s.paths, Show: s.show,
+	    Data: u.data[3] || [], Stroke1: u.series[1].stroke(u, 1), Stroke2: u.series[2].stroke(u, 2), Width1: u.series[1].width, Width2: u.series[2].width}; })()`, &l)
+	if l == nil {
+		t.Fatalf("the scope of port 1 has no series 3 (TACH)")
+	}
+	if l.Label != "TACH" || l.Scale != "rpm" || l.Stroke != "rgba(255, 212, 0, 0.5)" || l.Width != 1 || l.SpanGaps != false || l.Paths != "function" || !l.Show {
+		t.Errorf("series 3 = %+v, want label TACH, scale rpm, stroke rgba(255, 212, 0, 0.5), width 1, spanGaps false, a paths function, shown", *l)
+	}
+	if l.Stroke1 != "#ffd400" || l.Width1 != 2 || l.Width2 != 1 || l.Stroke2 != "#ffd400" {
+		t.Errorf("series 1 and 2 changed: strokes %q %q widths %v %v", l.Stroke1, l.Stroke2, l.Width1, l.Width2)
+	}
+	if n := len(l.Data); n < 3 || l.Data[n-1] == nil || *l.Data[n-1] != 1110 {
+		t.Errorf("tach data = %v, want the newest value 1110", show(l.Data))
+	}
+
+	// The column midway between the 500 and the 1000 reading holds the 500 level only.
+	var rows struct{ Low, Mid bool }
+	evalPlot(t, p, `(() => { const u = __plot.scopeFor(1); const x = Math.round(u.valToPos(11, 'x', true));
+	  const {top, height} = u.bbox; const d = u.ctx.getImageData(x, top, 1, height).data;
+	  const near = (v) => { const y = Math.round(u.valToPos(v, 'rpm', true)) - top;
+	    for (let r = y - 3; r <= y + 3; r++) { if (r < 0 || r >= height) { continue; }
+	      const i = r * 4; if (d[i + 3] > 40 && d[i] > 70 && d[i + 2] < 60) { return true; } } return false; };
+	  return {Low: near(500), Mid: near(750)}; })()`, &rows)
+	if !rows.Low || rows.Mid {
+		t.Errorf("column at 11 s: trace at the 500 level = %v, at the 750 level = %v; want true and false (a stepped trace)", rows.Low, rows.Mid)
+	}
+}
+
+// TestTachGaps: the ring keeps a tach array parallel to xs, rpm and duty. A sample with a null tach and
+// one without a tach key (an older server) give null at that index; a gap-marked sample breaks all
+// three series with the one null point at its own x.
+func TestTachGaps(t *testing.T) {
+	b := newBench(t)
+	p := plotPage(t, b)
+	var res struct {
+		Xs, Rpm, Duty, Tach []*float64
+		Seen                bool
+		OnlyTach            bool
+	}
+	evalPlot(t, p, `(() => { const r = new __ring.Ring(620, 64);
+	  r.push(1e6, 800, 0.4, false, 1000); r.push(2e6, 800, 0.4, false, null); r.push(3e6, 800, 0.4, false); r.push(4e6, 900, 0.5, true, 1100);
+	  const o = new __ring.Ring(620, 64); o.push(1e6, null, null, false, 900);
+	  return {Xs: r.xs, Rpm: r.rpm, Duty: r.duty, Tach: r.tach || [], Seen: o.seen, OnlyTach: o.tach ? o.tach[0] === 900 : false}; })()`, &res)
+	if got := fmt.Sprint(show(res.Tach)); got != "[1000 null null null 1100]" {
+		t.Errorf("tach = %s, want [1000 null null null 1100] (null, absent and the gap marker are nulls)", got)
+	}
+	if len(res.Tach) != len(res.Xs) || len(res.Rpm) != len(res.Xs) || len(res.Duty) != len(res.Xs) {
+		t.Errorf("array lengths xs %d rpm %d duty %d tach %d, want all equal", len(res.Xs), len(res.Rpm), len(res.Duty), len(res.Tach))
+	}
+	if !res.Seen || !res.OnlyTach {
+		t.Errorf("a sample with only a tach value: seen = %v, tach kept = %v, want both true", res.Seen, res.OnlyTach)
+	}
+
+	// Through the page: a null tach sample and a sample without the key reach the ring as nulls.
+	evalPlot(t, p, `(__plot.resetScopes(), __plot.pushSample({t: 5e6, k: 'sample', seq: 90001, v: [{port: 1, duty: 0.5, rpm: 700, tach: 690}]}),
+	  __plot.pushSample({t: 6e6, k: 'sample', seq: 90002, v: [{port: 1, duty: 0.5, rpm: 700, tach: null}]}),
+	  __plot.pushSample({t: 7e6, k: 'sample', seq: 90003, v: [{port: 1, duty: 0.5, rpm: 700}]}), true)`, nil)
+	var tach []*float64
+	evalPlot(t, p, `__plot.ringFor(1).tach || []`, &tach)
+	if got := fmt.Sprint(show(tach)); got != "[690 null null]" {
+		t.Errorf("page ring tach = %s, want [690 null null]", got)
+	}
+}
+
+// TestTachFixedAxis: a tach sample one step above max_rpm leaves the rpm scale at 0..max_rpm: no
+// setScale call (nothing autoscales, Pitfall 7), and the ring keeps the reported value.
+func TestTachFixedAxis(t *testing.T) {
+	arcticMax := fanMax(t, arctic)
+	b := newBench(t)
+	p := plotPage(t, b)
+	waitPlot(t, p, "port 1 scaled to the Arctic", fmt.Sprintf(`__plot.scopeFor(1).scales.rpm.max === %v`, arcticMax), 10*time.Second)
+	evalPlot(t, p, `(() => { window.__scales = []; for (let n = 1; n <= 4; n++) { const u = __plot.scopeFor(n), set = u.setScale.bind(u);
+	  u.setScale = (k, o) => { window.__scales.push(n + ':' + k + ':' + o.min + ':' + o.max); return set(k, o); }; } return true; })()`, nil)
+
+	b.publish(sampleEventTach(20, false, f64(0.5), f64(900), f64(arcticMax+30)))
+	waitDrawn(t, p, 1)
+	var after struct {
+		Max   float64
+		Calls []string
+		Tach  []*float64
+	}
+	evalPlot(t, p, `({Max: __plot.scopeFor(1).scales.rpm.max, Calls: window.__scales, Tach: __plot.ringFor(1).tach || []})`, &after)
+	if after.Max != arcticMax || len(after.Calls) != 0 {
+		t.Errorf("after a tach of %v: rpm max %v, setScale calls %v; want %v and none", arcticMax+30, after.Max, after.Calls, arcticMax)
+	}
+	if n := len(after.Tach); n == 0 || after.Tach[n-1] == nil || *after.Tach[n-1] != arcticMax+30 {
+		t.Errorf("ring tach = %v, want the reported %v kept unchanged", show(after.Tach), arcticMax+30)
+	}
+}
+
+// TestTachReadoutFollowsEvents: a tach event for port 2 sets the TACH RPM readout of that panel, a
+// following null shows the em dash (D-16 as amended), and the RPM readout of the same panel keeps its
+// number: the two are separate values.
+func TestTachReadoutFollowsEvents(t *testing.T) {
+	b := newBench(t)
+	base := newSite(t, b)
+	p := openPage(t, base)
+	waitText(t, p, "#link", "LIVE", 15*time.Second)
+	const tach = `[data-src="ports.1.tach_rpm"]`
+	waitText(t, p, tach, "\u2014", 10*time.Second)
+	rpm := textOf(t, p, `[data-src="ports.1.rpm"]`)
+	if rpm != "1200" {
+		t.Fatalf("RPM readout of port 2 = %q, want 1200", rpm)
+	}
+
+	b.Emit(events.Event{K: "tach", Port: 2, V: f64(1110)}, func(st *control.Status) { st.Ports[1].TachRPM = f64(1110) })
+	waitText(t, p, tach, "1110", 10*time.Second)
+	if got := textOf(t, p, `[data-src="ports.1.rpm"]`); got != rpm {
+		t.Errorf("RPM readout = %q after a tach event, want %q unchanged", got, rpm)
+	}
+
+	var none *float64
+	b.Emit(events.Event{K: "tach", Port: 2, V: none}, func(st *control.Status) { st.Ports[1].TachRPM = nil })
+	waitText(t, p, tach, "\u2014", 10*time.Second)
+	if got := textOf(t, p, `[data-src="ports.1.rpm"]`); got != rpm {
+		t.Errorf("RPM readout = %q after a null tach event, want %q unchanged", got, rpm)
 	}
 }
