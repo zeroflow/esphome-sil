@@ -208,3 +208,17 @@ func Step(p Params, s State, duty float64, dt time.Duration) State {
 	}
 	return out
 }
+
+// Integral is what advance reports besides the new state: the exact integral of
+// the shaft rpm over the step.
+type Integral struct {
+	// Area is the exact integral of rpm over the step, in rpm*s (revolutions = Area/60).
+	Area float64
+	// MovingS is how many seconds of the step the shaft turns (rpm > 0).
+	MovingS float64
+}
+
+// advance is Step with the exact rpm integral (RED stub: no integral yet).
+func advance(p Params, s State, duty float64, dt time.Duration) (State, Integral) {
+	return Step(p, s, duty, dt), Integral{}
+}

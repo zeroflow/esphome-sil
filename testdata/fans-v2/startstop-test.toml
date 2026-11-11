@@ -1,0 +1,33 @@
+# Test fixture of Phase 4 (fan model v2), not a real fan: schema 2 with a 0.4 s
+# start delay and a 3 s coast time constant, one up curve and an ideal tach (no
+# [tach]), so start, stop and coast timing assertions can be exact.
+schema = 2
+name = "Start/stop test fan"
+
+[sources]
+test = "test fixture, not a real fan"
+
+[stop]
+duty = 0.05
+
+[start]
+duty = 0.10
+delay_s = 0.4
+
+[dynamics]
+tau_up_s = 0.5
+tau_down_s = 0.8
+coast_tau_s = 3.0
+
+[curve.up]
+duty = [0.05, 0.20, 0.40, 0.60, 0.80, 1.00]
+rpm = [300, 600, 1000, 1300, 1550, 1700]
+
+[provenance]
+"stop.duty" = "assumed:test"
+"start.duty" = "assumed:test"
+"start.delay_s" = "assumed:test"
+"dynamics.tau_up_s" = "assumed:test"
+"dynamics.tau_down_s" = "assumed:test"
+"dynamics.coast_tau_s" = "assumed:test"
+"curve.up" = "assumed:test"
