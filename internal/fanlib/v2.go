@@ -19,6 +19,49 @@ import (
 // fields, so a missing key is detectable and any key not declared is rejected
 // with its position. That covers a schema 1 "source" string (D-07: sources are
 // named ids in [sources]) and a start-kick key (D-12: there is no kick).
+//
+// Keys of a schema 2 file:
+//
+//	schema = 2                  name = "..."  (at most 128 bytes)
+//	[sources]                   id = "text"   (at most 32; id ^[a-z][a-z0-9_]*$; text 1..512 bytes)
+//	[stop]                      duty                     in [0, 1)
+//	[start]                     duty >= stop.duty        in [0, 1];  delay_s in [0, 60]
+//	[dynamics]                  tau_up_s, tau_down_s, coast_tau_s     in (0, 600]
+//	[curve.up] [curve.down]     duty = [...], rpm = [...]  2..64 points, duty strictly increasing in
+//	                            [0, 1], rpm in [0, 100000] non-decreasing; curve.down is optional
+//	[tach]        (optional)    ppr integer 1..16, noise_rpm 0..1000
+//	[datasheet]   (optional)    airflow_m3h <= 100000, power_w <= 10000, ref_rpm <= 100000, each > 0
+//	[measured]    (optional)    date, board, esphome, recording_sha256, tolerance: non-empty strings
+//	                            of at most 512 bytes
+//	[provenance]                "<value path>" = "<kind>" or "<kind>:<source id>" (at most 64 bytes)
+//
+// A value path is a member of model.ValuePaths; every value present in the file needs exactly one
+// provenance entry (MODEL-12). measured.tolerance is a value; the other four [measured] keys
+// identify the measurement record and take no entry. Provenance keys match value paths exactly: no
+// case folding, no trimming.
+//
+// validateV2 applies its rules in a fixed order, so a file with several violations always reports
+// the same first one: (a) required keys, (b) finite numbers, (c) scalar ranges and caps, (d) curve
+// shape, (e) the D-10 floor rule, (f) provenance. Every line number comes from locate, which knows
+// which [table] a key is in: duty and rpm appear in several tables.
+
+// Caps (T-04-06): a fan file is hand edited and later machine written, so every size is bounded.
+const (
+	maxNameBytes   = 128
+	maxTextBytes   = 512 // a source text, a [measured] string
+	maxProvBytes   = 64  // a provenance entry value
+	maxCurvePoints = 64
+	maxSources     = 32
+	maxDelayS      = 60
+	maxTauS        = 600
+	maxRPM         = 100000
+	maxAirflowM3h  = 100000
+	maxPowerW      = 10000
+	maxNoiseRPM    = 1000
+	minPPR, maxPPR = 1, 16
+)
+
+var sourceID = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 type rawV2Stop struct {
 	Duty *float64 `toml:"duty"`
@@ -91,13 +134,11 @@ func loadV2(file string, data []byte) (model.Params, error) {
 	return validateV2(file, data, raw)
 }
 
-// validateV2 applies the schema 2 rules in a fixed order, so the first
-// violation is the one reported: (a) required keys, (b) finite numbers, (c)
-// scalar ranges, (d) curve shape, (e) the D-10 floor rule, (f) provenance
-// completeness (D-05, D-06, D-07).
+// validateV2 applies the schema 2 rules in the order documented at the top of this file.
 func validateV2(file string, data []byte, r rawV2) (model.Params, error) {
 	fail := func(key, format string, args ...any) error {
-		return &Error{File: file, Line: lineOf(data, key), Key: key, Msg: fmt.Sprintf(format, args...)}
+		table, k := splitKey(key)
+		return &Error{File: file, Line: locate(data, table, k), Key: key, Msg: fmt.Sprintf(format, args...)}
 	}
 
 	var stopDuty, startDuty, startDelay, tauUp, tauDown, coastTau *float64
@@ -115,7 +156,8 @@ func validateV2(file string, data []byte, r rawV2) (model.Params, error) {
 		up, down = r.Curve.Up, r.Curve.Down
 	}
 
-	// (a) Required keys. coast_tau_s has no fallback to tau_down_s (D-09).
+	// (a) Required keys. coast_tau_s has no fallback to tau_down_s (D-09). A table that is present
+	// needs all its keys.
 	missing := func(key string) error {
 		return &Error{File: file, Key: key, Msg: "missing required key " + key}
 	}
@@ -134,6 +176,16 @@ func validateV2(file string, data []byte, r rawV2) (model.Params, error) {
 		{"curve.up.rpm", up != nil && up.RPM != nil},
 		{"curve.down.duty", down == nil || down.Duty != nil},
 		{"curve.down.rpm", down == nil || down.RPM != nil},
+		{"tach.ppr", r.Tach == nil || r.Tach.PPR != nil},
+		{"tach.noise_rpm", r.Tach == nil || r.Tach.NoiseRPM != nil},
+		{"datasheet.airflow_m3h", r.Datasheet == nil || r.Datasheet.AirflowM3h != nil},
+		{"datasheet.power_w", r.Datasheet == nil || r.Datasheet.PowerW != nil},
+		{"datasheet.ref_rpm", r.Datasheet == nil || r.Datasheet.RefRPM != nil},
+		{"measured.date", r.Measured == nil || r.Measured.Date != nil},
+		{"measured.board", r.Measured == nil || r.Measured.Board != nil},
+		{"measured.esphome", r.Measured == nil || r.Measured.ESPHome != nil},
+		{"measured.recording_sha256", r.Measured == nil || r.Measured.RecordingSHA256 != nil},
+		{"measured.tolerance", r.Measured == nil || r.Measured.Tolerance != nil},
 		{"provenance", r.Provenance != nil},
 	} {
 		if !p.ok {
@@ -183,10 +235,12 @@ func validateV2(file string, data []byte, r rawV2) (model.Params, error) {
 		}
 	}
 
-	// (c) Scalar ranges.
+	// (c) Scalar ranges and caps.
 	switch {
 	case strings.TrimSpace(*r.Name) == "":
 		return model.Params{}, fail("name", "name must not be empty")
+	case len(*r.Name) > maxNameBytes:
+		return model.Params{}, fail("name", "name is %d bytes; at most %d are allowed", len(*r.Name), maxNameBytes)
 	case !(*stopDuty >= 0 && *stopDuty < 1):
 		return model.Params{}, fail("stop.duty", "stop.duty (%g) must be in [0, 1)", *stopDuty)
 	case !(*startDuty >= 0 && *startDuty <= 1):
@@ -195,12 +249,23 @@ func validateV2(file string, data []byte, r rawV2) (model.Params, error) {
 		return model.Params{}, fail("start.duty", "start.duty (%g) must be >= stop.duty (%g)", *startDuty, *stopDuty)
 	case *startDelay < 0:
 		return model.Params{}, fail("start.delay_s", "start.delay_s (%g) must be >= 0", *startDelay)
+	case *startDelay > maxDelayS:
+		return model.Params{}, fail("start.delay_s", "start.delay_s (%g) must be at most %d", *startDelay, maxDelayS)
 	case !(*tauUp > 0):
 		return model.Params{}, fail("dynamics.tau_up_s", "dynamics.tau_up_s must be > 0 (got %g)", *tauUp)
+	case *tauUp > maxTauS:
+		return model.Params{}, fail("dynamics.tau_up_s", "dynamics.tau_up_s (%g) must be at most %d", *tauUp, maxTauS)
 	case !(*tauDown > 0):
 		return model.Params{}, fail("dynamics.tau_down_s", "dynamics.tau_down_s must be > 0 (got %g)", *tauDown)
+	case *tauDown > maxTauS:
+		return model.Params{}, fail("dynamics.tau_down_s", "dynamics.tau_down_s (%g) must be at most %d", *tauDown, maxTauS)
 	case !(*coastTau > 0):
 		return model.Params{}, fail("dynamics.coast_tau_s", "dynamics.coast_tau_s must be > 0 (got %g)", *coastTau)
+	case *coastTau > maxTauS:
+		return model.Params{}, fail("dynamics.coast_tau_s", "dynamics.coast_tau_s (%g) must be at most %d", *coastTau, maxTauS)
+	}
+	if err := checkOptionalTables(r, fail); err != nil {
+		return model.Params{}, err
 	}
 
 	// (d) Curve shape.
@@ -244,10 +309,83 @@ func validateV2(file string, data []byte, r rawV2) (model.Params, error) {
 		Provenance: prov,
 		Sources:    maps.Clone(r.Sources),
 	}
+	if r.Tach != nil {
+		p.Tach = model.TachParams{PPR: *r.Tach.PPR, NoiseRPM: *r.Tach.NoiseRPM}
+	}
+	if r.Datasheet != nil {
+		p.Datasheet = &model.Datasheet{AirflowM3h: *r.Datasheet.AirflowM3h, PowerW: *r.Datasheet.PowerW, RefRPM: *r.Datasheet.RefRPM}
+	}
 	if *stopDuty == 0 {
 		p.BelowMin = "hold"
 	}
 	return p, nil
+}
+
+// checkOptionalTables is the rest of rule (c): the ranges of [tach], [datasheet], [measured] and
+// [sources], in that order. Required keys and finiteness were checked by the earlier rules.
+func checkOptionalTables(r rawV2, fail func(key, format string, args ...any) error) error {
+	if t := r.Tach; t != nil {
+		if *t.PPR < minPPR || *t.PPR > maxPPR {
+			return fail("tach.ppr", "tach.ppr (%d) must be an integer from %d to %d", *t.PPR, minPPR, maxPPR)
+		}
+		if *t.NoiseRPM < 0 || *t.NoiseRPM > maxNoiseRPM {
+			return fail("tach.noise_rpm", "tach.noise_rpm (%g) must be from 0 to %d", *t.NoiseRPM, maxNoiseRPM)
+		}
+	}
+	if d := r.Datasheet; d != nil {
+		for _, v := range []struct {
+			key string
+			v   float64
+			max float64
+		}{
+			{"datasheet.airflow_m3h", *d.AirflowM3h, maxAirflowM3h},
+			{"datasheet.power_w", *d.PowerW, maxPowerW},
+			{"datasheet.ref_rpm", *d.RefRPM, maxRPM},
+		} {
+			switch {
+			case !(v.v > 0):
+				return fail(v.key, "%s (%g) must be > 0", v.key, v.v)
+			case v.v > v.max:
+				return fail(v.key, "%s (%g) must be at most %g", v.key, v.v, v.max)
+			}
+		}
+	}
+	if m := r.Measured; m != nil {
+		for _, v := range []struct {
+			key string
+			v   string
+		}{
+			{"measured.date", *m.Date}, {"measured.board", *m.Board}, {"measured.esphome", *m.ESPHome},
+			{"measured.recording_sha256", *m.RecordingSHA256}, {"measured.tolerance", *m.Tolerance},
+		} {
+			switch {
+			case strings.TrimSpace(v.v) == "":
+				return fail(v.key, "%s must not be empty", v.key)
+			case len(v.v) > maxTextBytes:
+				return fail(v.key, "%s is %d bytes; at most %d are allowed", v.key, len(v.v), maxTextBytes)
+			}
+		}
+	}
+	if len(r.Sources) > maxSources {
+		return fail("sources", "[sources] has %d entries; at most %d are allowed", len(r.Sources), maxSources)
+	}
+	ids := make([]string, 0, len(r.Sources))
+	for id := range r.Sources {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		key, text := "sources."+id, r.Sources[id]
+		switch {
+		case !sourceID.MatchString(id):
+			return fail(key, "source id %q must match %s", id, sourceID)
+		case strings.TrimSpace(text) == "":
+			return fail(key, "%s must not be empty", key)
+		case len(text) > maxTextBytes:
+			return fail(key, "%s is %d bytes; at most %d are allowed", key, len(text), maxTextBytes)
+		}
+	}
+	return nil
 }
 
 // minOrInf is the lowest rpm of c, or +Inf for an empty curve so that it does
@@ -260,9 +398,9 @@ func minOrInf(c model.Curve) float64 {
 }
 
 // checkCurve validates one [curve.up] / [curve.down] table and returns it as a
-// model.Curve. Equal-length arrays, at least two points, duty in [0, 1] and
+// model.Curve. Equal-length arrays, 2 to 64 points, duty in [0, 1] and
 // strictly increasing (so no zero-width segment ever reaches the division in
-// Curve.At), rpm >= 0 and non-decreasing.
+// Curve.At), rpm in [0, 100000] and non-decreasing.
 func checkCurve(name string, c *rawV2Curve, fail func(key, format string, args ...any) error) (model.Curve, error) {
 	dk, rk := name+".duty", name+".rpm"
 	if len(c.Duty) != len(c.RPM) {
@@ -270,6 +408,9 @@ func checkCurve(name string, c *rawV2Curve, fail func(key, format string, args .
 	}
 	if len(c.Duty) < 2 {
 		return nil, fail(dk, "%s needs at least 2 points (got %d)", name, len(c.Duty))
+	}
+	if len(c.Duty) > maxCurvePoints {
+		return nil, fail(dk, "%s has %d points; at most %d are allowed", name, len(c.Duty), maxCurvePoints)
 	}
 	out := make(model.Curve, len(c.Duty))
 	for i := range c.Duty {
@@ -281,6 +422,8 @@ func checkCurve(name string, c *rawV2Curve, fail func(key, format string, args .
 			return nil, fail(dk, "%s[%d] (%g) must be greater than %s[%d] (%g): duty must be strictly increasing", dk, i, d, dk, i-1, c.Duty[i-1])
 		case v < 0:
 			return nil, fail(rk, "%s[%d] (%g) must be >= 0", rk, i, v)
+		case v > maxRPM:
+			return nil, fail(rk, "%s[%d] (%g) must be at most %d", rk, i, v, maxRPM)
 		case i > 0 && v < c.RPM[i-1]:
 			return nil, fail(rk, "%s[%d] (%g) must not be below %s[%d] (%g): rpm must be non-decreasing", rk, i, v, rk, i-1, c.RPM[i-1])
 		}
@@ -331,7 +474,7 @@ func presentValue(r rawV2, path string) bool {
 // result lists the entries in model.ValuePaths order.
 func checkProvenance(file string, data []byte, r rawV2) ([]model.ProvEntry, error) {
 	entryErr := func(path, format string, args ...any) error {
-		return &Error{File: file, Line: entryLine(data, path), Key: path,
+		return &Error{File: file, Line: locate(data, "provenance", path), Key: path,
 			Msg: fmt.Sprintf("provenance entry %q: ", path) + fmt.Sprintf(format, args...)}
 	}
 
@@ -345,10 +488,16 @@ func checkProvenance(file string, data []byte, r rawV2) ([]model.ProvEntry, erro
 	parsed := make(map[string]model.ProvEntry, len(paths))
 	for _, path := range paths {
 		if !presentValue(r, path) {
-			return nil, &Error{File: file, Line: entryLine(data, path), Key: path,
+			return nil, &Error{File: file, Line: locate(data, "provenance", path), Key: path,
 				Msg: fmt.Sprintf("provenance entry %q names no value of this file", path)}
 		}
+		if len(r.Provenance[path]) > maxProvBytes {
+			return nil, entryErr(path, "the entry is %d bytes; at most %d are allowed", len(r.Provenance[path]), maxProvBytes)
+		}
 		kind, source, hasSource := strings.Cut(r.Provenance[path], ":")
+		if kind == "" {
+			return nil, entryErr(path, "empty kind (want one of %s)", strings.Join(model.Kinds, ", "))
+		}
 		if !isKind(kind) {
 			return nil, entryErr(path, "unknown kind %q (want one of %s)", kind, strings.Join(model.Kinds, ", "))
 		}
@@ -370,7 +519,8 @@ func checkProvenance(file string, data []byte, r rawV2) ([]model.ProvEntry, erro
 		}
 		e, ok := parsed[path]
 		if !ok {
-			return nil, &Error{File: file, Line: lineOf(data, path), Key: path,
+			table, k := splitKey(path)
+			return nil, &Error{File: file, Line: locate(data, table, k), Key: path,
 				Msg: fmt.Sprintf("%s has no provenance entry (add %q = \"assumed\" to [provenance])", path, path)}
 		}
 		out = append(out, e)
@@ -387,44 +537,92 @@ func isKind(k string) bool {
 	return false
 }
 
-var tableHeader = regexp.MustCompile(`^\s*\[\s*([^\[\]]+?)\s*\]`)
+// A TOML key: bare, "quoted" or 'quoted', possibly dotted. Quoted parts keep their content as
+// written (so "start.duty" and " stop.duty" stay distinct), which is what the exact-match rule for
+// provenance keys needs.
+const tomlKey = `(?:"[^"]*"|'[^']*'|[A-Za-z0-9_-]+)(?:\s*\.\s*(?:"[^"]*"|'[^']*'|[A-Za-z0-9_-]+))*`
 
-// lineOf returns the 1-based line of the dotted key ("stop.duty" is key duty in
-// table [stop]) in data. For a key that is itself a table ("curve.up") it is
-// the header line. 0 when the key is not found.
-func lineOf(data []byte, dotted string) int {
-	table, key := "", dotted
-	if i := strings.LastIndex(dotted, "."); i >= 0 {
-		table, key = dotted[:i], dotted[i+1:]
+var (
+	headerLine = regexp.MustCompile(`^\s*\[\s*(` + tomlKey + `)\s*\]`)
+	assignLine = regexp.MustCompile(`^\s*(` + tomlKey + `)\s*=`)
+	keyPart    = regexp.MustCompile(`"([^"]*)"|'([^']*)'|([A-Za-z0-9_-]+)`)
+)
+
+// dottedKey joins the parts of a TOML key with dots, without quotes or spaces around the parts.
+func dottedKey(raw string) string {
+	var parts []string
+	for _, m := range keyPart.FindAllStringSubmatch(raw, -1) {
+		parts = append(parts, m[1]+m[2]+m[3])
 	}
-	keyRe := regexp.MustCompile(`^\s*` + regexp.QuoteMeta(key) + `\s*=`)
-	cur, header := "", 0
+	return strings.Join(parts, ".")
+}
+
+// splitKey splits a dotted key path into its table and its last part.
+func splitKey(dotted string) (table, key string) {
+	if i := strings.LastIndex(dotted, "."); i >= 0 {
+		return dotted[:i], dotted[i+1:]
+	}
+	return "", dotted
+}
+
+// bracketDelta is the number of '[' minus ']' in s outside strings and comments, so that the lines
+// of a multi-line array are not mistaken for table headers.
+func bracketDelta(s string) int {
+	d := 0
+	var quote rune
+	for _, c := range s {
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '#':
+			return d
+		case c == '[':
+			d++
+		case c == ']':
+			d--
+		}
+	}
+	return d
+}
+
+// locate returns the 1-based line of key inside [table] (table "" is the top level), or 0 when the
+// file has no such key. It follows the [headers] as it reads, so a key name that repeats in several
+// tables (duty, rpm) is found in the one asked for, never in an earlier one. Dotted keys
+// (`down.duty = ...` under [curve]) and quoted keys (`"start.duty" = ...` under [provenance]) are
+// matched by their full dotted path. A key that is itself a table (table "curve", key "up", or
+// table "", key "provenance") is located at its [header] line when there is no assignment for it.
+func locate(data []byte, table, key string) int {
+	want := key
+	if table != "" {
+		want = table + "." + key
+	}
+	cur, header, depth := "", 0, 0
 	for i, line := range strings.Split(string(data), "\n") {
-		if m := tableHeader.FindStringSubmatch(line); m != nil {
-			cur = strings.ReplaceAll(m[1], " ", "")
-			if cur == dotted {
+		if depth > 0 { // inside a multi-line array
+			depth += bracketDelta(line)
+			continue
+		}
+		if m := headerLine.FindStringSubmatch(line); m != nil {
+			cur = dottedKey(m[1])
+			if cur == want && header == 0 {
 				header = i + 1
 			}
 			continue
 		}
-		if cur == table && keyRe.MatchString(line) {
-			return i + 1
+		if m := assignLine.FindStringSubmatch(line); m != nil {
+			full := dottedKey(m[1])
+			if cur != "" {
+				full = cur + "." + full
+			}
+			if full == want {
+				return i + 1
+			}
+			depth = max(0, bracketDelta(line[len(m[0]):]))
 		}
 	}
-	if header > 0 {
-		return header
-	}
-	return keyLine(data, dotted)
-}
-
-// entryLine returns the line of a [provenance] entry whose key is path, quoted
-// or bare, or 0.
-func entryLine(data []byte, path string) int {
-	re := regexp.MustCompile(`^\s*["']?` + regexp.QuoteMeta(path) + `["']?\s*=`)
-	for i, line := range strings.Split(string(data), "\n") {
-		if re.MatchString(line) {
-			return i + 1
-		}
-	}
-	return 0
+	return header
 }

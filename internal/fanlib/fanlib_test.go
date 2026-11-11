@@ -65,7 +65,7 @@ func TestLoadValidFile(t *testing.T) {
 	want := model.Params{
 		Name: "Test fan", Source: "unit test fixture",
 		MinDuty: 0.05, StartDuty: 0.10, BelowMin: "stop",
-		MinRPM: 200, MaxRPM: 1800, TauUp: 1.0, TauDown: 2.5,
+		MinRPM: 200, MaxRPM: 1800, TauUp: 1.0, TauDown: 2.5, Schema: 1,
 	}
 	if !reflect.DeepEqual(p, want) {
 		t.Errorf("params = %+v, want %+v", p, want)

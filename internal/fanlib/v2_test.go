@@ -253,7 +253,7 @@ func TestV2ProvenanceRules(t *testing.T) {
 	}
 
 	// A kind alone (no source id) is fine, and a measured.tolerance value needs an entry too.
-	withTol := v2base + "\n[measured]\ntolerance = \"0.05\"\n"
+	withTol := v2base + "\n[measured]\ndate = \"2026-11-10\"\nboard = \"rev33\"\nesphome = \"2026.10.1\"\nrecording_sha256 = \"abc123\"\ntolerance = \"0.05\"\n"
 	if _, err := load(withTol); err == nil || !strings.Contains(err.Error(), "measured.tolerance") {
 		t.Errorf("measured.tolerance without an entry: %v, want an error naming it", err)
 	}
@@ -410,6 +410,16 @@ func TestV2ErrorsAreLocatedInTheirTable(t *testing.T) {
 		})
 	}
 
+	t.Run("a multi-line array does not confuse the table tracking", func(t *testing.T) {
+		body := inTable(t, "curve.up", "rpm = [300, 600, 1000, 1300, 1550, 1700]",
+			"rpm = [\n  300, 600,\n  500, # decreasing\n  1300, 1550, 1700,\n]")
+		wantError(t, body, "curve.up.rpm", lineIn(t, body, "curve.up", "rpm"), "non-decreasing")
+		// The header-like line [0.4] inside the array must not move the scanner into another table.
+		tricky := strings.Replace(body, "  500, # decreasing\n", "  500,\n  [1],\n", 1)
+		if got := locate([]byte(tricky), "curve.down", "rpm"); got != lineIn(t, tricky, "curve.down", "rpm") {
+			t.Errorf("locate curve.down.rpm = %d, want %d", got, lineIn(t, tricky, "curve.down", "rpm"))
+		}
+	})
 	t.Run("bad kind is located at the quoted key in [provenance]", func(t *testing.T) {
 		body := v2with(t, "\"stop.duty\" = \"assumed:test\"", "\"stop.duty\" = \"guessed\"")
 		wantError(t, body, "stop.duty", lineWith(t, body, "\"stop.duty\" ="), "unknown kind")
