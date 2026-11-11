@@ -591,28 +591,56 @@ func splitKey(dotted string) (table, key string) {
 	return "", dotted
 }
 
-// bracketDelta is the number of '[' minus ']' in s outside strings and comments, so that the lines
-// of a multi-line array are not mistaken for table headers.
-func bracketDelta(s string) int {
-	d := 0
-	var quote rune
-	for _, c := range s {
+// valueScan follows a TOML value from line to line, so that locate knows when a line continues a
+// value and is not a [header] or an assignment: the lines of a multi-line array (depth > 0) and of
+// a multi-line string (ml holds its delimiter).
+type valueScan struct {
+	depth int    // open '[' of a multi-line array
+	ml    string // `"""` or `'''` while inside a multi-line string, else ""
+}
+
+// open reports whether the next line continues the value.
+func (v *valueScan) open() bool { return v.depth > 0 || v.ml != "" }
+
+// scan reads one line (or the value part of an assignment line). Brackets inside strings and
+// comments do not count. A backslash escapes the next character inside a basic string (one or
+// three double quotes), so an escaped quote does not end it; a literal string (single quotes) has
+// no escapes.
+func (v *valueScan) scan(s string) {
+	var quote byte // the delimiter of an open single-line string
+	for i := 0; i < len(s); i++ {
+		c := s[i]
 		switch {
+		case v.ml != "":
+			if v.ml[0] == '"' && c == '\\' {
+				i++ // the escaped character
+			} else if strings.HasPrefix(s[i:], v.ml) {
+				i += 2
+				// Up to two more quotes next to the closing delimiter belong to the string.
+				for n := 0; n < 2 && i+1 < len(s) && s[i+1] == v.ml[0]; n++ {
+					i++
+				}
+				v.ml = ""
+			}
 		case quote != 0:
-			if c == quote {
+			if quote == '"' && c == '\\' {
+				i++ // the escaped character
+			} else if c == quote {
 				quote = 0
 			}
+		case strings.HasPrefix(s[i:], `"""`) || strings.HasPrefix(s[i:], `'''`):
+			v.ml = s[i : i+3]
+			i += 2
 		case c == '"' || c == '\'':
 			quote = c
 		case c == '#':
-			return d
+			return
 		case c == '[':
-			d++
-		case c == ']':
-			d--
+			v.depth++
+		case c == ']' && v.depth > 0:
+			v.depth--
 		}
 	}
-	return d
 }
 
 // locate returns the 1-based line of key inside [table] (table "" is the top level), or 0 when the
@@ -626,10 +654,11 @@ func locate(data []byte, table, key string) int {
 	if table != "" {
 		want = table + "." + key
 	}
-	cur, header, depth := "", 0, 0
+	cur, header := "", 0
+	var vs valueScan
 	for i, line := range strings.Split(string(data), "\n") {
-		if depth > 0 { // inside a multi-line array
-			depth += bracketDelta(line)
+		if vs.open() { // inside a multi-line array or string
+			vs.scan(line)
 			continue
 		}
 		if m := headerLine.FindStringSubmatch(line); m != nil {
@@ -647,7 +676,8 @@ func locate(data []byte, table, key string) int {
 			if full == want {
 				return i + 1
 			}
-			depth = max(0, bracketDelta(line[len(m[0]):]))
+			vs = valueScan{}
+			vs.scan(line[len(m[0]):])
 		}
 	}
 	return header

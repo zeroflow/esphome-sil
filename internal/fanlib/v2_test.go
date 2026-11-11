@@ -866,3 +866,50 @@ func TestV2LoadNeverFetchesASource(t *testing.T) {
 		t.Errorf("the source URL was requested %d times while loading, want 0", n)
 	}
 }
+
+// WR-03: a quote that is escaped inside a basic string, and a multi-line string, must not confuse
+// the line tracking of locate.
+func TestLocateStringsAndEscapes(t *testing.T) {
+	t.Run("escaped quote then a bracket in name keeps later errors located", func(t *testing.T) {
+		body := inTable(t, "stop", "duty = 0.05", "duty = 5")
+		body = strings.Replace(body, `name = "Curve test fan"`, `name = "a \" [ b"`, 1)
+		if !strings.Contains(body, `name = "a \" [ b"`) {
+			t.Fatal("test setup: the name line was not replaced")
+		}
+		wantError(t, body, "stop.duty", lineIn(t, body, "stop", "duty"), "must be in [0, 1)")
+		if got := locate([]byte(body), "stop", "duty"); got == 0 {
+			t.Error("locate(stop, duty) = 0, want the line")
+		}
+	})
+
+	cases := []struct {
+		name, body, table, key string
+		want                   int
+	}{
+		{"escaped backslash before the closing quote",
+			"name = \"a\\\\\" # [\n[stop]\nduty = 5\n", "stop", "duty", 3},
+		{"escaped quote and a bracket in a basic string",
+			"name = \"a \\\" [ b\"\n[stop]\nduty = 5\n", "stop", "duty", 3},
+		{"literal string has no escapes",
+			"list = ['a\\', '[']\n[stop]\nduty = 5\n", "stop", "duty", 3},
+		{"header-like and assignment-like lines inside a multi-line basic string",
+			"name = \"\"\"\n[stop]\nduty = 9\n\"\"\"\n[stop]\nduty = 5\n", "stop", "duty", 6},
+		{"multi-line literal string",
+			"name = '''\n[stop]\nduty = 9\n'''\n[stop]\nduty = 5\n", "stop", "duty", 6},
+		{"escaped triple quote does not close a multi-line basic string",
+			"name = \"\"\"\na \\\"\"\" [\n[stop]\nduty = 9\n\"\"\"\n[stop]\nduty = 5\n", "stop", "duty", 7},
+		{"closing delimiter with extra quotes",
+			"name = \"\"\"a\"\"\"\"\n[stop]\nduty = 5\n", "stop", "duty", 3},
+		{"a string with a bracket in a multi-line array",
+			"x = [\n  \"]\",\n  '[',\n]\n[stop]\nduty = 5\n", "stop", "duty", 6},
+		{"the key inside the multi-line string is not found",
+			"name = \"\"\"\nduty = 9\n\"\"\"\n", "", "duty", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := locate([]byte(c.body), c.table, c.key); got != c.want {
+				t.Errorf("locate(%q, %q) = %d, want %d in\n%s", c.table, c.key, got, c.want, c.body)
+			}
+		})
+	}
+}
