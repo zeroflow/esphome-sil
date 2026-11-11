@@ -1006,6 +1006,158 @@ func TestWebPlot(t *testing.T) {
 	}
 }
 
+// TestWebLoadReadouts (MODEL-11, D-13, D-16) proves the three load readouts and the tach trace on a
+// real Rev 3.3 instance with the firmware in the loop. All four ports carry the load-test fixture
+// fan (a pulse tach with datasheet values); Fan 1 runs at 60 % through the native API. Within 10 s
+// the page's AIRFLOW readout of port 1 shows the status airflow_m3h with 1 decimal, POWER the status
+// power_w with 2 decimals, TACH RPM a whole number, and scope 1 holds tach points. After
+// `sil set port2.fan=curve-test` (no [datasheet], no [tach]) port 2 shows the em dash for AIRFLOW and
+// POWER (status null) and a whole number for TACH RPM, the 1 s mean of the shaft (never null after
+// the first second). The console stays empty.
+func TestWebLoadReadouts(t *testing.T) {
+	const name = "e2e-webload"
+	env := newEnv(t)
+	// Wins over the default v0.1.0 pin (later entries win): the schema 2 test fixtures.
+	env.Extra = append(env.Extra, "SIL_FAN_DIR="+filepath.Join(repoRoot(t), "testdata", "fans-v2"))
+	up := env.Up(t, name, "--fan", "load-test")
+	apiPort, key := modelAPI(t, up)
+	modelSetFan(t, env, apiPort, key, 1, 60)
+	modelSetFan(t, env, apiPort, key, 2, 60)
+	st := env.WaitStatus(t, name, 20*time.Second, func(st map[string]any) bool {
+		rpm, _ := jget(st, "ports", 0, "rpm").(float64)
+		tach, _ := jget(st, "ports", 0, "tach_rpm").(float64)
+		return rpm > 1000 && tach > 0
+	})
+	port := int(jget(st, "web", "port").(float64))
+
+	lctx, lcancel := clock.WithTimeout(context.Background(), sysClock, 60*time.Second)
+	defer lcancel()
+	b, err := cdptest.Launch(lctx, sysClock, cdptest.LaunchOptions{Offline: true, Width: 1280, Height: 720})
+	if errors.Is(err, cdptest.ErrNoChrome) {
+		t.Fatal("Chrome not found; install google-chrome or set SIL_CHROME")
+	}
+	if err != nil {
+		t.Fatalf("launch Chrome: %v", err)
+	}
+	defer b.Close()
+	ctx, cancel := clock.WithTimeout(context.Background(), sysClock, 90*time.Second)
+	defer cancel()
+	page, err := b.NewPage(ctx)
+	if err != nil {
+		t.Fatalf("new page: %v", err)
+	}
+	defer page.Close()
+	base := webBase(port) + "/"
+	if err := page.Navigate(ctx, base); err != nil {
+		t.Fatalf("navigate to %s: %v", base, err)
+	}
+	wait := func(what, pred string, budget time.Duration) {
+		t.Helper()
+		wctx, wcancel := clock.WithTimeout(context.Background(), sysClock, budget)
+		defer wcancel()
+		if err := page.WaitFor(wctx, pred); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	wait("LINK LIVE", `document.getElementById('link').textContent === 'LIVE'`, 15*time.Second)
+	if err := page.Eval(ctx, `(window.__plot = await import('/js/plot.js'), true)`, nil); err != nil {
+		t.Fatalf("importing plot.js: %v", err)
+	}
+	readout := func(field string, i int) string {
+		t.Helper()
+		var text string
+		js := fmt.Sprintf(`document.querySelector('[data-src="ports.%d.%s"]').textContent`, i, field)
+		if err := page.Eval(ctx, js, &text); err != nil {
+			t.Fatalf("reading the %s readout of port %d: %v", field, i+1, err)
+		}
+		return text
+	}
+	wholeNumber := func(text string) bool {
+		if text == "" {
+			return false
+		}
+		for _, r := range text {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	// until polls cond every 200 ms of real time for budget; cond returns a failure note, "" for success.
+	until := func(what string, budget time.Duration, cond func() string) {
+		t.Helper()
+		wctx, wcancel := clock.WithTimeout(context.Background(), sysClock, budget)
+		defer wcancel()
+		for {
+			note := cond()
+			if note == "" {
+				return
+			}
+			if err := sysClock.Sleep(wctx, 200*time.Millisecond); err != nil {
+				t.Fatalf("%s within %s: %s", what, budget, note)
+			}
+		}
+	}
+
+	// Port 1: the readouts are the status values, formatted. The status is re-read right before every
+	// comparison and the loop allows the next 1 s value.
+	until("port 1 AIRFLOW, POWER and TACH RPM readouts match the status", 10*time.Second, func() string {
+		st := env.Status(t, name)
+		flow, okF := jget(st, "ports", 0, "airflow_m3h").(float64)
+		watt, okW := jget(st, "ports", 0, "power_w").(float64)
+		if !okF || !okW {
+			return fmt.Sprintf("status airflow_m3h/power_w of port 1 = %v/%v, want numbers", jget(st, "ports", 0, "airflow_m3h"), jget(st, "ports", 0, "power_w"))
+		}
+		gotF, gotW, gotT := readout("airflow_m3h", 0), readout("power_w", 0), readout("tach_rpm", 0)
+		if gotF != fmt.Sprintf("%.1f", flow) || gotW != fmt.Sprintf("%.2f", watt) || !wholeNumber(gotT) {
+			return fmt.Sprintf("readouts airflow %q power %q tach %q, status airflow %.4f power %.4f", gotF, gotW, gotT, flow, watt)
+		}
+		return ""
+	})
+	wait("5 non-null tach points on scope 1", `__plot.ringFor(1).tach.filter((v) => v !== null).length >= 5`, 10*time.Second)
+
+	// Port 2 swapped to a fan with no datasheet and no [tach].
+	out, code, stderr := env.Sil(t, "set", "port2.fan=curve-test", "-i", name)
+	if code != 0 {
+		t.Fatalf("sil set port2.fan=curve-test: exit %d: %v\nstderr: %s", code, out, stderr)
+	}
+	until("port 2 AIRFLOW and POWER readouts show the em dash", 5*time.Second, func() string {
+		st := env.Status(t, name)
+		if jget(st, "ports", 1, "fan") != "curve-test" {
+			return fmt.Sprintf("status port 2 fan = %v", jget(st, "ports", 1, "fan"))
+		}
+		if jget(st, "ports", 1, "airflow_m3h") != nil || jget(st, "ports", 1, "power_w") != nil {
+			return fmt.Sprintf("status airflow_m3h/power_w of port 2 = %v/%v, want null", jget(st, "ports", 1, "airflow_m3h"), jget(st, "ports", 1, "power_w"))
+		}
+		if f, w := readout("airflow_m3h", 1), readout("power_w", 1); f != "\u2014" || w != "\u2014" {
+			return fmt.Sprintf("port 2 AIRFLOW %q POWER %q, want U+2014", f, w)
+		}
+		return ""
+	})
+	// The ideal tach reads the 1 s mean of the shaft: a number within 1 s of the swap, equal to rpm once steady.
+	until("port 2 TACH RPM shows a whole number", 3*time.Second, func() string {
+		if got := readout("tach_rpm", 1); !wholeNumber(got) {
+			return fmt.Sprintf("port 2 TACH RPM readout %q", got)
+		}
+		return ""
+	})
+	until("status port 2 tach_rpm is the 1 s shaft mean", 10*time.Second, func() string {
+		st := env.Status(t, name)
+		tach, ok := jget(st, "ports", 1, "tach_rpm").(float64)
+		rpm, _ := jget(st, "ports", 1, "rpm").(float64)
+		if !ok {
+			return "status port 2 tach_rpm is null"
+		}
+		if rpm < 1000 || math.Abs(tach-rpm) > 1 {
+			return fmt.Sprintf("tach_rpm %.3f, rpm %.3f", tach, rpm)
+		}
+		return ""
+	})
+	if errs := page.ConsoleErrors(); len(errs) != 0 {
+		t.Errorf("console errors: %v", errs)
+	}
+}
+
 // TestWebHold (UI-04, D-14, D-15) proves the USR caps on a real Rev 3.3 instance: holding USR1 on
 // the page for about 300 ms changes the firmware's duties exactly as `sil press usr1` does (TestPressTracer:
 // 0.4/0/0/0 to 0.5/0.1/0.1/0.1). The page sends one POST .../usr1/down whose body is
