@@ -4,12 +4,11 @@ milestone: v0.2.0
 milestone_name: Real Fans
 current_phase: 5
 current_phase_name: Fault Injection
-status: planning
+status: "Phase 4 shipped — PR #1"
 stopped_at: Phase 4 complete, ready to plan Phase 5
-last_updated: "2026-11-11T14:38:31.065Z"
+last_updated: "2026-11-11T14:44:06.648Z"
 last_activity: 2026-11-11
-last_activity_desc: Phase 4 complete, transitioned to Phase 5
-state_head: 365aa50fadcad60af17cec1366c93c4d7366b0d0
+state_head: 994300adedcd2aa83cb628df858abfcbef7921fd
 progress:
   total_phases: 5
   completed_phases: 1
@@ -31,8 +30,8 @@ See: .planning/PROJECT.md (updated 2026-11-11)
 
 Phase: 5 — Fault Injection
 Plan: Not started
-Status: Ready to plan
-Last activity: 2026-11-11 — Phase 4 complete, transitioned to Phase 5
+Status: Phase 4 shipped — PR #1
+Last activity: 2026-11-11
 
 Progress: [██░░░░░░░░] 20%
 
