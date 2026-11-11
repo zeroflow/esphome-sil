@@ -1,5 +1,7 @@
 # esphome-sil
 
+![sil web UI: four simulated fans driven by real ESPHome firmware, with shaft RPM, duty, stepped tach trace, airflow and power per port](docs/images/web-ui.png)
+
 Software-in-the-loop test bench for ESPHome firmware, in the spirit of an
 automotive labcar. The ESPHome `host:` platform runs the real firmware modules
 on Linux; simulated IO components (`sim_bus`) connect them over a local socket
