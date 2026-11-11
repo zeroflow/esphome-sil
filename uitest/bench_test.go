@@ -89,6 +89,8 @@ func newBench(t *testing.T) *bench {
 			Port: i, Fan: "arctic-p12-pwm-pst", Duty: 0.4, RPM: float64(1000 + 100*i), State: "running",
 		})
 	}
+	// Port 1 reports a tach reading, airflow and power; the other ports report null for all three.
+	b.st.Ports[0].TachRPM, b.st.Ports[0].AirflowM3h, b.st.Ports[0].PowerW = f64(1080), f64(61.2), f64(0.32)
 	return b
 }
 
@@ -393,7 +395,7 @@ func (b *bench) Fans(ctx context.Context) (control.FansResult, error) {
 		if err != nil {
 			return control.FansResult{}, apperr.Infra("internal", err.Error(), nil)
 		}
-		res.Fans = append(res.Fans, control.FanInfo{ID: id, Name: p.Name, MinRPM: p.MinRPM, MaxRPM: p.MaxRPM, BelowMin: p.BelowMin})
+		res.Fans = append(res.Fans, control.NewFanInfo(id, p))
 	}
 	return res, nil
 }

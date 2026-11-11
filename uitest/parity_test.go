@@ -272,7 +272,8 @@ type sessionStep struct {
 	mutate func(*control.Status)
 }
 
-// sessionSteps are the bench events of the parity session: duty, rpm, state, fan, button, env,
+// sessionSteps are the bench events of the parity session: duty, rpm, tach (a value, then null), load
+// (values, then nulls), state, fan, button, env,
 // leds, firmware and the sim behind / in_sync pair. Each carries an explicit sim time (13.0 s, 13.1 s, ...) and sets the bench's
 // sim.time_s to the same value, because the page takes sim.time_s from the t of every frame.
 func sessionSteps() []sessionStep {
@@ -280,6 +281,12 @@ func sessionSteps() []sessionStep {
 		{"duty", events.Event{K: "duty", Port: 2, V: 0.35}, func(st *control.Status) { st.Ports[1].Duty = 0.35 }},
 		{"rpm", events.Event{K: "rpm", Port: 2, V: 640.5}, func(st *control.Status) { st.Ports[1].RPM = 640.5 }},
 		{"state", events.Event{K: "state", Port: 2, V: "running"}, func(st *control.Status) { st.Ports[1].State = "running" }},
+		{"tach", events.Event{K: "tach", Port: 2, V: f64(1110)}, func(st *control.Status) { st.Ports[1].TachRPM = f64(1110) }},
+		{"tach null", events.Event{K: "tach", Port: 2, V: (*float64)(nil)}, func(st *control.Status) { st.Ports[1].TachRPM = nil }},
+		{"load", events.Event{K: "load", Port: 2, V: events.Load{AirflowM3h: f64(61.2), PowerW: f64(0.32)}},
+			func(st *control.Status) { st.Ports[1].AirflowM3h, st.Ports[1].PowerW = f64(61.2), f64(0.32) }},
+		{"load null", events.Event{K: "load", Port: 2, V: events.Load{}},
+			func(st *control.Status) { st.Ports[1].AirflowM3h, st.Ports[1].PowerW = nil, nil }},
 		{"fan", events.Event{K: "fan", Port: 3, V: "noctua-nf-a12x25-pwm"}, func(st *control.Status) { st.Ports[2].Fan = "noctua-nf-a12x25-pwm" }},
 		{"button", events.Event{K: "button", ID: "usr1", V: true}, func(st *control.Status) { st.Buttons["usr1"] = true }},
 		{"env", events.Event{K: "env", ID: "temperature", V: 24.5}, func(st *control.Status) { st.Env.Temperature = 24.5 }},
@@ -430,6 +437,18 @@ func TestParityDisplayedValues(t *testing.T) {
 	})
 	if checked < 20 {
 		t.Errorf("checked %d data-src elements, want at least 20", checked)
+	}
+	// The three newer readouts are part of the checked set on every port.
+	var srcs []string
+	if err := p.Eval(within(t, 10*time.Second), `[...document.querySelectorAll('[data-src]')].map((e) => e.dataset.src)`, &srcs); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		for _, f := range []string{"tach_rpm", "airflow_m3h", "power_w"} {
+			if !contains(srcs, fmt.Sprintf("ports.%d.%s", i, f)) {
+				t.Errorf("no data-src element for ports.%d.%s on the page", i, f)
+			}
+		}
 	}
 	t.Logf("checked %d data-src elements after each of %d steps", checked, len(sessionSteps()))
 
