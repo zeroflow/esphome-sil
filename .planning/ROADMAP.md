@@ -31,7 +31,7 @@ Full phase details: `milestones/v0.1.0-ROADMAP.md`. Requirements: `milestones/v0
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 4: Fan Model v2** - Nonlinear up/down curves, start/stop and coast-down, quantised noisy tach, airflow and power, on an explicit `fan.toml` schema 2 with provenance; schema 1 unchanged
+- [x] **Phase 4: Fan Model v2** - Nonlinear up/down curves, start/stop and coast-down, quantised noisy tach, airflow and power, on an explicit `fan.toml` schema 2 with provenance; schema 1 unchanged (completed 2026-11-11)
 - [ ] **Phase 5: Fault Injection** - Stuck, frozen, late/no start, tach faults, unplug/replug and degraded fans, switched at runtime from CLI/JSON and the web page, visible in status, watch and the scopes
 - [ ] **Phase 6: fan-analyze Offline Core** - Versioned recordings, model replay, fit to schema 2, held-out verify verdict and a self-contained `report.html`, all proven on synthetic fans with no hardware
 - [ ] **Phase 7: Measuring Firmware and Board Link** - Hardware spikes, fail-safe Rev 3.3 measuring firmware, Go native API client and `sil fan-analyze run`, with synthetic-fan recovery through the host firmware
@@ -55,7 +55,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Each port shows airflow (m³/h, ∝ RPM) and power (W, ∝ RPM³) derived from the fan's datasheet values in `sil status`, `sil watch` and on the web page.
   5. Every v0.1.0 schema 1 `fan.toml` loads and behaves exactly as in v0.1.0 (amended 2026-11-10 at plan revision). The shipped files become schema 2 (D-01), and the v0.1.0 files live on byte for byte as hash-pinned fixtures in `testdata/fans-v0.1.0`. The existing v0.1.0 test assertions pass unchanged against those pinned fixtures (D-02). A schema 2 file with an unknown key is rejected with its file:line:col, and `sil fans` lists each fan's schema version and the provenance (assumed / datasheet / measured / unobservable) of every value.
 
-**Plans**: 10/10 plans executed (8 waves: 01 → 02 ∥ 03 → 04 ∥ 05 → 06 → 07 → 08 → 09 → 10)
+**Plans**: 10/10 plans complete (8 waves: 01 → 02 ∥ 03 → 04 ∥ 05 → 06 → 07 → 08 → 09 → 10)
 
 Plans:
 **Wave 1**
@@ -164,7 +164,7 @@ Phases execute in numeric order: 4 → 5 → 6 → 7 → 8. After Phase 4, Phase
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 4. Fan Model v2 | v0.2.0 | 10/10 | In Progress|  |
+| 4. Fan Model v2 | v0.2.0 | 10/10 | Complete    | 2026-11-11 |
 | 5. Fault Injection | v0.2.0 | 0/TBD | Not started | - |
 | 6. fan-analyze Offline Core | v0.2.0 | 0/TBD | Not started | - |
 | 7. Measuring Firmware and Board Link | v0.2.0 | 0/TBD | Not started | - |

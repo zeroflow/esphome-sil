@@ -2,44 +2,44 @@
 gsd_state_version: "1.0"
 milestone: v0.2.0
 milestone_name: Real Fans
-current_phase: 04
-current_phase_name: Fan Model v2
-status: verifying
-stopped_at: Completed 04-10-PLAN.md
-last_updated: "2026-11-11T13:18:30.802Z"
+current_phase: 5
+current_phase_name: Fault Injection
+status: planning
+stopped_at: Phase 4 complete, ready to plan Phase 5
+last_updated: "2026-11-11T14:38:31.065Z"
 last_activity: 2026-11-11
-last_activity_desc: Phase 04 execution started
-state_head: e676890ba3f8e37486f4867031071df415d2f6ae
+last_activity_desc: Phase 4 complete, transitioned to Phase 5
+state_head: 365aa50fadcad60af17cec1366c93c4d7366b0d0
 progress:
   total_phases: 5
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 10
   completed_plans: 10
-  percent: 0
+  percent: 20
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-11-10)
+See: .planning/PROJECT.md (updated 2026-11-11)
 
 **Core value:** A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
-**Current focus:** Phase 04 — Fan Model v2
+**Current focus:** Phase 05 — Fault Injection
 
 ## Current Position
 
-Phase: 04 (Fan Model v2) — EXECUTING
-Plan: 10 of 10
-Status: Phase complete — ready for verification
-Last activity: 2026-11-11 — Phase 04 execution started
+Phase: 5 — Fault Injection
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-11-11 — Phase 4 complete, transitioned to Phase 5
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██░░░░░░░░] 20%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 36
+- Total plans completed: 46
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -51,6 +51,7 @@ Progress: [░░░░░░░░░░] 0%
 | 1 | 13 | - | - |
 | 3 | 12 | - | - |
 | 03.1 | 3 | - | - |
+| 4 | 10 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -222,6 +223,7 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-09: start-delay window asserted from watch events is 390 to 410 ms (start.delay_s 0.4 within one 10 ms engine tick), because the duty event carries the bus frame time while the model counts the delay in whole ticks
 - [Phase 04]: S7b passed on the first live runs (spread 40-62 rpm vs 90 limit): no analytic quantisation fallback applied, bus tach value stays the 50 ms pulse drain, protocol 1
 - [Phase 04]: Contract bench uses one session fan library (v0.1.0 fixtures plus s7-steady) in its private runtime dir; firmware-visible tach read through aioesphomeapi is a recorded exception
+- [Phase 04]: UAT 4/4 passed 2026-11-11; all six review findings (WR-01..03, IN-01..03) fixed in 6ebeb3f..62091f8 (WR-01 now also enforces the never-stops floor on curve.down); re-verification passed; SECURITY 22/22 closed
 
 ### Pending Todos
 
@@ -236,7 +238,7 @@ None yet.
 - [Later] Static linking with real product modules (DNS, `json:`) is unverified; run-in-image fallback stays available
 - [Later] Host `select()` timeout lives in `core/wake/wake_host.cpp::wakeable_delay` in 2026.10.1, not `core/application.cpp` as PROJECT.md says (affects the time-factor milestone)
 - 01-05 A1 (non-blocking): Arctic start_duty 0.10, tau_up 1.0 s, tau_down 2.5 s are ASSUMED; closed by measurement in Phase 8 (CAL-01/CAL-02)
-- [Phase 4] Tach accumulator (spike S7, no hardware): if firmware-side arrival jitter into the 1 s time-weighted mean blurs the 30 rpm steps, switch to analytic quantisation (protocol stays v1 either way)
+- [Phase 4] RESOLVED: tach accumulator — S7b passed on live runs (spread 40-62 rpm vs 90 limit), no analytic quantisation fallback needed
 - [Phase 6] Fit identifiability of tau and start delay in the count domain is MEDIUM confidence; Nelder-Mead may need the LM fallback on real data
 - [Phase 7] ESP32-S2 PCNT unit count and ISR latency unverified; Rev 3.3 schematic (tach pull-up, supply) unchecked; 100 ms device-stamped sample publish rate over the API unconfirmed (fallback: host-stamped `total` with Wi-Fi jitter)
 - [Phase 7] Native API: confirm message IDs/fields from the pinned 2026.10.1 `api.proto` and that no password/`ConnectRequest` step is needed for an encrypted API
@@ -260,8 +262,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T13:18:30.768Z
-Stopped at: Completed 04-10-PLAN.md
+Last session: 2026-11-11T16:00:00Z
+Stopped at: Phase 4 complete (UAT 4/4, verification passed, security secured), ready to plan Phase 5
 Resume file: None
 
 ## Needs Human

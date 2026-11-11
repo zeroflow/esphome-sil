@@ -33,10 +33,10 @@ A simulated fan controller runs closed-loop on the developer's own machine: real
 - ✓ Fan model with start/min duty hysteresis and asymmetric first-order lag, parameters from a strict `fan.toml` library (Arctic P12, Noctua NF-A12x25) — v0.1.0
 - ✓ Local web UI served by the simulator, live over WebSocket, no build step, no runtime CDN: per-port duty/RPM with uPlot scopes, virtual LEDs, USR holds, environment controls, run info — v0.1.0
 - ✓ Injectable clock, `dt`-based model integration and sim timestamps on the sim-bus (wall-clock lint enforced), so the time factor can be added without a rewrite — v0.1.0
+- ✓ Fan model v2: separate up/down duty→RPM curves, start/stop thresholds with start delay and coast-down, fans that do not stop at duty 0, pulse tach with ppr, 1 s gate quantisation and seeded noise, airflow and power from datasheet values by fan laws; driven by `fan.toml` schema 2 with per-value provenance, v0.1.0 fan files behave exactly as before (MODEL-05..12) — Phase 4 (constants still `assumed`/`datasheet`; measurement is the Phase 8 item below)
 
 ### Active
 
-- [ ] Fan model reproduces measured real-fan behaviour: nonlinear duty→RPM, start/stop dynamics, RPM noise and tach quirks, airflow and power from datasheet
 - [ ] Fan faults (stuck, late/no start, tach faults, unplug/replug, degraded) can be injected and cleared at runtime from CLI/JSON and the web UI
 - [ ] `sil fan-analyze` measures a real fan on a Rev 3.3 board and produces a fitted `fan.toml` and `report.html`
 - [ ] Arctic P12 and Noctua NF-A12x25 library entries are measured, not assumed, and the sim matches the measurement within a stated tolerance
@@ -100,6 +100,9 @@ A simulated fan controller runs closed-loop on the developer's own machine: real
 | Phase 2 verification accepted on automated evidence (4/5; HA criterion proxied by aioesphomeapi) | User decision 2026-11-09 to proceed to Phase 3; live HA UAT tracked in STATE.md Needs Human | ⚠️ Revisit (02-UAT complete; live HA run still open) |
 | A stopping engine releases every held USR button itself (`button` event, `reason: engine_stopped`, final all-released snapshot) | One change in `Engine.stopped()` covers sim restart, `sil down` and engine failure; no firmware, protocol or page change. Known limit (user-approved 2026-11-10): a page that misses the frame still sends one refused best-effort `button.up` | ✓ Good (Phase 03.1) |
 | A failing `Set` rolls back, including when a shutdown cancels its Apply, and a `Set` racing shutdown answers `stopping` | Concurrency re-review F1/F2/F6 (user decision 2026-11-10); F7 (Set in a restart gap with shutdown already started answers success) recorded as a design question | ✓ Good (Phase 03.1) |
+| `fan.toml` schema 2 with required per-value provenance (`assumed` / `datasheet` / `measured`), no defaults; v0.1.0 files load unchanged as schema 1 and exact-RPM suites stay pinned to hash-pinned v0.1.0 fixtures | Makes every model constant auditable before Phase 6/8 fit and measure; differential tests prove v0.1.0 behaviour did not move | ✓ Good (Phase 4) |
+| Tach simulated as pulses (ppr, 1 s gate, seeded noise on the tach only; status `rpm` stays noise-free) | Supersedes "tach as RPM value" for v0.2.0: the firmware's `pulse_counter` window quantisation is what control logic sees; seed is reproducible (default 0x5EED, `--seed`, capped 2^53-1) | ✓ Good (Phase 4) |
+| Unknown airflow/power/tach is explicit `null` (page shows `—`), never 0 | Transparency: a fan without datasheet values must not look like a fan moving no air | ✓ Good (Phase 4) |
 
 ## Evolution
 
@@ -119,4 +122,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-10 after starting milestone v0.2.0 Real Fans*
+*Last updated: 2026-11-11 after Phase 4*
