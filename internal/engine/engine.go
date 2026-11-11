@@ -129,6 +129,9 @@ type Config struct {
 	// Seq returns the seq of the last event published by anyone; SnapshotSync stamps it on its
 	// snapshot. Nil means the last seq this engine emitted.
 	Seq func() uint64
+	// Seed is the noise seed every port's plant is built with. It has no effect until the tach
+	// noise of plan 04-04; the supervisor sets it from spec.json (plan 04-05).
+	Seed uint64
 }
 
 // PortState is the observable state of one port.
@@ -263,7 +266,7 @@ type Engine struct {
 
 type portRuntime struct {
 	cfg      PortConfig
-	state    model.State
+	plant    *model.Plant
 	duty     float64
 	dutyCh   string
 	rpmCh    string
@@ -291,12 +294,12 @@ func New(cfg Config) *Engine {
 	for _, pc := range cfg.Ports {
 		e.ports = append(e.ports, portRuntime{
 			cfg:    pc,
-			state:  model.Initial(pc.Fan),
+			plant:  model.NewPlant(pc.Fan, pc.Port, cfg.Seed),
 			dutyCh: fmt.Sprintf("port%d.duty", pc.Port),
 			rpmCh:  fmt.Sprintf("port%d.rpm", pc.Port),
 		})
 		p := &e.ports[len(e.ports)-1]
-		p.evRPM, p.evState = float32(p.state.RPM), stateName(p.state.Running)
+		p.evRPM, p.evState = float32(p.plant.Shaft()), stateName(p.plant.Running())
 	}
 	e.publish()
 	return e
@@ -331,10 +334,10 @@ func (e *Engine) build() *Snapshot {
 	for i := range e.ports {
 		p := &e.ports[i]
 		state := "stopped"
-		if p.state.Running {
+		if p.plant.Running() {
 			state = "running"
 		}
-		s.Ports[i] = PortState{Port: p.cfg.Port, Fan: p.cfg.FanID, Duty: p.duty, RPM: p.state.RPM, State: state}
+		s.Ports[i] = PortState{Port: p.cfg.Port, Fan: p.cfg.FanID, Duty: p.duty, RPM: p.plant.Shaft(), State: state}
 	}
 	for id, v := range e.buttons {
 		s.Buttons[id] = v
@@ -366,7 +369,7 @@ func (e *Engine) emit(ev events.Event) {
 
 // emitState emits a state event when port p's running state differs from the last state event.
 func (e *Engine) emitState(p *portRuntime) {
-	if st := stateName(p.state.Running); st != p.evState {
+	if st := stateName(p.plant.Running()); st != p.evState {
 		p.evState = st
 		e.emit(events.Event{K: "state", Port: p.cfg.Port, V: st})
 	}
@@ -380,7 +383,7 @@ func (e *Engine) emitRPM() {
 			continue
 		}
 		p.nextRPM = e.simNow + RPMEventStep
-		if v := float32(p.state.RPM); v != p.evRPM {
+		if v := float32(p.plant.Shaft()); v != p.evRPM {
 			p.evRPM = v
 			e.emit(events.Event{K: "rpm", Port: p.cfg.Port, V: float64(v)})
 		}
@@ -454,7 +457,7 @@ func (e *Engine) emitSample() {
 		p := &e.ports[i]
 		v[i].Port = p.cfg.Port
 		if e.connected {
-			duty, rpm := p.duty, p.state.RPM
+			duty, rpm := p.duty, p.plant.Shaft()
 			v[i].Duty, v[i].RPM = &duty, &rpm
 		}
 	}
@@ -551,7 +554,7 @@ func (e *Engine) Run(ctx context.Context) error {
 			e.noteTick(now, clk.Now(), dt)
 			for i := range e.ports {
 				p := &e.ports[i]
-				p.state = model.Step(p.cfg.Fan, p.state, p.duty, dt)
+				p.plant.Step(p.duty, dt)
 				e.emitState(p)
 			}
 			e.emitRPM()
@@ -686,7 +689,7 @@ func (e *Engine) inSnapshot() []bus.Frame {
 	frames := make([]bus.Frame, 0, len(e.ports)+2+len(ButtonIDs))
 	for i := range e.ports {
 		p := &e.ports[i]
-		p.sent, p.sentOnce = float32(p.state.RPM), true
+		p.sent, p.sentOnce = float32(p.plant.Current()), true
 		frames = append(frames, bus.NewFrame("in").Str("ch", p.rpmCh).Num("v", float64(p.sent)).Int("t", e.micros()))
 	}
 	frames = append(frames, e.envFrame(0), e.envFrame(1))
@@ -790,7 +793,7 @@ func (e *Engine) handleApply(op applyOp) {
 		if pc, ok := op.change.Fans[p.cfg.Port]; ok {
 			pc.Port = p.cfg.Port
 			p.cfg = pc
-			p.state = model.Initial(pc.Fan)
+			p.plant = model.NewPlant(pc.Fan, pc.Port, e.cfg.Seed)
 			e.emit(events.Event{K: "fan", Port: pc.Port, V: pc.FanID})
 			e.emitState(p)
 		}
@@ -1009,7 +1012,7 @@ func (e *Engine) handleFrame(f bus.Frame) {
 func (e *Engine) sendRPM(force bool) {
 	for i := range e.ports {
 		p := &e.ports[i]
-		v := float32(p.state.RPM)
+		v := float32(p.plant.Frame())
 		if !force && p.sentOnce && v == p.sent {
 			continue
 		}

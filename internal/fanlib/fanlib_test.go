@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -66,7 +67,7 @@ func TestLoadValidFile(t *testing.T) {
 		MinDuty: 0.05, StartDuty: 0.10, BelowMin: "stop",
 		MinRPM: 200, MaxRPM: 1800, TauUp: 1.0, TauDown: 2.5,
 	}
-	if p != want {
+	if !reflect.DeepEqual(p, want) {
 		t.Errorf("params = %+v, want %+v", p, want)
 	}
 	// Integers where floats are expected are fine.

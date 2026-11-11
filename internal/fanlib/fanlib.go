@@ -1,6 +1,9 @@
 // Package fanlib loads fan parameter files from the fan library.
 //
-// A fan file is a flat TOML document with nine required keys. Loading is
+// There are two file formats, both strict. Schema 1 (no schema key) is a flat
+// TOML document with nine required keys, the v0.1.0 format. Schema 2
+// (schema = 2, see v2.go) has tables for the stop and start thresholds, the
+// dynamics, the duty to rpm curves and a per-value provenance table. Loading is
 // strict (D-14): an unknown key, a missing key or an out-of-range value stops
 // the load with an Error naming the key and its location; nothing is ever
 // defaulted or corrected silently.
@@ -135,6 +138,22 @@ func loadFrom(fsys fs.FS, id, file string) (model.Params, error) {
 	}
 	if len(data) > maxFileBytes {
 		return model.Params{}, &Error{File: file, Msg: "file is larger than 64 KiB"}
+	}
+
+	// The schema probe is lenient on purpose: it tolerates every other key, so
+	// the format decides which decoder (and which strictness) applies.
+	var probe struct {
+		Schema *int `toml:"schema"`
+	}
+	if err := toml.Unmarshal(data, &probe); err != nil {
+		return model.Params{}, decodeError(file, err)
+	}
+	if probe.Schema != nil {
+		if *probe.Schema != 2 {
+			return model.Params{}, &Error{File: file, Line: keyLine(data, "schema"), Key: "schema",
+				Msg: "schema must be 2 (omit the key for the flat v0.1.0 format)"}
+		}
+		return loadV2(file, data)
 	}
 
 	var raw rawFan
