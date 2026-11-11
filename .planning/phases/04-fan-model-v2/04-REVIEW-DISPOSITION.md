@@ -5,15 +5,15 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "D-10 \"never stops\" rule is enforced on `curve.up` only; a `curve.down` can drop a never-stopping fan to 0 rpm"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Control characters in `name`, `[sources]` and `[measured]` strings are accepted and printed raw to the terminal"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`locate` loses the line number when a string value holds an escaped quote followed by a bracket"
   - id: IN-01
     severity: info
@@ -21,26 +21,26 @@ findings:
     title: "Stale comment on `engine.Config.Seed`"
   - id: IN-02
     severity: info
-    disposition: open
+    disposition: fixed
     title: "`Plant.Params()` hands out slices that alias the plant's own parameters"
   - id: IN-03
     severity: info
     disposition: fixed
     title: "A schema 2 file with the `schema` key missing gets a schema 1 \"unknown field\" error"
-open: 4
+open: 0
 total: 6
-recorded: 2026-11-11T14:32:54.796Z
+recorded: 2026-11-11T14:33:04.539Z
 ---
 
 # Phase 04: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
+| WR-01 | warning | fixed | 04-REVIEW-FIX.md |
+| WR-02 | warning | fixed | 04-REVIEW-FIX.md |
+| WR-03 | warning | fixed | 04-REVIEW-FIX.md |
 | IN-01 | info | fixed | 04-REVIEW-FIX.md |
-| IN-02 | info | open | - |
+| IN-02 | info | fixed | 04-REVIEW-FIX.md |
 | IN-03 | info | fixed | 04-REVIEW-FIX.md |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
