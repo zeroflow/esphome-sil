@@ -2,6 +2,7 @@ package model
 
 import (
 	"math"
+	"slices"
 	"testing"
 	"time"
 )
@@ -392,5 +393,46 @@ func TestNoPulsesAtRest(t *testing.T) {
 	}
 	if r, ok := pl.Reading(); !ok || r != 0 {
 		t.Fatalf("Reading of a stopped fan = %v (ok %v), want 0", r, ok)
+	}
+}
+
+// EDGE-MODEL-10: a duty change lands on the tick that observes it, so the invariance holds for duty
+// scripts on a common time grid. Here the duty drops at 10 s, a boundary every step below hits.
+func TestTachDutyScriptOnCommonGridIsTickInvariant(t *testing.T) {
+	fan := tachFan(1000, 2, 6)
+	fan.Curve = Curves{Up: Curve{{0.05, 200}, {1, 2000}}}
+	fan.TauUp, fan.TauDown = 0.5, 0.8
+	type result struct {
+		readings []float64
+		pulses   int64
+	}
+	runScript := func(dt time.Duration) result {
+		pl := NewPlant(fan, 1, 3)
+		var res result
+		seen := 0
+		for step := 0; step < int(20*time.Second/dt); step++ {
+			duty := 0.9
+			if time.Duration(step)*dt >= 10*time.Second {
+				duty = 0.3
+			}
+			pl.Step(duty, dt)
+			if g := int(pl.tach.gateEnd/TachGate) - 1; g > seen {
+				seen = g
+				r, _ := pl.Reading()
+				res.readings = append(res.readings, r)
+			}
+		}
+		res.pulses = pl.tach.pulses
+		return res
+	}
+	ref := runScript(10 * time.Millisecond)
+	if len(ref.readings) != 20 || ref.readings[0] == ref.readings[19] {
+		t.Fatalf("reference run: %d readings, first %v, last %v; the test would prove nothing", len(ref.readings), ref.readings[0], ref.readings[19])
+	}
+	for _, dt := range []time.Duration{time.Second, 250 * time.Millisecond, 20 * time.Millisecond} {
+		got := runScript(dt)
+		if got.pulses != ref.pulses || !slices.Equal(got.readings, ref.readings) {
+			t.Errorf("step %v: %d pulses, readings %v; want %d pulses, readings %v (10 ms steps)", dt, got.pulses, got.readings, ref.pulses, ref.readings)
+		}
 	}
 }
