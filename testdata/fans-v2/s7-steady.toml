@@ -1,0 +1,39 @@
+# Test fixture of Phase 4 (fan model v2), not a real fan: spike S7b. A flat 1100 rpm
+# curve with a pulse tach (ppr 2, noise 0), so the only structure the firmware's 1 s
+# window can show is the 30 rpm pulse step. 1100 rpm is 36.67 pulses/s, an off-grid rate.
+schema = 2
+name = "S7 steady fan"
+
+[sources]
+test = "test fixture, not a real fan"
+
+[stop]
+duty = 0.05
+
+[start]
+duty = 0.10
+delay_s = 0.0
+
+[dynamics]
+tau_up_s = 0.3
+tau_down_s = 0.3
+coast_tau_s = 0.3
+
+[curve.up]
+duty = [0.05, 1.00]
+rpm = [1100, 1100]
+
+[tach]
+ppr = 2
+noise_rpm = 0.0
+
+[provenance]
+"stop.duty" = "assumed:test"
+"start.duty" = "assumed:test"
+"start.delay_s" = "assumed:test"
+"dynamics.tau_up_s" = "assumed:test"
+"dynamics.tau_down_s" = "assumed:test"
+"dynamics.coast_tau_s" = "assumed:test"
+"curve.up" = "assumed:test"
+"tach.ppr" = "assumed:test"
+"tach.noise_rpm" = "assumed:test"
