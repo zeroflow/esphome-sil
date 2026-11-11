@@ -3,18 +3,18 @@ gsd_state_version: "1.0"
 milestone: v0.2.0
 milestone_name: Real Fans
 current_phase: 04
-current_phase_name: fan-model-v2
+current_phase_name: Fan Model v2
 status: executing
-stopped_at: Phase 4 context gathered
-last_updated: "2026-11-11T05:23:40.012Z"
-last_activity: 2026-11-10
-last_activity_desc: v0.2.0 roadmap created (Phases 4-8, 32/32 requirements mapped)
-state_head: 646cacb622e2e1c98a1fde51308fc0e0c7e89934
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-11-11T05:34:09.126Z"
+last_activity: 2026-11-11
+last_activity_desc: Phase 04 execution started
+state_head: b69103134367bb86a360d6bb85eda065bd704089
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 10
-  completed_plans: 0
+  completed_plans: 1
   percent: 0
 ---
 
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-10)
 
 **Core value:** A simulated fan controller runs closed-loop on the developer's own machine: real ESPHome firmware drives simulated fans, and the result is observable and controllable, with no hardware and no cloud.
-**Current focus:** Phase 4: Fan Model v2 (milestone v0.2.0 Real Fans, Phases 4-8)
+**Current focus:** Phase 04 — Fan Model v2
 
 ## Current Position
 
-Phase: 04 (fan-model-v2) — READY TO EXECUTE
-Plan: — (not planned yet)
+Phase: 04 (Fan Model v2) — EXECUTING
+Plan: 2 of 10
 Status: Ready to execute
-Last activity: 2026-11-10 — v0.2.0 roadmap created (Phases 4-8, 32/32 requirements mapped)
+Last activity: 2026-11-11 — Phase 04 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -97,6 +97,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 03.1 P01 | 7 min | 3 tasks | 7 files |
 | Phase 03.1 P02 | 6 min | 2 tasks | 3 files |
 | Phase 03.1 P03 | 4 min | 2 tasks | 8 files |
+| Phase 04 P01 | 20 min | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -191,6 +192,9 @@ Recent decisions affecting current work:
 - [Roadmap v0.2.0]: Done criterion is the Arctic P12 only, verified on a held-out recording (CAL-02); Noctua NF-A12x25 stays `assumed` (CAL-03, v0.3)
 - [Roadmap v0.2.0]: UI hint on Phase 4 (airflow/power readouts on the page, MODEL-11) and Phase 5 (fault controls and scope markers, FAULT-10/11); Phases 6-8 explicitly `UI hint: no` (`report.html` is a generated offline report, not the page)
 - [Roadmap v0.2.0]: Hardware/human-gated: Phase 7 (board on the bench for spikes, first flash, fail-safe checks) and Phase 8 (bench setup, preflight, run with repeatability pass, report review). Deeper research: Phase 6 (identifiability in the count domain, fitter robustness, estimator/tolerance) and Phase 7 (instrument design, PCNT limits, device-stamped delivery, api.proto IDs)
+- [Phase 04]: 04-01: direction (LastDuty/Falling) is tracked in State only for fans with a separate down curve, so legacy State stays bit-identical to v0.1.0
+- [Phase 04]: 04-01: schema 2 loader errors use a table-aware lineOf (duty/rpm repeat across tables); provenance entry typos reported before missing entries
+- [Phase 04]: 04-01: A1 sticky direction without deadband reviewed and accepted for Phase 4; carried to Phase 8 measured sweeps
 
 ### Pending Todos
 
@@ -229,9 +233,9 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-10T19:47:27.872Z
-Stopped at: Phase 4 context gathered
-Resume file: .planning/phases/04-fan-model-v2/04-CONTEXT.md
+Last session: 2026-11-11T05:34:09.099Z
+Stopped at: Completed 04-01-PLAN.md
+Resume file: None
 
 ## Needs Human
 
