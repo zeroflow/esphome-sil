@@ -2,6 +2,7 @@ package model
 
 import (
 	"math"
+	"slices"
 	"testing"
 	"time"
 )
@@ -295,5 +296,52 @@ func TestStepIsPureAndComposable(t *testing.T) {
 	}
 	if relDiff(one.RPM, ten.RPM) > 1e-9 {
 		t.Errorf("from rest: 1 x 1 s = %v, 10 x 100 ms = %v", one.RPM, ten.RPM)
+	}
+}
+
+// IN-02: a plant owns its parameters. Neither the Params it was built from nor the Params it hands
+// out alias them, so the engine goroutine's model cannot be changed from outside.
+func TestPlantOwnsItsParams(t *testing.T) {
+	src := tachFan(1000, 2, 0)
+	src.Curve.Down = Curve{{0.05, 900}, {1, 1000}}
+	src.Provenance = []ProvEntry{{Path: "stop.duty", Kind: KindAssumed}}
+	src.Sources = map[string]string{"x": "text"}
+	src.Datasheet = &Datasheet{AirflowM3h: 50, PowerW: 1, RefRPM: 1000}
+	want := src.Clone()
+	pl := NewPlant(src, 1, 7)
+
+	same := func(got Params, what string) {
+		t.Helper()
+		if !slices.Equal(got.Curve.Up, want.Curve.Up) || !slices.Equal(got.Curve.Down, want.Curve.Down) ||
+			!slices.Equal(got.Provenance, want.Provenance) || got.Sources["x"] != "text" ||
+			got.Datasheet == nil || *got.Datasheet != *want.Datasheet {
+			t.Errorf("%s: params changed to %+v, want %+v", what, got, want)
+		}
+	}
+
+	// Changing the source after NewPlant does not reach the plant.
+	src.Curve.Up[0].RPM = 1
+	src.Curve.Down[0].RPM = 1
+	src.Provenance[0].Kind = KindMeasured
+	src.Sources["x"] = "changed"
+	src.Datasheet.PowerW = 99
+	same(pl.Params(), "after mutating the source")
+
+	// Changing what Params returns does not reach the plant.
+	got := pl.Params()
+	got.Curve.Up[0].RPM = 2
+	got.Curve.Down[0].RPM = 2
+	got.Provenance[0].Kind = KindMeasured
+	got.Sources["x"] = "changed"
+	got.Datasheet.PowerW = 98
+	same(pl.Params(), "after mutating the result of Params")
+	if r := pl.Params().Curve.Up.At(0.5); r != 1000 {
+		t.Errorf("curve.up at 0.5 = %v after the mutations, want 1000", r)
+	}
+
+	// Nil stays nil: a schema 1 fan has no curves, provenance, sources or datasheet.
+	flat := NewPlant(Params{Name: "flat", MinDuty: 0.05, StartDuty: 0.1, BelowMin: "stop", MinRPM: 200, MaxRPM: 1800, TauUp: 1, TauDown: 1}, 1, 0).Params()
+	if flat.Curve.Up != nil || flat.Curve.Down != nil || flat.Provenance != nil || flat.Sources != nil || flat.Datasheet != nil {
+		t.Errorf("a schema 1 params clone is not all nil: %+v", flat)
 	}
 }

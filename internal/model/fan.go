@@ -2,7 +2,9 @@
 package model
 
 import (
+	"maps"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -48,6 +50,19 @@ type Params struct {
 	Provenance []ProvEntry
 	// Sources are the named source ids of a schema 2 file ([sources]). Nil for schema 1.
 	Sources map[string]string
+}
+
+// Clone returns a deep copy of p: the curves, the provenance, the sources and the datasheet are
+// copied, so nothing in the result aliases p. A nil slice, map or pointer stays nil.
+func (p Params) Clone() Params {
+	p.Curve = Curves{Up: slices.Clone(p.Curve.Up), Down: slices.Clone(p.Curve.Down)}
+	p.Provenance = slices.Clone(p.Provenance)
+	p.Sources = maps.Clone(p.Sources)
+	if p.Datasheet != nil {
+		d := *p.Datasheet
+		p.Datasheet = &d
+	}
+	return p
 }
 
 // TachParams describes the tachometer of a fan.

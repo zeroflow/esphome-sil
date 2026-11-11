@@ -33,8 +33,10 @@ type Plant struct {
 // 1e-9 pulse below a whole pulse counts as that pulse, on every tick pattern.
 const pulseEps = 1e-9
 
-// NewPlant returns a plant at rest (Initial) for port with noise seed seed.
+// NewPlant returns a plant at rest (Initial) for port with noise seed seed. The plant works on its
+// own deep copy of p (Params.Clone), so a later change to p's curves cannot reach a running model.
 func NewPlant(p Params, port int, seed uint64) *Plant {
+	p = p.Clone()
 	return &Plant{params: p, state: Initial(p), port: port, seed: seed, tach: Tach{gateEnd: TachGate}}
 }
 
@@ -124,8 +126,9 @@ func (pl *Plant) Shaft() float64 { return pl.state.RPM }
 // after a stop).
 func (pl *Plant) Running() bool { return pl.state.Running }
 
-// Params are the parameters the plant was built with.
-func (pl *Plant) Params() Params { return pl.params }
+// Params are the parameters the plant was built with. The result is a deep copy: changing it does
+// not change the plant, whose parameters are immutable once built.
+func (pl *Plant) Params() Params { return pl.params.Clone() }
 
 // Frame is the value of the next port<N>.rpm bus frame, in rpm.
 //
