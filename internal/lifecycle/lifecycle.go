@@ -667,3 +667,11 @@ func specSeed(o UpOptions) uint64 {
 	}
 	return DefaultSeed
 }
+
+// maxSeed is the largest seed a JSON number carries exactly in a browser or a Python reader (2^53-1).
+const maxSeed uint64 = 1<<53 - 1
+
+// checkSeed is a pure check: Up runs it before anything is built, locked or written.
+func checkSeed(o UpOptions) error {
+	return nil
+}

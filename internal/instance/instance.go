@@ -388,6 +388,9 @@ type RunFile struct {
 	// versions; readers decode without DisallowUnknownFields).
 	WebPort   int    `json:"web_port,omitempty"`
 	WebListen string `json:"web_listen,omitempty"`
+	// Seed is the noise seed of the run (D-15), copied from spec.json by the supervisor; 0 is a valid
+	// seed. Readers decode without DisallowUnknownFields, so older readers ignore it.
+	Seed uint64 `json:"seed"`
 }
 
 // WriteRunFile writes run.json atomically (tmp + rename, 0600).

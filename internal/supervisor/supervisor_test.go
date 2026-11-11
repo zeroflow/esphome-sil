@@ -847,3 +847,32 @@ func TestStatusShowsSeed(t *testing.T) {
 		t.Fatalf("status schema %d (const %d), want 1", st.Schema, control.SchemaVersion)
 	}
 }
+
+// A simulator restart builds the new engine from the same engCfg: the seed stays in the config and in
+// status (D-15), and the slot holds a new engine.
+func TestSeedSurvivesSimRestart(t *testing.T) {
+	s := fanSupervisor(t)
+	s.spec.Seed = 42
+	s.engCfg.Seed = 42
+	before := s.currentEngine()
+
+	// No firmware runs in this fixture, so the resync step ends with firmware_not_running; by then the
+	// new engine is in the slot.
+	if _, err := s.SimRestart(context.Background(), control.SimRestartRequest{}); errCode(err) != "firmware_not_running" {
+		t.Fatalf("SimRestart = %v, want firmware_not_running", err)
+	}
+	t.Cleanup(func() { s.stopEngine(s.slot) })
+	if s.currentEngine() == before {
+		t.Fatal("the slot still holds the old engine")
+	}
+	if s.engCfg.Seed != 42 {
+		t.Fatalf("engCfg.Seed after SimRestart = %d, want 42", s.engCfg.Seed)
+	}
+	st, err := s.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Sim.Seed != 42 || st.Sim.EngineRestarts != 1 {
+		t.Fatalf("Status.Sim = %+v, want seed 42 after one engine restart", st.Sim)
+	}
+}
