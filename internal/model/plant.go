@@ -89,8 +89,15 @@ func (pl *Plant) stepTach(duty float64, dt time.Duration) {
 		next, in := advance(pl.params, pl.state, duty, piece)
 		pl.state = next
 
-		// A fan never runs backwards: the pulse phase never decreases.
-		g.phase += max(in.Area, 0) / 60 * ppr
+		// The noise is a ripple of noise_rpm*noiseScale*z rpm over the part of the piece the shaft
+		// turns (MovingS), so a fan at rest never emits a pulse. It enters only the pulse count:
+		// the shaft, Running, airflow and power stay noise-free (D-13, D-03 as amended). A fan
+		// never runs backwards: the pulse phase never decreases.
+		area := in.Area
+		if n := pl.params.Tach.NoiseRPM; n > 0 {
+			area += n * noiseScale * z(pl.seed, pl.port, bucket) * in.MovingS
+		}
+		g.phase += max(area, 0) / 60 * ppr
 		n := math.Floor(g.phase + pulseEps)
 		g.phase -= n
 		g.pulses += int64(n)
