@@ -289,3 +289,110 @@ func TestEngineSameSeedSameTachTrace(t *testing.T) {
 		t.Fatal("seed 7 and seed 8 gave the same tach trace with noise_rpm 10")
 	}
 }
+
+// loadOf is the load events of one port, with their values.
+func loadOf(t *testing.T, rec *recorder, port int) []events.Event {
+	t.Helper()
+	var out []events.Event
+	for _, ev := range rec.of("load") {
+		if ev.Port != port {
+			continue
+		}
+		if _, ok := ev.V.(events.Load); !ok {
+			t.Fatalf("load event V is %T, want events.Load", ev.V)
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+// TestEngineLoadEvents: a fan with a datasheet shows airflow and power by the fan laws in load
+// events (the swap first, then once per sim second on change) and in the snapshot; a fan without
+// one shows null, never 0.
+func TestEngineLoadEvents(t *testing.T) {
+	dir, err := filepath.Abs(filepath.Join("..", "..", "testdata", "fans-v2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t) // loads the embedded default fan, so the override comes after it
+	t.Setenv(fanlib.EnvFanDir, dir)
+	h.setDuty(1, 0.4)
+	replug(t, h, 1, "load-test")
+	h.advanceTo(10 * time.Second)
+
+	air := func(rpm float64) float64 { return 100 * rpm / 1700 }
+	pow := func(rpm float64) float64 { return 2 * math.Pow(rpm/1700, 3) }
+
+	loads := loadOf(t, h.rec, 1)
+	fanAt := lastIndex(h.rec.all(), "fan", 1)
+	var after []events.Event
+	for _, ev := range loads {
+		if ev.Seq > h.rec.all()[fanAt].Seq {
+			after = append(after, ev)
+		}
+	}
+	if len(after) < 4 {
+		t.Fatalf("%d load events after the swap over a 10 s spin-up, want the swap one and about one per second: %+v", len(after), after)
+	}
+	first := after[0].V.(events.Load)
+	if first.AirflowM3h == nil || first.PowerW == nil || *first.AirflowM3h != 0 || *first.PowerW != 0 {
+		t.Fatalf("load right after the swap = %+v, want airflow 0 and power 0 (values, since the fan has a datasheet)", first)
+	}
+	rpmAt := map[int64]float64{}
+	for _, ev := range h.rec.of("rpm") {
+		if ev.Port == 1 {
+			rpmAt[ev.T] = ev.V.(float64)
+		}
+	}
+	for i := 1; i < len(after); i++ {
+		if i > 1 { // the first sampled event may follow the swap event closely
+			if d := after[i].T - after[i-1].T; d < time.Second.Microseconds() {
+				t.Fatalf("load events %d and %d are %d us apart, want at least 1 s", i-1, i, d)
+			}
+		}
+		l := after[i].V.(events.Load)
+		rpm, ok := rpmAt[after[i].T]
+		if !ok {
+			t.Fatalf("load event %d at %d us has no rpm event at the same time", i, after[i].T)
+		}
+		if l.AirflowM3h == nil || l.PowerW == nil {
+			t.Fatalf("load event %d = %+v, want values", i, l)
+		}
+		if relDiff(*l.AirflowM3h, air(rpm)) > 1e-5 || relDiff(*l.PowerW, pow(rpm)) > 1e-5 {
+			t.Fatalf("load event %d = %v m3/h %v W at rpm %v, want %v and %v", i, *l.AirflowM3h, *l.PowerW, rpm, air(rpm), pow(rpm))
+		}
+	}
+	p := h.eng.Snapshot().Ports[0]
+	if p.AirflowM3h == nil || p.PowerW == nil {
+		t.Fatalf("snapshot airflow/power = %v / %v, want values for a fan with a datasheet", p.AirflowM3h, p.PowerW)
+	}
+	if relDiff(*p.AirflowM3h, air(p.RPM)) > 1e-9 || relDiff(*p.PowerW, pow(p.RPM)) > 1e-9 {
+		t.Fatalf("snapshot airflow %v / power %v at shaft %v, want %v / %v", *p.AirflowM3h, *p.PowerW, p.RPM, air(p.RPM), pow(p.RPM))
+	}
+
+	// A fan without datasheet values: null, at the start and after a swap, and no further events.
+	if p2 := loadOf(t, h.rec, 2); len(p2) != 1 {
+		t.Fatalf("%d load events for the default fan on port 2, want only the one null at the start: %+v", len(p2), p2)
+	} else if l := p2[0].V.(events.Load); l.AirflowM3h != nil || l.PowerW != nil {
+		t.Fatalf("load of a fan without datasheet = %+v, want null for both", l)
+	}
+	if q := h.eng.Snapshot().Ports[1]; q.AirflowM3h != nil || q.PowerW != nil {
+		t.Fatalf("snapshot of the default fan has airflow/power %v / %v, want nil", q.AirflowM3h, q.PowerW)
+	}
+	n := len(loadOf(t, h.rec, 1))
+	replug(t, h, 1, "curve-test")
+	sw := loadOf(t, h.rec, 1)
+	if len(sw) != n+1 {
+		t.Fatalf("%d load events after the swap to curve-test, want exactly one more", len(sw)-n)
+	}
+	if l := sw[n].V.(events.Load); l.AirflowM3h != nil || l.PowerW != nil {
+		t.Fatalf("load after the swap to a fan without datasheet = %+v, want null for both", l)
+	}
+	if p := h.eng.Snapshot().Ports[0]; p.AirflowM3h != nil || p.PowerW != nil {
+		t.Fatalf("snapshot after the swap has airflow/power %v / %v, want nil", p.AirflowM3h, p.PowerW)
+	}
+	h.advanceTo(5 * time.Second)
+	if got := len(loadOf(t, h.rec, 1)); got != n+1 {
+		t.Fatalf("%d load events while curve-test spins up, want none (null stays null)", got-n-1)
+	}
+}

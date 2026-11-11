@@ -21,7 +21,7 @@ const (
 
 // Kinds are the change events the engine and the supervisor publish. The stream also carries
 // snapshot, lagged and stopped lines, which are not kinds a watcher can select.
-var Kinds = []string{"duty", "rpm", "tach", "state", "fan", "button", "env", "leds", "firmware", "sim"}
+var Kinds = []string{"duty", "rpm", "tach", "load", "state", "fan", "button", "env", "leds", "firmware", "sim"}
 
 // SampleKind is the plot sample: every 100 ms of sim time one event carries the duty and rpm of
 // every port. It is not in Kinds because it is opt-in: a subscription without kinds never gets it
@@ -44,12 +44,22 @@ type Sample struct {
 	Tach *float64 `json:"tach"`
 }
 
+// Load is the V of a load event: the airflow and electrical power of a port derived from its fan's
+// datasheet values by the fan laws on the shaft rpm. Both keys are always present; a fan without
+// datasheet values has null for both, never 0 (D-16).
+type Load struct {
+	AirflowM3h *float64 `json:"airflow_m3h"`
+	PowerW     *float64 `json:"power_w"`
+}
+
 // Event is one change. T is simulator time in microseconds, Seq a strictly increasing number per
 // broker. V holds the new value; its meaning depends on K (see the Kinds list in the SUMMARY of
 // plan 02-06): duty and rpm a number, state running|stopped, fan an id, button a bool, env a
 // number, firmware a bool, sim "restarted", "behind" or "in_sync", sample a []Sample with one entry
 // per port. tach: V is the rpm of the last completed 1 s gate of the port, or null (a nil *float64,
 // encoded as "v":null) while it has none; it changes at most once per sim second.
+// load: V is a Load, emitted on a change of either value (or of null-ness) in the once-per-second rpm
+// sample and right after a fan swap.
 type Event struct {
 	T       int64    `json:"t"`
 	K       string   `json:"k"`
