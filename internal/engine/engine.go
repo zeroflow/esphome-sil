@@ -286,6 +286,9 @@ type portRuntime struct {
 	// a number (false = null).
 	evTach   float32
 	evTachOK bool
+	// The airflow and power of the last load event (float32) and whether they were numbers.
+	evAir, evPow float32
+	evLoadOK     bool
 }
 
 // New builds an engine; nothing runs until Run.
@@ -350,6 +353,9 @@ func (e *Engine) build() *Snapshot {
 		if v, ok := p.plant.Reading(); ok {
 			s.Ports[i].TachRPM = &v
 		}
+		if a, w, ok := p.plant.Outputs(); ok {
+			s.Ports[i].AirflowM3h, s.Ports[i].PowerW = &a, &w
+		}
 	}
 	for id, v := range e.buttons {
 		s.Buttons[id] = v
@@ -411,6 +417,28 @@ func (e *Engine) emitTach(p *portRuntime, force bool) {
 	e.emit(events.Event{K: "tach", Port: p.cfg.Port, V: val})
 }
 
+// emitLoad emits a load event when port p's airflow or power (the fan laws on the shaft rpm, null
+// without a datasheet) differs from the last load event in float32 or in null-ness; force emits
+// regardless, for a new plant (engine start, fan swap). Called from the once-per-second rpm sample,
+// so a load event follows the rpm event cadence; values go out rounded to float32 like rpm events.
+func (e *Engine) emitLoad(p *portRuntime, force bool) {
+	air, pow, ok := p.plant.Outputs()
+	a, w := float32(air), float32(pow)
+	if !ok {
+		a, w = 0, 0
+	}
+	if !force && ok == p.evLoadOK && a == p.evAir && w == p.evPow {
+		return
+	}
+	p.evAir, p.evPow, p.evLoadOK = a, w, ok
+	var l events.Load
+	if ok {
+		av, wv := float64(a), float64(w)
+		l.AirflowM3h, l.PowerW = &av, &wv
+	}
+	e.emit(events.Event{K: "load", Port: p.cfg.Port, V: l})
+}
+
 // emitRPM samples every port's rpm for an rpm event (once per RPMEventStep, only on a change).
 func (e *Engine) emitRPM() {
 	for i := range e.ports {
@@ -423,6 +451,7 @@ func (e *Engine) emitRPM() {
 			p.evRPM = v
 			e.emit(events.Event{K: "rpm", Port: p.cfg.Port, V: float64(v)})
 		}
+		e.emitLoad(p, false)
 	}
 }
 
@@ -567,6 +596,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		p.evState = ""
 		e.emitState(p)
 		e.emitTach(p, true)
+		e.emitLoad(p, true)
 	}
 	e.publish()
 	ticker := clk.NewTicker(tick)
@@ -838,6 +868,7 @@ func (e *Engine) handleApply(op applyOp) {
 			e.emit(events.Event{K: "fan", Port: pc.Port, V: pc.FanID})
 			e.emitState(p)
 			e.emitTach(p, true) // the new plant has no reading for its first second
+			e.emitLoad(p, true)
 		}
 	}
 	e.publish() // before the reply, so a status read after Apply returned already shows the change

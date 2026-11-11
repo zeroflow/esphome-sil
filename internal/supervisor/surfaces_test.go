@@ -15,7 +15,10 @@ import (
 
 // tachFanSup is watchSup with two ports: port 1 a literal pulse-tach fan (ppr 2, flat 1100 rpm),
 // port 2 the default fan (schema 1, ideal tach, no datasheet).
-func tachFanSup(t *testing.T) *supervisor {
+func tachFanSup(t *testing.T) *supervisor { return tachFanSupWith(t, nil) }
+
+// tachFanSupWith is tachFanSup whose port 1 fan carries the datasheet ds (nil: none).
+func tachFanSupWith(t *testing.T, ds *model.Datasheet) *supervisor {
 	t.Helper()
 	s := watchSup(t)
 	def, err := fanlib.Load(fanlib.DefaultFan)
@@ -29,7 +32,7 @@ func tachFanSup(t *testing.T) *supervisor {
 			TauUp: 0.2, TauDown: 0.2, CoastTau: 0.2,
 			Curve:  model.Curves{Up: model.Curve{{Duty: 0.05, RPM: 1100}, {Duty: 1, RPM: 1100}}},
 			MinRPM: 1100, MaxRPM: 1100,
-			Tach: model.TachParams{PPR: 2},
+			Tach: model.TachParams{PPR: 2}, Datasheet: ds,
 		}},
 		{Port: 2, FanID: fanlib.DefaultFan, Fan: def},
 	}
@@ -135,5 +138,20 @@ func TestStatusCarriesTachAndLoad(t *testing.T) {
 		if v, present := ev["v"]; !present || v != float64(0) {
 			t.Fatalf("tach event %v, want v 0", ev)
 		}
+	}
+}
+
+// TestStatusAirflowAndPowerFromDatasheet: a fan with datasheet values shows a number for airflow_m3h
+// and power_w from the first status on (0 at rest, a value) while the fan without one stays null.
+func TestStatusAirflowAndPowerFromDatasheet(t *testing.T) {
+	s := tachFanSupWith(t, &model.Datasheet{AirflowM3h: 100, PowerW: 2, RefRPM: 1700})
+	ports := statusPorts(t, s)
+	wantKeyVal(t, ports[0], "airflow_m3h", float64(0))
+	wantKeyVal(t, ports[0], "power_w", float64(0))
+	wantKeyVal(t, ports[0], "tach_rpm", nil)
+	wantKeyVal(t, ports[1], "airflow_m3h", nil)
+	wantKeyVal(t, ports[1], "power_w", nil)
+	if s.currentEngine().Snapshot().Ports[0].AirflowM3h == nil {
+		t.Fatal("engine snapshot of the datasheet fan has no airflow")
 	}
 }
