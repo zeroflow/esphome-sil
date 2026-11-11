@@ -4,17 +4,17 @@ milestone: v0.2.0
 milestone_name: Real Fans
 current_phase: 04
 current_phase_name: Fan Model v2
-status: executing
-stopped_at: Completed 04-09-PLAN.md
-last_updated: "2026-11-11T07:11:37.577Z"
+status: verifying
+stopped_at: Completed 04-10-PLAN.md
+last_updated: "2026-11-11T13:18:30.802Z"
 last_activity: 2026-11-11
 last_activity_desc: Phase 04 execution started
-state_head: 8315bcaabe8db4ff79d937ac7894012e93d2de55
+state_head: e676890ba3f8e37486f4867031071df415d2f6ae
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 10
-  completed_plans: 9
+  completed_plans: 10
   percent: 0
 ---
 
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-11-10)
 
 Phase: 04 (Fan Model v2) — EXECUTING
 Plan: 10 of 10
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-11-11 — Phase 04 execution started
 
 Progress: [░░░░░░░░░░] 0%
@@ -106,6 +106,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 04 P07 | 15 min | 2 tasks | 12 files |
 | Phase 04 P08 | 35 min | 2 tasks | 11 files |
 | Phase 04 P09 | 25min | 2 tasks | 1 files |
+| Phase 04 P10 | 45min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -219,6 +220,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-08: uitest incl. parity_test stays unpinned on the shipped schema 2 library (D-02 exemption, user 2026-11-11); exact suites run on testdata/fans-v0.1.0
 - [Phase 04]: 04-08: shipped fan provenance pinned to evidence by TestShippedProvenanceMatchesEvidence (Arctic datasheet 4/assumed 9, Noctua datasheet 3/assumed 10, none measured); A9 assumed-values stays a maintainer judgment until Phase 8
 - [Phase 04]: 04-09: start-delay window asserted from watch events is 390 to 410 ms (start.delay_s 0.4 within one 10 ms engine tick), because the duty event carries the bus frame time while the model counts the delay in whole ticks
+- [Phase 04]: S7b passed on the first live runs (spread 40-62 rpm vs 90 limit): no analytic quantisation fallback applied, bus tach value stays the 50 ms pulse drain, protocol 1
+- [Phase 04]: Contract bench uses one session fan library (v0.1.0 fixtures plus s7-steady) in its private runtime dir; firmware-visible tach read through aioesphomeapi is a recorded exception
 
 ### Pending Todos
 
@@ -257,8 +260,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T07:11:37.545Z
-Stopped at: Completed 04-09-PLAN.md
+Last session: 2026-11-11T13:18:30.768Z
+Stopped at: Completed 04-10-PLAN.md
 Resume file: None
 
 ## Needs Human
