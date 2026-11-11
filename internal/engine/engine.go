@@ -1009,6 +1009,11 @@ func (e *Engine) handleFrame(f bus.Frame) {
 
 // sendRPM sends an in frame per port whose float32 rpm changed since the last
 // send, or for every port when force is set.
+//
+// The value is Plant.Frame, never the shaft: a fan with a tach sends pulse-quantised rates (whole
+// pulses per rpmFrameStep, 600 rpm each at ppr 2) that the firmware's 1 s time-weighted mean turns
+// into 30 rpm steps; an ideal-tach fan sends its shaft rpm as in v0.1.0. The shaft (Plant.Shaft)
+// feeds only status, events and samples.
 func (e *Engine) sendRPM(force bool) {
 	for i := range e.ports {
 		p := &e.ports[i]

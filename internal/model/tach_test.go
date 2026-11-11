@@ -238,3 +238,21 @@ func TestIdealReading(t *testing.T) {
 		}
 	})
 }
+
+// EDGE-MODEL-09: the engine sends no frames while the bus is down, so the first Frame after a
+// reconnect covers the whole gap. It is the true mean pulse rate over the gap (normalised by the
+// elapsed plant time), with a resolution of one pulse over the gap, not a burst or a zero.
+func TestFrameAfterGapIsMeanRate(t *testing.T) {
+	pl := NewPlant(tachFan(1100, 2, 0), 1, 1)
+	run(pl, 0.5, 5*time.Second, 10*time.Millisecond)
+	pl.Frame()
+	run(pl, 0.5, 7*time.Second, 10*time.Millisecond)
+	n := pl.tach.pulses
+	got := pl.Frame()
+	if want := float64(n) * 60 / (BoardPPR * 7); math.Abs(got-want) > 1e-9 {
+		t.Fatalf("Frame after a 7 s gap = %v with %d pulses, want %v", got, n, want)
+	}
+	if math.Abs(got-1100) > 30.0/7 {
+		t.Fatalf("Frame after a 7 s gap = %v, want the mean rate 1100 within one pulse over the gap (%v)", got, 30.0/7)
+	}
+}
