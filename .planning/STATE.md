@@ -5,16 +5,16 @@ milestone_name: Real Fans
 current_phase: 04
 current_phase_name: Fan Model v2
 status: executing
-stopped_at: Completed 04-05-PLAN.md
-last_updated: "2026-11-11T06:09:03.606Z"
+stopped_at: Completed 04-06-PLAN.md
+last_updated: "2026-11-11T06:15:55.027Z"
 last_activity: 2026-11-11
 last_activity_desc: Phase 04 execution started
-state_head: 4b85b5d6c1b474a7e81025f0ac0c10f92d5d0f15
+state_head: a901dbfc02a17c89193530c1e14d8cb3ff4024d2
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 10
-  completed_plans: 5
+  completed_plans: 6
   percent: 0
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-11-10)
 ## Current Position
 
 Phase: 04 (Fan Model v2) — EXECUTING
-Plan: 6 of 10
+Plan: 7 of 10
 Status: Ready to execute
 Last activity: 2026-11-11 — Phase 04 execution started
 
@@ -102,6 +102,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 04 P03 | 25 min | 2 tasks | 11 files |
 | Phase 04 P04 | 10 min | 2 tasks | 8 files |
 | Phase 04 P05 | 5 min | 2 tasks | 9 files |
+| Phase 04 P06 | 14 min | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -208,6 +209,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-04: checkGlobalRand flags every non-constructor, non-type name of math/rand(/v2) under internal/model, not only calls
 - [Phase 04]: 04-04: EDGE-MODEL-09 accepted as bounded (first Frame after a bus gap is the true mean over the gap); A11 stays open for Phase 7/8
 - [Phase 04]: 04-05: noise seed travels in spec.json (sil up) and is copied into run.json and status sim.seed by the supervisor; default lifecycle.DefaultSeed 0x5EED, cap 2^53-1 (A-SEED resolved)
+- [Phase 04]: 04-06: tach and load events are forced once per port at engine start and after a fan swap, so streams see a new plant's state without the page deriving anything
+- [Phase 04]: 04-06: fan-law exponents fixed at 1 (airflow) and 3 (power) on the noise-free shaft; cubic law underestimates low-speed power (PITFALLS 31)
 
 ### Pending Todos
 
@@ -246,8 +249,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T06:09:03.576Z
-Stopped at: Completed 04-05-PLAN.md
+Last session: 2026-11-11T06:15:54.995Z
+Stopped at: Completed 04-06-PLAN.md
 Resume file: None
 
 ## Needs Human
