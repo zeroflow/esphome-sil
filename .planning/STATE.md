@@ -5,16 +5,16 @@ milestone_name: Real Fans
 current_phase: 04
 current_phase_name: Fan Model v2
 status: executing
-stopped_at: Completed 04-03-PLAN.md
-last_updated: "2026-11-11T05:51:55.316Z"
+stopped_at: Completed 04-04-PLAN.md
+last_updated: "2026-11-11T06:02:27.220Z"
 last_activity: 2026-11-11
 last_activity_desc: Phase 04 execution started
-state_head: 62b1385d3bb6a45c1027d5340f14fad8a8cd9a20
+state_head: 069c21703ca2507b252db9c57bdeb30326c2f232
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 10
-  completed_plans: 3
+  completed_plans: 4
   percent: 0
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-11-10)
 ## Current Position
 
 Phase: 04 (Fan Model v2) — EXECUTING
-Plan: 4 of 10
+Plan: 5 of 10
 Status: Ready to execute
 Last activity: 2026-11-11 — Phase 04 execution started
 
@@ -100,6 +100,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 04 P01 | 20 min | 2 tasks | 12 files |
 | Phase 04 P02 | 3 min | 2 tasks | 8 files |
 | Phase 04 P03 | 25 min | 2 tasks | 11 files |
+| Phase 04 P04 | 10 min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -202,6 +203,9 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-03: locate scanner matches full dotted paths (bare, quoted, dotted-in-table, multi-line arrays); replaces lineOf/entryLine — duty and rpm repeat across tables; one mechanism covers provenance keys too
 - [Phase 04]: 04-03: [measured] optional table of five strings; only measured.tolerance carries provenance (A7 accepted, flagged for Phase 6/8) — MODEL-08 names measured tables; MODEL-12 needs provenance on every fan value
 - [Phase 04]: 04-03: v1 files load with Params.Schema 1; schema >= 3 says it needs a newer sil — explicit schema = 1 is accepted; sil fans reports schema 1 with null provenance
+- [Phase 04]: 04-04: pulse count uses floor(phase + 1e-9) so on-grid fans read the same on every tick pattern
+- [Phase 04]: 04-04: checkGlobalRand flags every non-constructor, non-type name of math/rand(/v2) under internal/model, not only calls
+- [Phase 04]: 04-04: EDGE-MODEL-09 accepted as bounded (first Frame after a bus gap is the true mean over the gap); A11 stays open for Phase 7/8
 
 ### Pending Todos
 
@@ -240,8 +244,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T05:51:55.286Z
-Stopped at: Completed 04-03-PLAN.md
+Last session: 2026-11-11T06:02:27.188Z
+Stopped at: Completed 04-04-PLAN.md
 Resume file: None
 
 ## Needs Human
