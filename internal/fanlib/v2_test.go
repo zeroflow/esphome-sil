@@ -1,6 +1,7 @@
 package fanlib
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -320,22 +321,460 @@ func TestV2ScalarRanges(t *testing.T) {
 	}
 }
 
-func TestV2SchemaProbe(t *testing.T) {
-	_, err := load(strings.Replace(v2base, "schema = 2", "schema = 3", 1))
+// inTable replaces the first old after the [header] line of v2base (old must follow it).
+func inTable(t *testing.T, header, old, repl string) string {
+	t.Helper()
+	i := strings.Index(v2base, "["+header+"]")
+	if i < 0 {
+		t.Fatalf("v2base has no [%s]", header)
+	}
+	rest := v2base[i:]
+	if !strings.Contains(rest, old) {
+		t.Fatalf("v2base has no %q after [%s]", old, header)
+	}
+	return v2base[:i] + strings.Replace(rest, old, repl, 1)
+}
+
+// lineIn is the 1-based line of the first line starting with key after the [header] line of body.
+func lineIn(t *testing.T, body, header, key string) int {
+	t.Helper()
+	in := false
+	for i, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "[") {
+			in = strings.Contains(strings.ReplaceAll(l, " ", ""), "["+header+"]")
+			continue
+		}
+		if in && strings.HasPrefix(strings.TrimSpace(l), key) {
+			return i + 1
+		}
+	}
+	t.Fatalf("no %q line in [%s]", key, header)
+	return 0
+}
+
+// withTable inserts a table before [provenance] and appends provenance entries after the others.
+func withTable(table string, entries ...string) string {
+	body := strings.Replace(v2base, "[provenance]\n", table+"\n[provenance]\n", 1)
+	for _, e := range entries {
+		body += "\"" + e + "\" = \"assumed:test\"\n"
+	}
+	return body
+}
+
+// wantError loads body and requires an *Error with the key, the line and a message containing msg.
+func wantError(t *testing.T, body, key string, line int, msg string) {
+	t.Helper()
+	_, err := load(body)
 	if err == nil {
-		t.Fatal("schema 3 loaded")
+		t.Fatalf("file loaded, want an error at %s (line %d)", key, line)
 	}
 	fe := asError(t, err)
-	if fe.Key != "schema" || fe.Line != 1 || !strings.Contains(fe.Msg, "schema must be 2") {
-		t.Errorf("key %q line %d msg %q, want schema / 1 / schema must be 2", fe.Key, fe.Line, fe.Msg)
+	if fe.Key != key || fe.Line != line || !strings.Contains(fe.Msg, msg) {
+		t.Errorf("error %q (key %q line %d), want key %q line %d containing %q", err, fe.Key, fe.Line, key, line, msg)
 	}
-	// A file without the key is still the flat v0.1.0 format.
-	p, err := load(base)
-	if err != nil || p.Schema != 0 || p.Curve.Up != nil || p.Provenance != nil {
-		t.Errorf("schema 1 file: %+v, %v, want the flat v0.1.0 params", p, err)
+}
+
+func TestV2ErrorsAreLocatedInTheirTable(t *testing.T) {
+	const downDuty = "duty = [0.05, 0.20, 0.40, 0.60, 0.80, 1.00]"
+	cases := []struct {
+		name, body, key, header, line, msg string
+	}{
+		{"non-increasing duty under curve.down",
+			inTable(t, "curve.down", downDuty, "duty = [0.05, 0.20, 0.20, 0.60, 0.80, 1.00]"),
+			"curve.down.duty", "curve.down", "duty", "strictly increasing"},
+		{"tau_down_s zero in dynamics",
+			v2with(t, "tau_down_s = 0.8", "tau_down_s = 0"),
+			"dynamics.tau_down_s", "dynamics", "tau_down_s", "must be > 0"},
+		{"stop.duty out of range, not the duty of [start] or a curve",
+			inTable(t, "stop", "duty = 0.05", "duty = 1.5"),
+			"stop.duty", "stop", "duty", "must be in [0, 1)"},
+		{"start.duty below stop.duty",
+			inTable(t, "start", "duty = 0.10", "duty = 0.01"),
+			"start.duty", "start", "duty", "must be >= stop.duty"},
+		{"decreasing rpm under curve.down",
+			inTable(t, "curve.down", "rpm = [300, 520, 900, 1200, 1480, 1700]", "rpm = [300, 520, 900, 800, 1480, 1700]"),
+			"curve.down.rpm", "curve.down", "rpm", "non-decreasing"},
+		{"curve table header with spaces",
+			strings.Replace(inTable(t, "curve.down", downDuty, "duty = [0.05, 0.20, 0.20, 0.60, 0.80, 1.00]"), "[curve.down]", "[ curve.down ]", 1),
+			"curve.down.duty", " curve.down ", "duty", "strictly increasing"},
+		{"dotted keys inside [curve]",
+			strings.Replace(strings.Replace(v2base, "[curve.down]\n", "[curve]\n", 1),
+				"duty = [0.05, 0.20, 0.40, 0.60, 0.80, 1.00]\nrpm = [300, 520", "down.duty = [0.05, 0.20, 0.20, 0.60, 0.80, 1.00]\ndown.rpm = [300, 520", 1),
+			"curve.down.duty", "curve", "down.duty", "strictly increasing"},
 	}
-	// A schema 1 file that names schema = 1 is not accepted either.
-	if _, err := load("schema = 1\n" + base); err == nil {
-		t.Error("schema = 1 loaded")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := strings.TrimSpace(c.header)
+			line := lineIn(t, c.body, h, c.line)
+			wantError(t, c.body, c.key, line, c.msg)
+		})
+	}
+
+	t.Run("bad kind is located at the quoted key in [provenance]", func(t *testing.T) {
+		body := v2with(t, "\"stop.duty\" = \"assumed:test\"", "\"stop.duty\" = \"guessed\"")
+		wantError(t, body, "stop.duty", lineWith(t, body, "\"stop.duty\" ="), "unknown kind")
+	})
+	t.Run("the duty of an equal curve is the line under its own header", func(t *testing.T) {
+		body := inTable(t, "curve.up", "duty = [0.05, 0.20, 0.40, 0.60, 0.80, 1.00]", "duty = [0.05, 0.20, 0.20, 0.60, 0.80, 1.00]")
+		wantError(t, body, "curve.up.duty", lineIn(t, body, "curve.up", "duty"), "strictly increasing")
+		if lineIn(t, body, "curve.up", "duty") == lineIn(t, body, "curve.down", "duty") {
+			t.Fatal("test setup: the two duty lines coincide")
+		}
+	})
+}
+
+// curveLines builds the duty and rpm lines of an n-point curve.
+func curveLines(n int, rpmLast float64) (duty, rpm string) {
+	d := make([]string, n)
+	r := make([]string, n)
+	for i := range d {
+		d[i] = fmt.Sprintf("%g", float64(i)/float64(n-1))
+		r[i] = fmt.Sprintf("%d", 100+i)
+	}
+	r[n-1] = fmt.Sprintf("%g", rpmLast)
+	return "duty = [" + strings.Join(d, ", ") + "]", "rpm = [" + strings.Join(r, ", ") + "]"
+}
+
+func TestV2Caps(t *testing.T) {
+	upDuty := "duty = [0.05, 0.20, 0.40, 0.60, 0.80, 1.00]"
+	upRPM := "rpm = [300, 600, 1000, 1300, 1550, 1700]"
+	dutyN, rpmN := curveLines(65, 1700)
+	_, rpmBig := curveLines(6, 100001)
+	manySources := "[sources]\ntest = \"test fixture, not a real fan\"\n"
+	for i := 0; i < 32; i++ {
+		manySources += fmt.Sprintf("s%d = \"x\"\n", i)
+	}
+	cases := []struct {
+		name, body, key string
+		line            func(body string) int
+		msg             string
+	}{
+		{"65 curve points", strings.Replace(strings.Replace(v2base, upDuty, dutyN, 1), upRPM, rpmN, 1), "curve.up.duty",
+			func(b string) int { return lineIn(t, b, "curve.up", "duty") }, "at most 64"},
+		{"delay_s 61", v2with(t, "delay_s = 0.0", "delay_s = 61"), "start.delay_s",
+			func(b string) int { return lineWith(t, b, "delay_s") }, "60"},
+		{"tau_up_s 601", v2with(t, "tau_up_s = 0.5", "tau_up_s = 601"), "dynamics.tau_up_s",
+			func(b string) int { return lineWith(t, b, "tau_up_s") }, "600"},
+		{"tau_down_s 601", v2with(t, "tau_down_s = 0.8", "tau_down_s = 601"), "dynamics.tau_down_s",
+			func(b string) int { return lineWith(t, b, "tau_down_s") }, "600"},
+		{"coast_tau_s 601", v2with(t, "coast_tau_s = 1.0", "coast_tau_s = 601"), "dynamics.coast_tau_s",
+			func(b string) int { return lineWith(t, b, "coast_tau_s") }, "600"},
+		{"rpm 100001", v2with(t, upRPM, strings.Replace(rpmBig, "100, 101, 102, 103, 104, ", "300, 600, 1000, 1300, 1550, ", 1)), "curve.up.rpm",
+			func(b string) int { return lineIn(t, b, "curve.up", "rpm") }, "100000"},
+		{"33 sources", strings.Replace(v2base, "[sources]\ntest = \"test fixture, not a real fan\"\n", manySources, 1), "sources",
+			func(b string) int { return lineWith(t, b, "[sources]") }, "at most 32"},
+		{"source id Bad-Id", v2with(t, "test = \"test fixture, not a real fan\"\n", "test = \"test fixture, not a real fan\"\nBad-Id = \"x\"\n"), "sources.Bad-Id",
+			func(b string) int { return lineWith(t, b, "Bad-Id") }, "^[a-z][a-z0-9_]*$"},
+		{"513-byte source text", v2with(t, "test fixture, not a real fan", strings.Repeat("x", 513)), "sources.test",
+			func(b string) int { return lineIn(t, b, "sources", "test") }, "512"},
+		{"129-byte name", v2with(t, "name = \"Curve test fan\"", "name = \""+strings.Repeat("n", 129)+"\""), "name",
+			func(b string) int { return lineWith(t, b, "name =") }, "128"},
+		{"65-byte provenance value", v2with(t, "\"stop.duty\" = \"assumed:test\"", "\"stop.duty\" = \"assumed:"+strings.Repeat("x", 57)+"\""), "stop.duty",
+			func(b string) int { return lineWith(t, b, "\"stop.duty\" =") }, "64"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			wantError(t, c.body, c.key, c.line(c.body), c.msg)
+		})
+	}
+
+	// The caps themselves are allowed: 64 points, 60 s, 600 s, 100000 rpm, 32 sources, 512 and 128 bytes.
+	dutyN, rpmN = curveLines(64, 100000)
+	atCap := strings.Replace(strings.Replace(v2base, upDuty, dutyN, 1), upRPM, rpmN, 1)
+	atCap = strings.Replace(atCap, "delay_s = 0.0", "delay_s = 60", 1)
+	atCap = strings.Replace(atCap, "tau_up_s = 0.5", "tau_up_s = 600", 1)
+	atCap = strings.Replace(atCap, "name = \"Curve test fan\"", "name = \""+strings.Repeat("n", 128)+"\"", 1)
+	atCap = strings.Replace(atCap, "test fixture, not a real fan", strings.Repeat("x", 512), 1)
+	if _, err := load(atCap); err != nil {
+		t.Errorf("file at every cap: %v", err)
+	}
+	if _, err := load(strings.Replace(v2base, "[sources]\ntest = \"test fixture, not a real fan\"\n", strings.Replace(manySources, "s31 = \"x\"\n", "", 1), 1)); err != nil {
+		t.Errorf("32 sources: %v", err)
+	}
+}
+
+func TestV2TachTable(t *testing.T) {
+	tach := func(ppr, noise string) string {
+		return withTable("[tach]\nppr = "+ppr+"\nnoise_rpm = "+noise+"\n", "tach.ppr", "tach.noise_rpm")
+	}
+	p, err := load(tach("2", "5"))
+	if err != nil {
+		t.Fatalf("ppr 2 noise 5: %v", err)
+	}
+	if p.Tach != (model.TachParams{PPR: 2, NoiseRPM: 5}) {
+		t.Errorf("Tach = %+v, want {2 5}", p.Tach)
+	}
+	for _, e := range p.Provenance {
+		if e.Path == "tach.ppr" && e.Kind == "assumed" {
+			goto counted
+		}
+	}
+	t.Errorf("Provenance %v has no tach.ppr entry", p.Provenance)
+counted:
+	if p, err := load(tach("1", "0")); err != nil || p.Tach.PPR != 1 {
+		t.Errorf("ppr 1 noise 0 (both lower limits): %+v, %v", p.Tach, err)
+	}
+	if p, err := load(tach("16", "1000")); err != nil || p.Tach.PPR != 16 {
+		t.Errorf("ppr 16 noise 1000 (both upper limits): %+v, %v", p.Tach, err)
+	}
+	if p, err := load(v2base); err != nil || p.Tach != (model.TachParams{}) {
+		t.Errorf("no [tach]: %+v, %v, want the ideal (zero) tach", p.Tach, err)
+	}
+
+	for _, c := range []struct{ name, ppr, noise, key, msg string }{
+		{"ppr 0", "0", "5", "tach.ppr", "1 to 16"},
+		{"ppr 17", "17", "5", "tach.ppr", "1 to 16"},
+		{"ppr float", "2.5", "5", "tach.ppr", ""},
+		{"noise -1", "2", "-1", "tach.noise_rpm", "0 to 1000"},
+		{"noise 1001", "2", "1001", "tach.noise_rpm", "0 to 1000"},
+		{"noise nan", "2", "nan", "tach.noise_rpm", "finite"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			body := tach(c.ppr, c.noise)
+			wantError(t, body, c.key, lineIn(t, body, "tach", strings.TrimPrefix(c.key, "tach.")), c.msg)
+		})
+	}
+
+	t.Run("only ppr names tach.noise_rpm", func(t *testing.T) {
+		_, err := load(withTable("[tach]\nppr = 2\n", "tach.ppr"))
+		if fe := asError(t, err); fe.Key != "tach.noise_rpm" || fe.Msg != "missing required key tach.noise_rpm" {
+			t.Errorf("error %v, want missing required key tach.noise_rpm", err)
+		}
+	})
+	t.Run("a tach value needs its provenance entry", func(t *testing.T) {
+		_, err := load(withTable("[tach]\nppr = 2\nnoise_rpm = 5\n", "tach.ppr"))
+		if fe := asError(t, err); fe.Key != "tach.noise_rpm" || !strings.Contains(fe.Msg, "no provenance entry") {
+			t.Errorf("error %v, want tach.noise_rpm without provenance", err)
+		}
+	})
+}
+
+func TestV2DatasheetTable(t *testing.T) {
+	ds := func(air, pw, ref string) string {
+		return withTable("[datasheet]\nairflow_m3h = "+air+"\npower_w = "+pw+"\nref_rpm = "+ref+"\n",
+			"datasheet.airflow_m3h", "datasheet.power_w", "datasheet.ref_rpm")
+	}
+	p, err := load(ds("95.7", "1.2", "1800"))
+	if err != nil {
+		t.Fatalf("datasheet: %v", err)
+	}
+	if p.Datasheet == nil || *p.Datasheet != (model.Datasheet{AirflowM3h: 95.7, PowerW: 1.2, RefRPM: 1800}) {
+		t.Errorf("Datasheet = %+v, want {95.7 1.2 1800}", p.Datasheet)
+	}
+	if p, err := load(v2base); err != nil || p.Datasheet != nil {
+		t.Errorf("no [datasheet]: %+v, %v, want nil", p.Datasheet, err)
+	}
+	if _, err := load(ds("100000", "10000", "100000")); err != nil {
+		t.Errorf("datasheet at its caps: %v", err)
+	}
+	for _, c := range []struct{ name, air, pw, ref, key, msg string }{
+		{"airflow 0", "0", "1.2", "1800", "airflow_m3h", "must be > 0"},
+		{"power negative", "95.7", "-1", "1800", "power_w", "must be > 0"},
+		{"ref_rpm 0", "95.7", "1.2", "0", "ref_rpm", "must be > 0"},
+		{"airflow 100001", "100001", "1.2", "1800", "airflow_m3h", "100000"},
+		{"power 10001", "95.7", "10001", "1800", "power_w", "10000"},
+		{"ref_rpm 100001", "95.7", "1.2", "100001", "ref_rpm", "100000"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			body := ds(c.air, c.pw, c.ref)
+			wantError(t, body, "datasheet."+c.key, lineIn(t, body, "datasheet", c.key), c.msg)
+		})
+	}
+	for _, missing := range []string{"airflow_m3h", "power_w", "ref_rpm"} {
+		t.Run("missing "+missing, func(t *testing.T) {
+			body := ds("95.7", "1.2", "1800")
+			var kept []string
+			for _, l := range strings.Split(body, "\n") {
+				if !strings.HasPrefix(l, missing+" =") {
+					kept = append(kept, l)
+				}
+			}
+			_, err := load(strings.Join(kept, "\n"))
+			if fe := asError(t, err); fe.Key != "datasheet."+missing || fe.Msg != "missing required key datasheet."+missing {
+				t.Errorf("error %v, want missing required key datasheet.%s", err, missing)
+			}
+		})
+	}
+}
+
+func TestV2MeasuredTable(t *testing.T) {
+	const record = "date = \"2026-11-10\"\nboard = \"rev33\"\nesphome = \"2026.10.1\"\nrecording_sha256 = \"abc123\"\ntolerance = \"0.05\"\n"
+	body := withTable("[measured]\n"+record, "measured.tolerance")
+	body = strings.Replace(body, "\"measured.tolerance\" = \"assumed:test\"", "\"measured.tolerance\" = \"measured\"", 1)
+	p, err := load(body)
+	if err != nil {
+		t.Fatalf("all five keys with a tolerance entry: %v", err)
+	}
+	var tol *model.ProvEntry
+	for i := range p.Provenance {
+		if p.Provenance[i].Path == "measured.tolerance" {
+			tol = &p.Provenance[i]
+		}
+	}
+	if tol == nil || tol.Kind != "measured" {
+		t.Errorf("Provenance %v, want measured.tolerance counted as kind measured", p.Provenance)
+	}
+	if len(p.Provenance) != 9 {
+		t.Errorf("%d provenance entries, want the 8 of the base plus measured.tolerance", len(p.Provenance))
+	}
+
+	t.Run("without the tolerance entry", func(t *testing.T) {
+		b := withTable("[measured]\n" + record)
+		wantError(t, b, "measured.tolerance", lineIn(t, b, "measured", "tolerance"), "no provenance entry")
+	})
+	for _, k := range []string{"date", "board", "esphome", "recording_sha256"} {
+		t.Run("entry for "+k+" names no value", func(t *testing.T) {
+			b := withTable("[measured]\n"+record, "measured.tolerance", "measured."+k)
+			wantError(t, b, "measured."+k, lineWith(t, b, "\"measured."+k+"\" ="), "names no value")
+		})
+	}
+	for _, k := range []string{"date", "board", "esphome", "recording_sha256", "tolerance"} {
+		t.Run("missing "+k, func(t *testing.T) {
+			var kept []string
+			for _, l := range strings.Split(body, "\n") {
+				if !strings.HasPrefix(l, k+" =") {
+					kept = append(kept, l)
+				}
+			}
+			_, err := load(strings.Join(kept, "\n"))
+			if fe := asError(t, err); fe.Key != "measured."+k || fe.Msg != "missing required key measured."+k {
+				t.Errorf("error %v, want missing required key measured.%s", err, k)
+			}
+		})
+		t.Run("empty "+k, func(t *testing.T) {
+			b := strings.Replace(body, "\n"+k+" = \"", "\n"+k+" = \"\"\n#", 1)
+			wantError(t, b, "measured."+k, lineIn(t, b, "measured", k), "must not be empty")
+		})
+	}
+	t.Run("513 bytes", func(t *testing.T) {
+		b := strings.Replace(body, "\"abc123\"", "\""+strings.Repeat("x", 513)+"\"", 1)
+		wantError(t, b, "measured.recording_sha256", lineIn(t, b, "measured", "recording_sha256"), "512")
+	})
+	if _, err := load(v2base); err != nil {
+		t.Errorf("no [measured] table: %v", err)
+	}
+}
+
+func TestV2Adjacency(t *testing.T) {
+	// A zero-width hysteresis band is fine.
+	if _, err := load(v2with(t, "[start]\nduty = 0.10", "[start]\nduty = 0.05")); err != nil {
+		t.Errorf("start.duty == stop.duty: %v", err)
+	}
+	// Equal consecutive duties are not (division by zero in Curve.At), at the line of that curve's duty.
+	for _, c := range []string{"curve.up", "curve.down"} {
+		body := inTable(t, c, "duty = [0.05, 0.20, 0.40, 0.60, 0.80, 1.00]", "duty = [0.05, 0.20, 0.40, 0.40, 0.80, 1.00]")
+		wantError(t, body, c+".duty", lineIn(t, body, c, "duty"), "strictly increasing")
+	}
+	// Equal consecutive rpm are.
+	if _, err := load(inTable(t, "curve.down", "rpm = [300, 520, 900, 1200, 1480, 1700]", "rpm = [300, 520, 900, 900, 1480, 1700]")); err != nil {
+		t.Errorf("flat rpm segment: %v", err)
+	}
+
+	// A repeated provenance key is a located TOML duplicate-key error.
+	dup := v2base + "\"stop.duty\" = \"assumed\"\n"
+	_, err := load(dup)
+	if err == nil {
+		t.Fatal("duplicate provenance key loaded")
+	}
+	if want := len(strings.Split(dup, "\n")) - 1; asError(t, err).Line != want || asError(t, err).Col == 0 {
+		t.Errorf("duplicate key error %q at %d:%d, want line %d (the second entry) and a column", err, asError(t, err).Line, asError(t, err).Col, want)
+	}
+
+	// A provenance key equals a value path exactly: no case folding, no trimming.
+	for _, key := range []string{"Stop.Duty", " stop.duty", "stop.duty ", "STOP.DUTY"} {
+		body := v2base + "\"" + key + "\" = \"assumed\"\n"
+		wantError(t, body, key, lineWith(t, body, "\""+key+"\" = \"assumed\""), "names no value")
+	}
+}
+
+func TestV2Empty(t *testing.T) {
+	upDuty := "[curve.up]\nduty = [0.05, 0.20, 0.40, 0.60, 0.80, 1.00]\nrpm = [300, 600, 1000, 1300, 1550, 1700]"
+	for _, c := range []struct{ name, repl string }{
+		{"zero points", "[curve.up]\nduty = []\nrpm = []"},
+		{"one point", "[curve.up]\nduty = [0.5]\nrpm = [900]"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			body := v2with(t, upDuty, c.repl)
+			wantError(t, body, "curve.up.duty", lineIn(t, body, "curve.up", "duty"), "curve.up needs at least 2 points")
+		})
+	}
+	t.Run("no provenance table", func(t *testing.T) {
+		_, err := load(v2base[:strings.Index(v2base, "[provenance]")])
+		if fe := asError(t, err); fe.Key != "provenance" || fe.Msg != "missing required key provenance" {
+			t.Errorf("error %v, want missing required key provenance", err)
+		}
+	})
+	t.Run("empty kind", func(t *testing.T) {
+		body := v2with(t, "\"stop.duty\" = \"assumed:test\"", "\"stop.duty\" = \"\"")
+		wantError(t, body, "stop.duty", lineWith(t, body, "\"stop.duty\" ="), "empty kind")
+	})
+	t.Run("kind with an empty id", func(t *testing.T) {
+		body := v2with(t, "\"stop.duty\" = \"assumed:test\"", "\"stop.duty\" = \"datasheet:\"")
+		wantError(t, body, "stop.duty", lineWith(t, body, "\"stop.duty\" ="), "empty source id")
+	})
+	t.Run("an id with no kind", func(t *testing.T) {
+		body := v2with(t, "\"stop.duty\" = \"assumed:test\"", "\"stop.duty\" = \":test\"")
+		wantError(t, body, "stop.duty", lineWith(t, body, "\"stop.duty\" ="), "empty kind")
+	})
+	t.Run("no sources table and no source ids", func(t *testing.T) {
+		body := strings.Replace(v2base, "[sources]\ntest = \"test fixture, not a real fan\"\n\n", "", 1)
+		body = strings.ReplaceAll(body, "assumed:test", "assumed")
+		p, err := load(body)
+		if err != nil {
+			t.Fatalf("a file without sources and without source ids: %v", err)
+		}
+		if len(p.Sources) != 0 {
+			t.Errorf("Sources = %v, want empty", p.Sources)
+		}
+	})
+}
+
+func TestV2FirstErrorIsStable(t *testing.T) {
+	// An unknown kind (rule f) and a NaN tau (rule b): the rule order decides, every time.
+	body := v2with(t, "\"stop.duty\" = \"assumed:test\"", "\"stop.duty\" = \"guessed\"")
+	body = strings.Replace(body, "tau_up_s = 0.5", "tau_up_s = nan", 1)
+	// Two bad kinds: the sorted first path is reported.
+	both := strings.Replace(v2base, "\"start.duty\" = \"assumed:test\"", "\"start.duty\" = \"nope\"", 1)
+	both = strings.Replace(both, "\"curve.up\" = \"assumed:test\"", "\"curve.up\" = \"nope\"", 1)
+	for i := 0; i < 25; i++ {
+		_, err := load(body)
+		if fe := asError(t, err); fe.Key != "dynamics.tau_up_s" || !strings.Contains(fe.Msg, "finite") {
+			t.Fatalf("run %d: %v, want the NaN tau (rule b) first", i, err)
+		}
+		_, err = load(both)
+		if fe := asError(t, err); fe.Key != "curve.up" {
+			t.Fatalf("run %d: %v, want curve.up (sorted first of two bad kinds)", i, err)
+		}
+	}
+}
+
+func TestSchemaProbeVariants(t *testing.T) {
+	// schema = 1 is the flat format, loaded by the same v1 path as a file without the key.
+	p, err := load("schema = 1\n" + base)
+	if err != nil || p.Schema != 1 || p.Name != "Test fan" || p.Source != "unit test fixture" {
+		t.Errorf("schema = 1: %+v, %v, want the flat fan with Schema 1", p, err)
+	}
+	if p, err := load(base); err != nil || p.Schema != 1 {
+		t.Errorf("no schema key: Schema %d, %v, want 1", p.Schema, err)
+	}
+	// An explicit schema = 1 is as strict as v1 always was.
+	if _, err := load("schema = 1\n" + strings.Replace(base, "tau_up", "tau_upp", 1)); err == nil {
+		t.Error("schema = 1 with a typo loaded")
+	}
+	// A schema 2 body under schema = 1 is not v2.
+	if _, err := load(strings.Replace(v2base, "schema = 2", "schema = 1", 1)); err == nil {
+		t.Error("schema 2 tables under schema = 1 loaded")
+	}
+
+	for _, c := range []struct{ schema, msg string }{
+		{"3", "schema 3 needs a newer sil (this sil reads schema 1 and 2)"},
+		{"100", "needs a newer sil"},
+		{"0", "schema must be 1 or 2"},
+		{"-1", "schema must be 1 or 2"},
+	} {
+		t.Run("schema "+c.schema, func(t *testing.T) {
+			body := strings.Replace(v2base, "schema = 2", "schema = "+c.schema, 1)
+			wantError(t, body, "schema", 1, c.msg)
+		})
 	}
 }
