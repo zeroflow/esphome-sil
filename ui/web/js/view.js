@@ -14,7 +14,7 @@ const EM_DASH = "\u2014";
 
 // NULL_TEXT is the text of a readout with no value, by format name; a format not listed shows NONE.
 // The em dash belongs to the three newer readouts (D-16); every older readout keeps `--`.
-const NULL_TEXT = { tach: EM_DASH };
+const NULL_TEXT = { tach: EM_DASH, flow: EM_DASH, watt: EM_DASH };
 
 const LINK_TEXT = {
   connecting: "CONNECTING",
@@ -42,6 +42,8 @@ const formats = {
   chip: (v) => "P" + v,
   rpm: (v) => String(Math.round(v)),
   tach: (v) => String(Math.round(v)),
+  flow: (v) => v.toFixed(1),
+  watt: (v) => v.toFixed(2),
   pct: (v) => (v * 100).toFixed(1),
   simtime,
   factor: (v) => "x" + v,
