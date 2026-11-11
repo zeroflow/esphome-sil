@@ -135,7 +135,8 @@ func Initial(p Params) State {
 //     stopped.
 //   - While running the target is read from the duty to rpm curve (Params.Curve,
 //     or the linear relation from MinRPM at MinDuty to MaxRPM at duty 1 that
-//     the legacy fields synthesise). rpm follows it with TauUp when rising and TauDown when falling
+//     the legacy fields synthesise): the up curve while the duty rises, the down
+//     curve after it fell (sticky, see below). rpm follows it with TauUp when rising and TauDown when falling
 //     via rpm += (target - rpm) * (1 - exp(-dt/tau)); an rpm equal to the
 //     target is left alone.
 //   - The exponential never reaches 0, so rpm snaps to 0 when the target is 0
@@ -161,8 +162,28 @@ func Step(p Params, s State, duty float64, dt time.Duration) State {
 		running = p.BelowMin == "hold"
 	}
 
+	// Direction (Assumption A1): the sign of the most recent duty change picks the
+	// curve, rising uses Up and falling uses Down, an unchanged duty keeps the
+	// branch it arrived on, and a fan starts on Up. There is no deadband. Only a
+	// fan with a separate down curve needs the direction, so only its state
+	// carries it; a legacy fan's state stays exactly the v0.1.0 state.
+	tracked := len(p.Curve.Down) > 0
+	falling := s.Falling
+	if tracked {
+		switch {
+		case duty > s.LastDuty:
+			falling = false
+		case duty < s.LastDuty:
+			falling = true
+		}
+	}
+
 	target := 0.0
-	if running {
+	switch {
+	case !running:
+	case falling:
+		target = p.downCurve().At(duty)
+	default:
 		target = p.upCurve().At(duty)
 	}
 
@@ -181,5 +202,9 @@ func Step(p Params, s State, duty float64, dt time.Duration) State {
 	if target == 0 && rpm < 0.5 {
 		rpm = 0
 	}
-	return State{Running: running, RPM: rpm}
+	out := State{Running: running, RPM: rpm}
+	if tracked {
+		out.LastDuty, out.Falling = duty, falling
+	}
+	return out
 }
