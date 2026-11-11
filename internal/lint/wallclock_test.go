@@ -446,3 +446,103 @@ func TestLintSelfTest(t *testing.T) {
 		})
 	}
 }
+
+// checkGlobalRand reports (stub) the use of the global source of math/rand or math/rand/v2.
+func checkGlobalRand(filename string, src any) ([]string, error) { return nil, nil }
+
+var randFixtures = []fixture{
+	{"global source functions, aliased and as values", `package x
+
+import (
+	"math/rand"
+	r2 "math/rand/v2"
+)
+
+func f() {
+	_ = rand.Intn(5) // want
+	_ = r2.Float64() // want
+	rand.Seed(1) // want
+	g := rand.Int63 // want
+	_ = g
+	_ = r2.N(10) // want
+	rand.Shuffle(3, func(i, j int) {}) // want
+}
+`},
+	{"local generators and types are allowed", `package x
+
+import (
+	"math/rand"
+	r2 "math/rand/v2"
+)
+
+func f(src rand.Source, z *rand.Zipf, g *r2.Rand) {
+	r := rand.New(rand.NewSource(1))
+	_ = r.Intn(5)
+	p := r2.New(r2.NewPCG(1, 2))
+	_ = p.Float64()
+	_ = r2.New(r2.NewChaCha8([32]byte{}))
+	_ = rand.NewZipf(r, 1.5, 2, 10)
+	var _ r2.PCG
+	_ = src
+	_ = z
+	_ = g
+}
+`},
+	{"a local identifier named rand is not the package", `package x
+
+type gen struct{}
+
+func (gen) Intn(int) int { return 0 }
+
+func f() {
+	rand := gen{}
+	_ = rand.Intn(5)
+}
+`},
+}
+
+// TestGlobalRandSelfTest proves checkGlobalRand fires on the global source with file:line, accepts
+// local generators and types, and is not fooled by a shadowing identifier.
+func TestGlobalRandSelfTest(t *testing.T) {
+	const fname = "fixture.go"
+	for _, fx := range randFixtures {
+		t.Run(fx.name, func(t *testing.T) {
+			want := map[int]bool{}
+			for i, line := range strings.Split(fx.src, "\n") {
+				if strings.Contains(line, "// want") {
+					want[i+1] = true
+				}
+			}
+			findings, err := checkGlobalRand(fname, fx.src)
+			if err != nil {
+				t.Fatalf("fixture does not parse: %v", err)
+			}
+			got := map[int]bool{}
+			for _, f := range findings {
+				rest, ok := strings.CutPrefix(f, fname+":")
+				if !ok {
+					t.Fatalf("finding %q does not start with %s:", f, fname)
+				}
+				numText, msg, _ := strings.Cut(rest, ":")
+				line, err := strconv.Atoi(numText)
+				if err != nil {
+					t.Fatalf("finding %q has no line number", f)
+				}
+				if !strings.Contains(msg, "MODEL-10") {
+					t.Errorf("finding %q does not name MODEL-10", f)
+				}
+				got[line] = true
+			}
+			for line := range want {
+				if !got[line] {
+					t.Errorf("line %d not reported", line)
+				}
+			}
+			for line := range got {
+				if !want[line] {
+					t.Errorf("line %d reported but is clean: %v", line, findings)
+				}
+			}
+		})
+	}
+}

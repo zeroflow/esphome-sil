@@ -256,3 +256,141 @@ func TestFrameAfterGapIsMeanRate(t *testing.T) {
 		t.Fatalf("Frame after a 7 s gap = %v, want the mean rate 1100 within one pulse over the gap (%v)", got, 30.0/7)
 	}
 }
+
+// gateReadings logs the first n gate readings of pl under a constant duty with 10 ms steps and
+// returns those after the first drop gates.
+func gateReadings(pl *Plant, duty float64, n, drop int) []float64 {
+	log := runPattern(pl, duty, tickPatterns["10ms"], time.Duration(n)*TachGate)
+	var out []float64
+	for g := drop + 1; g <= n; g++ {
+		out = append(out, log[g])
+	}
+	return out
+}
+
+func stdDev(v []float64) (mean, sd float64) {
+	for _, x := range v {
+		mean += x
+	}
+	mean /= float64(len(v))
+	for _, x := range v {
+		sd += (x - mean) * (x - mean)
+	}
+	return mean, math.Sqrt(sd / float64(len(v)))
+}
+
+func TestNoiseMoments(t *testing.T) {
+	const n = 200000
+	var sum, sq float64
+	for b := int64(0); b < n; b++ {
+		v := z(1, 1, b)
+		sum += v
+		sq += v * v
+	}
+	mean := sum / n
+	variance := sq/n - mean*mean
+	if math.Abs(mean) >= 0.01 || math.Abs(variance-1) >= 0.02 {
+		t.Fatalf("z over %d buckets: mean %v, variance %v, want mean 0 (+-0.01) and variance 1 (+-0.02)", n, mean, variance)
+	}
+}
+
+func TestNoiseIsKeyed(t *testing.T) {
+	base := z(7, 2, 100)
+	if again := z(7, 2, 100); again != base {
+		t.Fatalf("z is not a pure function: %v then %v", base, again)
+	}
+	for name, v := range map[string]float64{
+		"seed": z(8, 2, 100), "port": z(7, 3, 100), "bucket": z(7, 2, 101),
+	} {
+		if v == base {
+			t.Errorf("changing the %s left z unchanged at %v", name, base)
+		}
+	}
+}
+
+// tach.noise_rpm is the standard deviation of the noise in one 1 s tach reading (D-03 as amended):
+// the per-bucket ripple is scaled by noiseScale so the ten buckets of a gate average back to it.
+func TestNoiseAmplitudeIsGateStd(t *testing.T) {
+	// 1200 rpm at ppr 2 is 40 pulses/s: on the pulse grid, so without noise every reading is 1200.
+	r := gateReadings(NewPlant(tachFan(1200, 2, 20), 1, 1), 0.5, 610, 10)
+	if len(r) != 600 {
+		t.Fatalf("got %d readings, want 600", len(r))
+	}
+	_, sd := stdDev(r)
+	levels := map[float64]bool{}
+	for _, v := range r {
+		levels[v] = true
+	}
+	if sd < 20 || sd > 27 || len(levels) < 4 {
+		t.Fatalf("noise_rpm 20: std of 600 gate readings = %v with %d levels, want [20, 27] and >= 4 levels", sd, len(levels))
+	}
+	for _, v := range gateReadings(NewPlant(tachFan(1200, 2, 0), 1, 1), 0.5, 610, 10) {
+		if v != 1200 {
+			t.Fatalf("noise_rpm 0: reading %v, want the single level 1200", v)
+		}
+	}
+}
+
+func TestTachIgnoresTickTiming(t *testing.T) {
+	fan := tachFan(1000, 2, 6)
+	const total = 20 * time.Second
+	ref := NewPlant(fan, 1, 7)
+	refLog := runPattern(ref, 0.5, tickPatterns["10ms"], total)
+	levels := map[float64]bool{}
+	for _, v := range refLog {
+		levels[v] = true
+	}
+	if len(refLog) != 20 || len(levels) < 2 {
+		t.Fatalf("reference run: %d gates, %d levels; the test would prove nothing", len(refLog), len(levels))
+	}
+	for name, pattern := range tickPatterns {
+		pl := NewPlant(fan, 1, 7)
+		log := runPattern(pl, 0.5, pattern, total)
+		if len(log) == 0 {
+			t.Fatalf("%s: no gate completed", name)
+		}
+		for g, v := range log {
+			if v != refLog[g] {
+				t.Errorf("%s: reading of gate %d = %v, want %v (10 ms pattern)", name, g, v, refLog[g])
+			}
+		}
+		if pl.tach.pulses != ref.tach.pulses {
+			t.Errorf("%s: %d pulses in 20 s, want %d (10 ms pattern)", name, pl.tach.pulses, ref.tach.pulses)
+		}
+	}
+}
+
+func TestSeedChangesTheTrace(t *testing.T) {
+	trace := func(seed uint64, port int) []float64 {
+		return gateReadings(NewPlant(tachFan(1000, 2, 20), port, seed), 0.5, 40, 0)
+	}
+	same := func(a, b []float64) bool {
+		for i := range a {
+			if a[i] != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+	base := trace(1, 1)
+	if !same(base, trace(1, 1)) {
+		t.Error("seed 1 port 1 gave two different traces")
+	}
+	if same(base, trace(2, 1)) {
+		t.Error("seeds 1 and 2 gave the same trace")
+	}
+	if same(base, trace(1, 2)) {
+		t.Error("ports 1 and 2 gave the same trace")
+	}
+}
+
+func TestNoPulsesAtRest(t *testing.T) {
+	pl := NewPlant(tachFan(1100, 2, 50), 1, 1)
+	run(pl, 0, 10*time.Second, 10*time.Millisecond)
+	if pl.tach.pulses != 0 {
+		t.Fatalf("a stopped fan counted %d pulses in 10 s with noise_rpm 50, want 0", pl.tach.pulses)
+	}
+	if r, ok := pl.Reading(); !ok || r != 0 {
+		t.Fatalf("Reading of a stopped fan = %v (ok %v), want 0", r, ok)
+	}
+}
