@@ -27,6 +27,7 @@ import (
 	"github.com/zeroflow/esphome-sil/internal/apperr"
 	"github.com/zeroflow/esphome-sil/internal/clock"
 	"github.com/zeroflow/esphome-sil/internal/events"
+	"github.com/zeroflow/esphome-sil/internal/model"
 )
 
 // SchemaVersion is the Status.Schema value written by this version.
@@ -225,13 +226,75 @@ type SetResult struct {
 	Applied map[string]any `json:"applied"`
 }
 
-// FanInfo describes one fan of the instance's fan library.
+// FanInfo describes one fan of the instance's fan library. Schema, Provenance, Values and Sources
+// describe where the fan's numbers come from (MODEL-12). For a schema 1 fan they are null: that
+// format records no per-value provenance and none is made up. The source texts are plain text:
+// nothing in sil fetches, resolves or links them.
 type FanInfo struct {
 	ID       string  `json:"id"`
 	Name     string  `json:"name"`
 	MinRPM   float64 `json:"min_rpm"`
 	MaxRPM   float64 `json:"max_rpm"`
 	BelowMin string  `json:"below_min"`
+	// Schema is the fan file format, 1 or 2.
+	Schema int `json:"schema"`
+	// Provenance counts the values per kind; null for schema 1. A curve table counts once.
+	Provenance *ProvenanceCounts `json:"provenance"`
+	// Values maps each value path to its kind and source; null for schema 1.
+	Values map[string]ValueProvenance `json:"values"`
+	// Sources maps a source id to its text; {} for a schema 2 fan without any, null for schema 1.
+	Sources map[string]string `json:"sources"`
+}
+
+// ProvenanceCounts is the number of values of a schema 2 fan per provenance kind.
+type ProvenanceCounts struct {
+	Measured     int `json:"measured"`
+	Datasheet    int `json:"datasheet"`
+	Assumed      int `json:"assumed"`
+	Unobservable int `json:"unobservable"`
+}
+
+// ValueProvenance is the provenance of one value: its kind and the id of its source, null when the
+// entry names none.
+type ValueProvenance struct {
+	Kind   string  `json:"kind"`
+	Source *string `json:"source"`
+}
+
+// NewFanInfo is the single builder of a FanInfo from a loaded fan.
+func NewFanInfo(id string, p model.Params) FanInfo {
+	fi := FanInfo{ID: id, Name: p.Name, MinRPM: p.MinRPM, MaxRPM: p.MaxRPM, BelowMin: p.BelowMin, Schema: p.Schema}
+	if fi.Schema == 0 {
+		fi.Schema = 1
+	}
+	if fi.Schema == 1 {
+		return fi
+	}
+	fi.Provenance = &ProvenanceCounts{}
+	fi.Values = make(map[string]ValueProvenance, len(p.Provenance))
+	for _, e := range p.Provenance {
+		switch e.Kind {
+		case model.KindMeasured:
+			fi.Provenance.Measured++
+		case model.KindDatasheet:
+			fi.Provenance.Datasheet++
+		case model.KindAssumed:
+			fi.Provenance.Assumed++
+		case model.KindUnobservable:
+			fi.Provenance.Unobservable++
+		}
+		v := ValueProvenance{Kind: e.Kind}
+		if e.Source != "" {
+			src := e.Source
+			v.Source = &src
+		}
+		fi.Values[e.Path] = v
+	}
+	fi.Sources = make(map[string]string, len(p.Sources))
+	for id, text := range p.Sources {
+		fi.Sources[id] = text
+	}
+	return fi
 }
 
 // FansResult is the body of GET /api/v1/fans: the library fans sorted by id.

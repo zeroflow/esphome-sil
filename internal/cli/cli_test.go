@@ -24,6 +24,7 @@ import (
 	"github.com/zeroflow/esphome-sil/internal/control"
 	"github.com/zeroflow/esphome-sil/internal/events"
 	"github.com/zeroflow/esphome-sil/internal/instance"
+	"github.com/zeroflow/esphome-sil/internal/model"
 )
 
 const secretKey = "c2VjcmV0LWtleS1mb3ItdGhlLXRlc3Q="
@@ -849,8 +850,71 @@ func TestFansPrintsTheLibrary(t *testing.T) {
 			t.Errorf("fans[1].%s = %v, want %v", k, second[k], want)
 		}
 	}
-	if len(second) != 5 {
-		t.Errorf("fans[1] = %v, want exactly id, name, min_rpm, max_rpm, below_min", second)
+	if len(second) != 9 {
+		t.Errorf("fans[1] = %v, want exactly id, name, min_rpm, max_rpm, below_min, schema, provenance, values, sources", second)
+	}
+}
+
+// summaryFans is a schema 2 and a schema 1 fan built the way the supervisor builds them.
+func summaryFans() control.FansResult {
+	v2 := model.Params{
+		Name: "Two", MinRPM: 300, MaxRPM: 1700, BelowMin: "stop", Schema: 2,
+		Provenance: []model.ProvEntry{
+			{Path: "stop.duty", Kind: model.KindDatasheet, Source: "page"},
+			{Path: "start.duty", Kind: model.KindAssumed},
+			{Path: "curve.up", Kind: model.KindAssumed, Source: "page"},
+			{Path: "curve.down", Kind: model.KindMeasured},
+		},
+		Sources: map[string]string{"page": "vendor page"},
+	}
+	v1 := model.Params{Name: "One", MinRPM: 200, MaxRPM: 1800, BelowMin: "hold", Schema: 1}
+	return control.FansResult{Fans: []control.FanInfo{control.NewFanInfo("a-two", v2), control.NewFanInfo("b-one", v1)}}
+}
+
+func TestFansSummaryOnStderr(t *testing.T) {
+	cliEnv(t)
+	want := summaryFans()
+	fc := &fakeControl{status: readyStatus("x"), fans: want}
+	liveInstance(t, "x", fc)
+
+	r := run(t, "fans", "-i", "x")
+	if r.exit != 0 {
+		t.Fatalf("exit %d, stdout %s", r.exit, r.stdout)
+	}
+	var got control.FansResult
+	if err := json.Unmarshal([]byte(r.stdout), &got); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("stdout %s decodes to %+v (%v), want the fake result %+v", r.stdout, got, err, want)
+	}
+	if len(r.object(t)) != 1 {
+		t.Errorf("stdout %s, want one top-level key", r.stdout)
+	}
+	lines := strings.Split(strings.TrimRight(r.stderr, "\n"), "\n")
+	if len(lines) != 2 ||
+		lines[0] != "a-two  Two  schema 2  measured 1 · datasheet 1 · assumed 2 · unobservable 0" ||
+		lines[1] != "b-one  One  schema 1  no per-value provenance (flat v0.1.0 file)" {
+		t.Errorf("stderr %q, want the two summary lines", r.stderr)
+	}
+
+	r = run(t, "fans", "--verbose", "-i", "x")
+	wantVerbose := "a-two  Two  schema 2  measured 1 · datasheet 1 · assumed 2 · unobservable 0\n" +
+		"    stop.duty             datasheet  page vendor page\n" +
+		"    start.duty            assumed\n" +
+		"    curve.up              assumed  page vendor page\n" +
+		"    curve.down            measured\n" +
+		"b-one  One  schema 1  no per-value provenance (flat v0.1.0 file)\n"
+	if r.stderr != wantVerbose {
+		t.Errorf("--verbose stderr:\n%s\nwant:\n%s", r.stderr, wantVerbose)
+	}
+	if len(r.object(t)) != 1 {
+		t.Errorf("--verbose stdout %s, want one top-level key", r.stdout)
+	}
+
+	r = run(t, "--quiet", "fans", "--verbose", "-i", "x")
+	if r.exit != 0 || r.stderr != "" {
+		t.Errorf("--quiet: exit %d stderr %q, want exit 0 and nothing on stderr", r.exit, r.stderr)
+	}
+	if len(r.object(t)) != 1 {
+		t.Errorf("--quiet stdout %s, want one top-level key", r.stdout)
 	}
 }
 

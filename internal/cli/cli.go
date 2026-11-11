@@ -39,6 +39,7 @@ import (
 	"github.com/zeroflow/esphome-sil/internal/control"
 	"github.com/zeroflow/esphome-sil/internal/instance"
 	"github.com/zeroflow/esphome-sil/internal/lifecycle"
+	"github.com/zeroflow/esphome-sil/internal/model"
 	"github.com/zeroflow/esphome-sil/internal/supervisor"
 )
 
@@ -54,7 +55,7 @@ type CLI struct {
 	Fw     FwCmd     `cmd:"" help:"Operate on the firmware of an instance."`
 	Press  PressCmd  `cmd:"" help:"Press a button (usr1..usr3): 200 ms by default, --long holds 1500 ms, --hold DUR sets the hold; --down/--up set the level and return."`
 	Set    SetCmd    `cmd:"" help:"Set inputs: key=value pairs (temperature in degrees Celsius, humidity in %RH, portN.fan=ID to plug a library fan into port N), validated first and applied together."`
-	Fans   FansCmd   `cmd:"" help:"List the fans of the instance's fan library."`
+	Fans   FansCmd   `cmd:"" help:"List the fan library: JSON on stdout, a provenance summary per fan on stderr (--verbose: every value)."`
 	// History is registered next to Fans: both are read-only JSON lookups.
 	History HistoryCmd `cmd:"" help:"Print the plot history: one duty and RPM sample per port every 100 ms of sim time, the last 5 minutes."`
 	Watch   WatchCmd   `cmd:"" help:"Follow the instance live as NDJSON: one snapshot line, then one line per change, until it stops (Ctrl-C ends it too)."`
@@ -127,6 +128,7 @@ type SetCmd struct {
 
 // FansCmd is `sil fans`. Like set, the instance is selected with --instance/-i.
 type FansCmd struct {
+	Verbose  bool   `help:"Also list every value with its provenance and source (stderr)."`
 	Instance string `name:"instance" short:"i" help:"Instance name (default: $SIL_INSTANCE, else the single live instance)."`
 }
 
@@ -455,7 +457,39 @@ func (c *FansCmd) Run(env *runEnv) error {
 		return err
 	}
 	env.result = res
+	writeFansSummary(env.stderr, res, c.Verbose)
 	return nil
+}
+
+// writeFansSummary prints the human view of `sil fans` to w (stderr, discarded by --quiet): one line
+// per fan and, with verbose, one line per value in model.ValuePaths order. It is text only: a source
+// is printed, never opened or fetched.
+func writeFansSummary(w io.Writer, res control.FansResult, verbose bool) {
+	for _, f := range res.Fans {
+		if f.Provenance == nil {
+			fmt.Fprintf(w, "%s  %s  schema %d  no per-value provenance (flat v0.1.0 file)\n", f.ID, f.Name, f.Schema)
+			continue
+		}
+		fmt.Fprintf(w, "%s  %s  schema %d  measured %d · datasheet %d · assumed %d · unobservable %d\n",
+			f.ID, f.Name, f.Schema, f.Provenance.Measured, f.Provenance.Datasheet, f.Provenance.Assumed, f.Provenance.Unobservable)
+		if !verbose {
+			continue
+		}
+		for _, path := range model.ValuePaths {
+			v, ok := f.Values[path]
+			if !ok {
+				continue
+			}
+			line := fmt.Sprintf("    %-22s%s", path, v.Kind)
+			if v.Source != nil {
+				line += "  " + *v.Source
+				if text, ok := f.Sources[*v.Source]; ok {
+					line += " " + text
+				}
+			}
+			fmt.Fprintln(w, line)
+		}
+	}
 }
 
 // Run implements `sil history`: the supervisor's sample ring as one JSON value. An out-of-range

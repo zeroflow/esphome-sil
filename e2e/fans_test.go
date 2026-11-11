@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -280,4 +281,103 @@ func TestFanChoice(t *testing.T) {
 			}
 		}
 	})
+}
+
+// fansProvOldFan is a schema 1 file (nine keys): it records no per-value provenance.
+const fansProvOldFan = `name = "Old fan"
+source = "test"
+min_duty = 0.05
+start_duty = 0.10
+below_min = "stop"
+min_rpm = 200
+max_rpm = 1800
+tau_up = 1.0
+tau_down = 2.5
+`
+
+// TestFansProvenance lists a library of one schema 1 and one schema 2 fan: stdout is one JSON value
+// with the full provenance (counts, per-value map, sources) and stderr carries the summary lines.
+func TestFansProvenance(t *testing.T) {
+	const name = "e2e-fanprov"
+	env := newEnv(t)
+	dir := t.TempDir()
+	v2, err := os.ReadFile(filepath.Join(repoRoot(t), "testdata", "fans-v2", "curve-test.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for file, body := range map[string][]byte{"curve-test.toml": v2, "old-fan.toml": []byte(fansProvOldFan)} {
+		if err := os.WriteFile(filepath.Join(dir, file), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env.Extra = append(env.Extra, "SIL_FAN_DIR="+dir)
+	env.Up(t, name, "--fan", "old-fan")
+
+	out, code, stderr := env.Sil(t, "fans", "-i", name)
+	if code != 0 {
+		t.Fatalf("sil fans: exit %d: %v", code, out)
+	}
+	list := jgetSlice(out, "fans")
+	if len(out) != 1 || len(list) != 2 {
+		t.Fatalf("sil fans = %v, want exactly {fans: [two entries]}", out)
+	}
+	if jget(list, 0, "id") != "curve-test" || jget(list, 1, "id") != "old-fan" {
+		t.Fatalf("fans are %v and %v, want curve-test then old-fan (sorted by id)", jget(list, 0, "id"), jget(list, 1, "id"))
+	}
+
+	// curve-test: schema 2, eight values, all assumed, one source.
+	if jget(list, 0, "schema") != 2.0 {
+		t.Errorf("curve-test schema = %v, want 2", jget(list, 0, "schema"))
+	}
+	for k, want := range map[string]float64{"measured": 0, "datasheet": 0, "assumed": 8, "unobservable": 0} {
+		if jget(list, 0, "provenance", k) != want {
+			t.Errorf("curve-test provenance.%s = %v, want %v", k, jget(list, 0, "provenance", k), want)
+		}
+	}
+	values, _ := jget(list, 0, "values").(map[string]any)
+	paths := []string{"stop.duty", "start.duty", "start.delay_s", "dynamics.tau_up_s", "dynamics.tau_down_s", "dynamics.coast_tau_s", "curve.up", "curve.down"}
+	if len(values) != len(paths) {
+		t.Errorf("curve-test values = %v, want exactly %v", values, paths)
+	}
+	for _, p := range paths {
+		if jget(values, p, "kind") != "assumed" || jget(values, p, "source") != "test" {
+			t.Errorf("curve-test values[%s] = %v, want {kind assumed, source test}", p, values[p])
+		}
+	}
+	sources, _ := jget(list, 0, "sources").(map[string]any)
+	if len(sources) != 1 || sources["test"] != "test fixture, not a real fan" {
+		t.Errorf("curve-test sources = %v, want {test: \"test fixture, not a real fan\"}", sources)
+	}
+
+	// old-fan: schema 1 records nothing, and nothing is made up.
+	if jget(list, 1, "schema") != 1.0 {
+		t.Errorf("old-fan schema = %v, want 1", jget(list, 1, "schema"))
+	}
+	entry, _ := list[1].(map[string]any)
+	for _, k := range []string{"provenance", "values", "sources"} {
+		if v, ok := entry[k]; !ok || v != nil {
+			t.Errorf("old-fan %s = %v (present %v), want JSON null", k, v, ok)
+		}
+	}
+
+	// stderr: one summary line per fan.
+	var line string
+	for _, l := range strings.Split(stderr, "\n") {
+		if strings.HasPrefix(l, "curve-test") {
+			line = l
+		}
+	}
+	if !strings.Contains(line, "schema 2") || !strings.Contains(line, "assumed 8") {
+		t.Errorf("stderr %q has no curve-test summary with \"schema 2\" and \"assumed 8\"", stderr)
+	}
+
+	// --verbose lists the values in registry order: dynamics before the curves, up before down.
+	_, code, stderr = env.Sil(t, "fans", "--verbose", "-i", name)
+	if code != 0 {
+		t.Fatalf("sil fans --verbose: exit %d", code)
+	}
+	coast, up, down := strings.Index(stderr, "dynamics.coast_tau_s"), strings.Index(stderr, "curve.up"), strings.Index(stderr, "curve.down")
+	if coast < 0 || up < coast || down < up {
+		t.Errorf("--verbose stderr is not in registry order (coast %d, up %d, down %d):\n%s", coast, up, down, stderr)
+	}
 }

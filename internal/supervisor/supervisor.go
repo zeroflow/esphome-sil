@@ -1266,7 +1266,7 @@ func (s *supervisor) Fans(_ context.Context) (control.FansResult, error) {
 		if err != nil {
 			return control.FansResult{}, apperr.Failed("fan_toml_invalid", err.Error(), map[string]any{"fan": id, "error": err.Error()})
 		}
-		res.Fans = append(res.Fans, control.FanInfo{ID: id, Name: p.Name, MinRPM: p.MinRPM, MaxRPM: p.MaxRPM, BelowMin: p.BelowMin})
+		res.Fans = append(res.Fans, control.NewFanInfo(id, p))
 	}
 	return res, nil
 }
