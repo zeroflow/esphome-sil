@@ -5,16 +5,16 @@ milestone_name: Real Fans
 current_phase: 04
 current_phase_name: Fan Model v2
 status: executing
-stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-11-11T05:34:09.126Z"
+stopped_at: Completed 04-02-PLAN.md
+last_updated: "2026-11-11T05:41:00.195Z"
 last_activity: 2026-11-11
 last_activity_desc: Phase 04 execution started
-state_head: b69103134367bb86a360d6bb85eda065bd704089
+state_head: 39db05361fb7681f03df40d4c39197421aa8903f
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 10
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-11-10)
 ## Current Position
 
 Phase: 04 (Fan Model v2) — EXECUTING
-Plan: 2 of 10
+Plan: 3 of 10
 Status: Ready to execute
 Last activity: 2026-11-11 — Phase 04 execution started
 
@@ -98,6 +98,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 03.1 P02 | 6 min | 2 tasks | 3 files |
 | Phase 03.1 P03 | 4 min | 2 tasks | 8 files |
 | Phase 04 P01 | 20 min | 2 tasks | 12 files |
+| Phase 04 P02 | 3 min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -195,6 +196,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-01: direction (LastDuty/Falling) is tracked in State only for fans with a separate down curve, so legacy State stays bit-identical to v0.1.0
 - [Phase 04]: 04-01: schema 2 loader errors use a table-aware lineOf (duty/rpm repeat across tables); provenance entry typos reported before missing entries
 - [Phase 04]: 04-01: A1 sticky direction without deadband reviewed and accepted for Phase 4; carried to Phase 8 measured sweeps
+- [Phase 04]: 04-02: start boundary is at or above (duty >= start.duty, v0.1.0 operator); a delay expiring exactly on a tick leaves rpm 0 until the next tick
+- [Phase 04]: 04-02: coast_tau_s applies only to a non-running segment; a running fan slowing down uses tau_down_s; snap stays at segment end, only the integral uses the analytic crossing time
 
 ### Pending Todos
 
@@ -233,8 +236,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-11T05:34:09.099Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-11-11T05:41:00.168Z
+Stopped at: Completed 04-02-PLAN.md
 Resume file: None
 
 ## Needs Human
