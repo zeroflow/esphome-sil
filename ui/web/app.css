@@ -372,6 +372,18 @@ input.error {
   line-height: 1.2;
 }
 
+/* The second readout row of a panel: TACH RPM, AIRFLOW and POWER at 16 px. Its height is fixed at
+   28 px so the panel (header + row + loads + a 128 px scope) fits two to a column at 1280 x 720. */
+.row.loads {
+  min-height: 28px;
+  gap: 16px;
+}
+
+.readout .value.tach {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
 /* The scope screen: a screen-black well, filled by the plot. */
 .scope {
   position: relative;
@@ -448,8 +460,11 @@ input.error {
   line-height: 1.2;
 }
 
-/* Bottom strip: 128 px, groups 16 px apart. */
+/* Bottom strip: 128 px, groups 16 px apart. In a window shorter than the panels need, the strip stays
+   on top of the grid, so its buttons and fields remain reachable. */
 #strip {
+  position: relative;
+  z-index: 1;
   flex: none;
   box-sizing: border-box;
   display: flex;

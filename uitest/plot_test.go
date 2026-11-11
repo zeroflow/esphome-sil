@@ -210,8 +210,8 @@ func TestScopeStyle(t *testing.T) {
 		if l.LegendShown || l.Cursor {
 			t.Errorf("port %d: uPlot's own legend (%v) or cursor (%v) is on", n, l.LegendShown, l.Cursor)
 		}
-		if l.Legend != "RPM DUTY" || l.Timebase != "6 s/div" {
-			t.Errorf("port %d: legend %q and timebase %q, want `RPM DUTY` and `6 s/div`", n, l.Legend, l.Timebase)
+		if l.Legend != "RPM DUTY TACH" || l.Timebase != "6 s/div" {
+			t.Errorf("port %d: legend %q and timebase %q, want `RPM DUTY TACH` and `6 s/div`", n, l.Legend, l.Timebase)
 		}
 		if l.Border != "1px" || l.BorderColour != "rgb(58, 64, 71)" || !l.Overlay {
 			t.Errorf("port %d: well border %s %s, want 1px rgb(58, 64, 71)", n, l.Border, l.BorderColour)

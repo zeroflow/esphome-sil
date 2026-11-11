@@ -127,6 +127,15 @@ func fmtOracle(kind string, v any) string {
 		f, _ := v.(float64)
 		return f
 	}
+	if v == nil {
+		// A JSON null: the readouts of tach, airflow and power show an em dash (D-16 as amended
+		// 2026-11-11), every other readout the page's `--`.
+		switch kind {
+		case "tach", "flow", "watt":
+			return "\u2014"
+		}
+		return "--"
+	}
 	switch kind {
 	case "text", "hex":
 		s, _ := v.(string)
@@ -135,6 +144,12 @@ func fmtOracle(kind string, v any) string {
 		return "P" + strconv.FormatFloat(num(), 'f', -1, 64)
 	case "rpm":
 		return strconv.FormatFloat(math.Round(num()), 'f', 0, 64)
+	case "tach":
+		return strconv.FormatFloat(math.Round(num()), 'f', 0, 64)
+	case "flow":
+		return strconv.FormatFloat(num(), 'f', 1, 64)
+	case "watt":
+		return strconv.FormatFloat(num(), 'f', 2, 64)
 	case "pct":
 		return strconv.FormatFloat(num()*100, 'f', 1, 64)
 	case "simtime":

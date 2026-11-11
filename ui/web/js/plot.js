@@ -7,7 +7,10 @@
 // The screen shows what the API reported and nothing else: the x range is the last 60 s of sim time
 // ending at the newest sample, the RPM axis is 0..max_rpm of the plugged fan and the duty axis
 // 0..100 (nothing autoscales), a null value is a gap, and no point is resampled, smoothed or
-// interpolated. This module derives no gap from sample timing.
+// interpolated. Each scope draws three traces: the shaft RPM (solid), the duty (dashed, stepped)
+// and the tach RPM, what the firmware's tach counting reads, as a stepped dimmer line in the port
+// colour on the RPM scale. A tach value above max_rpm (quantisation, ripple) is clipped by the plot
+// area, never rescaled (Research Pitfall 7). This module derives no gap from sample timing.
 import { Ring } from "./ring.js";
 
 export const WINDOW_S = 60;
@@ -180,6 +183,16 @@ function makeScope(panel, port) {
         points: { show: false },
         paths: globalThis.uPlot.paths.stepped({ align: 1 }),
       },
+      {
+        label: "TACH",
+        scale: "rpm",
+        show: known(),
+        stroke: () => withAlpha(color(), 0.5),
+        width: 1,
+        spanGaps: false,
+        points: { show: false },
+        paths: globalThis.uPlot.paths.stepped({ align: 1 }),
+      },
     ],
     hooks: {
       // The centre lines of the graticule, over the grid and under the traces.
@@ -204,7 +217,7 @@ function makeScope(panel, port) {
       ],
     },
   };
-  sc.u = new globalThis.uPlot(opts, [ring.xs, ring.rpm, ring.duty], host);
+  sc.u = new globalThis.uPlot(opts, [ring.xs, ring.rpm, ring.duty, ring.tach], host);
   sc.observer = new ResizeObserver(() => {
     const s = size();
     if (sc.u.width !== s.width || sc.u.height !== s.height) {
@@ -263,7 +276,7 @@ export function setLink(next) {
 }
 
 // setFanMax fixes the RPM axis of a port at 0..max (the plugged fan's max_rpm); null when the fan
-// is unknown, which hides the RPM trace and its labels rather than guess a scale. The scale is set
+// is unknown, which hides the RPM and TACH traces and the labels rather than guess a scale. The scale is set
 // only when the value changed.
 export function setFanMax(port, max) {
   const next = typeof max === "number" && max > 0 ? max : null;
@@ -279,11 +292,13 @@ export function setFanMax(port, max) {
   sc.maxRpm = next;
   if (next === null) {
     sc.u.setSeries(1, { show: false });
+    sc.u.setSeries(3, { show: false });
     return;
   }
   sc.u.setScale("rpm", { min: 0, max: next });
   if (was === null) {
     sc.u.setSeries(1, { show: true });
+    sc.u.setSeries(3, { show: true });
   }
 }
 
@@ -303,7 +318,7 @@ function appendSample(frame) {
     }
     const ring = ringOf(e.port);
     const was = ring.seen;
-    ring.push(frame.t, e.rpm, e.duty, gap);
+    ring.push(frame.t, e.rpm, e.duty, gap, e.tach);
     if (!was && ring.seen) {
       const sc = scopeOfPort(e.port);
       if (sc !== null) {
@@ -314,7 +329,7 @@ function appendSample(frame) {
   }
 }
 
-// pushSample adds one `sample` frame ({t, k, seq, v: [{port, duty, rpm}], gap?}) to the rings. It
+// pushSample adds one `sample` frame ({t, k, seq, v: [{port, duty, rpm, tach}], gap?}) to the rings. It
 // is called from the WebSocket message handler.
 export function pushSample(frame) {
   appendSample(frame);
@@ -348,7 +363,7 @@ function drawDirty() {
     if (sc.dirty) {
       sc.dirty = false;
       const ring = ringOf(sc.port);
-      sc.u.setData([ring.xs, ring.rpm, ring.duty]);
+      sc.u.setData([ring.xs, ring.rpm, ring.duty, ring.tach]);
     }
   }
 }

@@ -12,7 +12,7 @@ const RETRY_MIN_MS = 500;
 const RETRY_MAX_MS = 5000;
 
 // The kinds of `sil watch`, plus the opt-in plot samples.
-const KINDS = "duty,rpm,state,fan,button,env,leds,firmware,sim,sample";
+const KINDS = "duty,rpm,tach,state,fan,load,button,env,leds,firmware,sim,sample";
 // The history to fetch on every (re)connect: the 60 s window plus a 2 s margin.
 const HISTORY_WINDOW_S = 62;
 // The most sample frames held back while the history request is out (5 minutes at 10 Hz, the

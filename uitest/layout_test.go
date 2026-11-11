@@ -267,8 +267,8 @@ func TestLayoutDesktop(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range sweep.Sizes {
-		if s != "12px" && s != "14px" && s != "20px" && s != "28px" {
-			t.Errorf("font size %s is not one of 12, 14, 20, 28 px (all: %v)", s, sweep.Sizes)
+		if s != "12px" && s != "14px" && s != "16px" && s != "20px" && s != "28px" {
+			t.Errorf("font size %s is not one of 12, 14, 16, 20, 28 px (all: %v)", s, sweep.Sizes)
 		}
 	}
 	for _, w := range sweep.Weights {
