@@ -17,7 +17,7 @@ findings:
     title: "`locate` loses the line number when a string value holds an escaped quote followed by a bracket"
   - id: IN-01
     severity: info
-    disposition: open
+    disposition: fixed
     title: "Stale comment on `engine.Config.Seed`"
   - id: IN-02
     severity: info
@@ -25,11 +25,11 @@ findings:
     title: "`Plant.Params()` hands out slices that alias the plant's own parameters"
   - id: IN-03
     severity: info
-    disposition: open
+    disposition: fixed
     title: "A schema 2 file with the `schema` key missing gets a schema 1 \"unknown field\" error"
-open: 6
+open: 4
 total: 6
-recorded: 2026-11-11T13:24:39.269Z
+recorded: 2026-11-11T14:32:54.796Z
 ---
 
 # Phase 04: Code Review Disposition
@@ -39,9 +39,9 @@ recorded: 2026-11-11T13:24:39.269Z
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
 | WR-03 | warning | open | - |
-| IN-01 | info | open | - |
+| IN-01 | info | fixed | 04-REVIEW-FIX.md |
 | IN-02 | info | open | - |
-| IN-03 | info | open | - |
+| IN-03 | info | fixed | 04-REVIEW-FIX.md |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
