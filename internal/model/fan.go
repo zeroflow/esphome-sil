@@ -122,28 +122,55 @@ func Initial(p Params) State {
 	return State{Running: p.BelowMin == "hold"}
 }
 
+// Integral is what advance reports besides the new state: the exact integral of
+// the shaft rpm over the step.
+type Integral struct {
+	// Area is the exact integral of rpm over the step, in rpm*s (revolutions = Area/60).
+	Area float64
+	// MovingS is how many seconds of the step the shaft turns (rpm > 0).
+	MovingS float64
+}
+
 // Step advances s by dt under the commanded duty. It is a pure function of
 // its arguments: no clock, no I/O, so ten 100 ms steps equal one 1 s step
-// while target and tau stay constant. A non-positive dt returns s unchanged.
+// (also across a start-delay expiry and a coast-to-zero snap). A non-positive
+// dt returns s unchanged. It is advance without the integral.
 //
-// Semantics (D-11..D-13):
-//   - A stopped fan starts when duty >= StartDuty. A running fan keeps
-//     running down to MinDuty; below MinDuty it stalls (BelowMin "stop",
-//     target 0) or holds MinRPM (BelowMin "hold"). Between MinDuty and
-//     StartDuty the previous running state is kept. Hysteresis follows duty
-//     only, so a coasting stopped fan with duty back in the band stays
-//     stopped.
+// Semantics (D-09..D-13); the zero value of every schema 2 field is v0.1.0:
+//   - A running fan keeps running down to MinDuty. Below MinDuty it stops at
+//     once (BelowMin "stop", target 0) or holds the floor rpm (BelowMin "hold",
+//     the never-stops form).
+//   - A stopped fan starts only when duty has been at or above StartDuty for
+//     StartDelay (duty >= StartDuty, never >). The delay accumulates in
+//     State.StartElapsed; a duty below StartDuty re-arms it. A step that
+//     contains the expiry is split there: the part before runs stopped, the
+//     part after runs running. With StartDelay 0 every start is one segment,
+//     exactly the v0.1.0 order. There is no kick and a coasting rotor is not
+//     caught: the fan re-accelerates from its current coast rpm.
+//   - Between MinDuty and StartDuty the previous running state is kept.
+//     Hysteresis follows duty only, so a coasting stopped fan with duty back in
+//     the band stays stopped.
 //   - While running the target is read from the duty to rpm curve (Params.Curve,
 //     or the linear relation from MinRPM at MinDuty to MaxRPM at duty 1 that
 //     the legacy fields synthesise): the up curve while the duty rises, the down
-//     curve after it fell (sticky, see below). rpm follows it with TauUp when rising and TauDown when falling
-//     via rpm += (target - rpm) * (1 - exp(-dt/tau)); an rpm equal to the
-//     target is left alone.
-//   - The exponential never reaches 0, so rpm snaps to 0 when the target is 0
-//     and rpm < 0.5.
+//     curve after it fell (sticky). rpm follows it with TauUp when rising and
+//     TauDown when falling via rpm += (target - rpm) * (1 - exp(-dt/tau)); an
+//     rpm equal to the target is left alone.
+//   - A stopped fan has target 0 and coasts down with CoastTau (TauDown when
+//     CoastTau is 0).
+//   - The exponential never reaches 0, so rpm snaps to 0 at the end of a
+//     segment when the target is 0 and rpm < 0.5.
 func Step(p Params, s State, duty float64, dt time.Duration) State {
+	out, _ := advance(p, s, duty, dt)
+	return out
+}
+
+// advance is Step with the exact integral of rpm over the step. The pulse
+// accumulator of the tach (plan 04-04) counts revolutions from it, so counts
+// stay exact across a delay expiry and a coast snap.
+func advance(p Params, s State, duty float64, dt time.Duration) (State, Integral) {
 	if dt <= 0 {
-		return s
+		return s, Integral{}
 	}
 	switch {
 	case math.IsNaN(duty): // never let a bad input poison the state
@@ -154,12 +181,27 @@ func Step(p Params, s State, duty float64, dt time.Duration) State {
 		duty = 1
 	}
 
+	// Start and stop. pre is the part of the step that still runs stopped before a
+	// delayed start takes effect.
 	running := s.Running
+	elapsed := s.StartElapsed
+	var pre time.Duration
 	switch {
-	case !running && duty >= p.StartDuty:
-		running = true
-	case running && duty < p.MinDuty:
-		running = p.BelowMin == "hold"
+	case running:
+		if duty < p.MinDuty {
+			running = p.BelowMin == "hold" // stop is immediate (D-11)
+		}
+		elapsed = 0
+	case duty >= p.StartDuty:
+		if elapsed+dt >= p.StartDelay {
+			pre = max(p.StartDelay-elapsed, 0)
+			running = true
+			elapsed = 0
+		} else {
+			elapsed += dt
+		}
+	default:
+		elapsed = 0
 	}
 
 	// Direction (Assumption A1): the sign of the most recent duty change picks the
@@ -178,47 +220,84 @@ func Step(p Params, s State, duty float64, dt time.Duration) State {
 		}
 	}
 
-	target := 0.0
-	switch {
-	case !running:
-	case falling:
-		target = p.downCurve().At(duty)
-	default:
-		target = p.upCurve().At(duty)
+	rpm := s.RPM
+	var in Integral
+	rest := dt
+	if pre > 0 { // the stopped part before the start; a zero-length segment is never applied
+		var area, moving float64
+		rpm, area, moving = segment(p, rpm, 0, false, pre)
+		in.Area += area
+		in.MovingS += moving
+		rest -= pre
+	}
+	if rest > 0 {
+		target := 0.0
+		switch {
+		case !running:
+		case falling:
+			target = p.downCurve().At(duty)
+		default:
+			target = p.upCurve().At(duty)
+		}
+		var area, moving float64
+		rpm, area, moving = segment(p, rpm, target, running, rest)
+		in.Area += area
+		in.MovingS += moving
 	}
 
-	rpm := s.RPM
+	out := State{Running: running, RPM: rpm, StartElapsed: elapsed}
+	if tracked {
+		out.LastDuty, out.Falling = duty, falling
+	}
+	return out, in
+}
+
+// segment runs one stretch of length h at a constant target. It returns the rpm
+// at its end (the v0.1.0 exponential and snap, unchanged), the exact integral
+// of rpm over it in rpm*s and the seconds in it with rpm > 0.
+func segment(p Params, rpm0, target float64, running bool, h time.Duration) (rpm, area, movingS float64) {
+	sec := h.Seconds()
+	rpm = rpm0
+	tau := p.TauDown
+	switch {
+	case target > rpm0:
+		tau = p.TauUp
+	case !running && p.CoastTau > 0:
+		tau = p.CoastTau // unpowered coast-down (D-09)
+	}
 	if target != rpm {
-		tau := p.TauDown
-		if target > rpm {
-			tau = p.TauUp
-		}
 		if tau > 0 {
-			rpm += (target - rpm) * (1 - math.Exp(-dt.Seconds()/tau))
+			rpm += (target - rpm) * (1 - math.Exp(-sec/tau))
 		} else {
 			rpm = target // degenerate params; fanlib rejects tau <= 0
 		}
 	}
+	snapped := false
 	if target == 0 && rpm < 0.5 {
+		snapped = rpm0 > 0
 		rpm = 0
 	}
-	out := State{Running: running, RPM: rpm}
-	if tracked {
-		out.LastDuty, out.Falling = duty, falling
+
+	// The integral follows the unsnapped exponential. A segment that snapped
+	// integrates only up to the crossing time of 0.5 rpm, so the area does not
+	// depend on where tick boundaries fall.
+	upTo := sec
+	if snapped {
+		upTo = 0
+		if tau > 0 {
+			upTo = min(max(tau*math.Log(rpm0/0.5), 0), sec)
+		}
+		movingS = upTo
+	} else if rpm0 > 0 || target > 0 {
+		movingS = sec
 	}
-	return out
-}
-
-// Integral is what advance reports besides the new state: the exact integral of
-// the shaft rpm over the step.
-type Integral struct {
-	// Area is the exact integral of rpm over the step, in rpm*s (revolutions = Area/60).
-	Area float64
-	// MovingS is how many seconds of the step the shaft turns (rpm > 0).
-	MovingS float64
-}
-
-// advance is Step with the exact rpm integral (RED stub: no integral yet).
-func advance(p Params, s State, duty float64, dt time.Duration) (State, Integral) {
-	return Step(p, s, duty, dt), Integral{}
+	switch {
+	case target == rpm0:
+		area = rpm0 * upTo
+	case tau <= 0:
+		area = target * upTo
+	default:
+		area = target*upTo - (rpm0-target)*tau*math.Expm1(-upTo/tau)
+	}
+	return rpm, area, movingS
 }
